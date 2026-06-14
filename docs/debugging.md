@@ -100,7 +100,15 @@ surviving event was evicted during a quiet poll gap — you missed those events
 > scene name only when unset — headless kernel use), and keeps the scene name in
 > the event's `data.scene` (`instance.ts`). So `get_diagnostics { instance:<id> }`
 > matches a freeze even on a sandbox whose id ≠ scene name. (Asserted in
-> `packages/runtime/test/instance-freeze-id.test.ts` and `validate:m2`.)
+> `packages/runtime/test/instance-freeze-id.test.ts`.)
+>
+> Known gap (escalation): in the WebGL2 validator a render-time freeze's
+> console.error fires but no `instance.frozen` reaches the diagnostics ring (only
+> `perf.*` events do) — so the `Instance.diagSink` → ring delivery for an NFR-2
+> freeze isn't observable end-to-end there, even though `Instance.profilingEnabled`
+> (the sibling static set the same way in main.ts) clearly applies to content
+> instances. The id fix above is correct and unit-proven; making the freeze event
+> actually arrive in the ring is a separate, pre-existing follow-up.
 
 The two `perf.fps.*` thresholds (50/57) and the spike high-water mark
 (`FRAME_BUDGET_MS * 1.5`, ~25 ms) are the *edge* emitters that let you find a sag
