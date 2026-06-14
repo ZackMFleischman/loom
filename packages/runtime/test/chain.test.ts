@@ -7,6 +7,8 @@ import {
   type EffectEntry,
   type EffectRegistry,
   type PrimitiveEffectEntry,
+  type SourceRef,
+  type SourceResolver,
 } from "../src/chain";
 import type { FrameCtx } from "../src/frame";
 import { defineModule } from "../src/module";
@@ -227,3 +229,147 @@ describe("ChainHost composite fold", () => {
     expect(c.manifest.get("fx.combo-1.mix")?.type).toBe("float");
   });
 });
+
+// ── Multi-input chain steps ──────────────────────────────────────────────────
+// An effect with one extra TexNode slot ("overlay"). The fold wraps each step's
+// factory output in a wet/dry blend, so we can't tag the RETURN; instead the
+// factory records the overlay it received into a closure side-channel, proving
+// exactly WHICH TexNode the fold resolved into the slot.
+let receivedOverlay: TexNode | undefined;
+const over: PrimitiveEffectEntry = {
+  name: "over",
+  kind: "primitive",
+  chainParams: [],
+  chainInputs: [{ name: "overlay", kind: "tex" }],
+  factory: defineModule(
+    { name: "over", kind: "effect", description: "x", chainInputs: [{ name: "overlay", kind: "tex" }] },
+    (_c: BuildCtx, opts: { input: TexNode; overlay?: TexNode }) => {
+      if (!opts.overlay) throw new Error("overlay missing");
+      receivedOverlay = opts.overlay;
+      return texNode(opts.input.color, opts.input.passes);
+    },
+  ),
+};
+
+// A resolver that knows a fixed map of instance id → TexNode.
+const liveTex = texNode(vec4(1, 0, 0, 1));
+const resolver = (known: Record<string, TexNode>): SourceResolver => ({
+  instance: (id) => known[id] ?? null,
+});
+
+describe("multi-input chain steps — plan (ordering/cycle guard)", () => {
+  it("accepts an {instance} source on a declared slot", () => {
+    const host = new ChainHost(() => registry(over), undefined, resolver({ live: liveTex }));
+    const steps = host.plan([{ effect: "over", inputs: { overlay: { instance: "live" } } }]);
+    expect(steps[0]!.inputs).toEqual({ overlay: { instance: "live" } });
+  });
+
+  it("accepts a {step} source that taps an EARLIER step", () => {
+    const host = new ChainHost(() => registry(glitch, over), undefined, resolver({}));
+    const steps = host.plan([
+      { effect: "glitch" },
+      { effect: "over", inputs: { overlay: { step: "glitch-1" } } },
+    ]);
+    expect(steps[1]!.inputs).toEqual({ overlay: { step: "glitch-1" } });
+  });
+
+  it("rejects a {step} source that taps ITSELF (cycle guard)", () => {
+    const host = new ChainHost(() => registry(over));
+    expect(() =>
+      host.plan([{ id: "over-1", effect: "over", inputs: { overlay: { step: "over-1" } } }]),
+    ).toThrow(/cannot tap itself/);
+  });
+
+  it("rejects a {step} source that taps a LATER step (forward/ordering guard)", () => {
+    const host = new ChainHost(() => registry(glitch, over));
+    expect(() =>
+      host.plan([
+        { effect: "over", inputs: { overlay: { step: "glitch-2" } } },
+        { effect: "glitch" },
+      ]),
+    ).toThrow(/not an EARLIER step/);
+  });
+
+  it("rejects a binding to an undeclared slot", () => {
+    const host = new ChainHost(() => registry(over), undefined, resolver({ live: liveTex }));
+    expect(() =>
+      host.plan([{ effect: "over", inputs: { bogus: { instance: "live" } } }]),
+    ).toThrow(/no input slot "bogus"/);
+  });
+
+  it("rejects an {asset} source (deferred — needs M10)", () => {
+    const host = new ChainHost(() => registry(over));
+    expect(() =>
+      host.plan([{ effect: "over", inputs: { overlay: { asset: "logo.png" } } as never }]),
+    ).toThrow(/asset source is not yet supported/);
+  });
+});
+
+describe("multi-input chain steps — fold (SourceRef resolution)", () => {
+  it("resolves an {instance} ref to the resolver's TexNode and feeds the slot", () => {
+    receivedOverlay = undefined;
+    const host = new ChainHost(() => registry(over), undefined, resolver({ live: liveTex }));
+    host.steps = host.plan([{ effect: "over", inputs: { overlay: { instance: "live" } } }]);
+    host.fold(ctx(), base());
+    expect(receivedOverlay).toBe(liveTex); // the exact TexNode the resolver returned
+  });
+
+  it("resolves a {step} ref to an earlier step's folded output", () => {
+    receivedOverlay = undefined;
+    const host = new ChainHost(() => registry(glitch, over), undefined, resolver({}));
+    host.steps = host.plan([
+      { effect: "glitch" },
+      { effect: "over", inputs: { overlay: { step: "glitch-1" } } },
+    ]);
+    const b = base();
+    host.fold(ctx(), b);
+    // The overlay slot received glitch-1's FOLDED output — a distinct wet/dry-
+    // wrapped node, never the raw base nor undefined (proves step-tap resolution).
+    expect(receivedOverlay).toBeDefined();
+    expect(receivedOverlay).not.toBe(b);
+  });
+
+  it("rejects (throws) when an {instance} source can't resolve — NFR-5", () => {
+    const host = new ChainHost(() => registry(over), undefined, resolver({})); // no instances
+    host.steps = host.plan([{ effect: "over", inputs: { overlay: { instance: "ghost" } } }]);
+    expect(() => host.fold(ctx(), base())).toThrow(/cannot resolve instance source "ghost"/);
+  });
+
+  it("rejects (throws) with no resolver at all (host can't sample instances)", () => {
+    const host = new ChainHost(() => registry(over)); // no resolver passed
+    host.steps = host.plan([{ effect: "over", inputs: { overlay: { instance: "live" } } }]);
+    expect(() => host.fold(ctx(), base())).toThrow(/cannot resolve instance source "live"/);
+  });
+
+  it("throws when a declared slot is left unbound", () => {
+    const host = new ChainHost(() => registry(over), undefined, resolver({}));
+    host.steps = host.plan([{ effect: "over" }]); // overlay not bound
+    expect(() => host.fold(ctx(), base())).toThrow(/needs input slot "overlay" bound/);
+  });
+});
+
+describe("multi-input chain steps — single-input unchanged", () => {
+  it("a classic single-input step carries NO inputs key (byte-for-byte)", () => {
+    const host = new ChainHost(() => registry(glitch));
+    host.steps = host.plan([{ effect: "glitch" }]);
+    expect("inputs" in host.steps[0]!).toBe(false);
+    expect(host.list()[0]).not.toHaveProperty("inputs");
+  });
+
+  it("serialize() refuses to save a step with input bindings (not composable yet)", () => {
+    const host = new ChainHost(() => registry(over), undefined, resolver({ live: liveTex }));
+    host.steps = host.plan([{ effect: "over", inputs: { overlay: { instance: "live" } } }]);
+    expect(() => host.serialize()).toThrow(/multi-input chain steps/);
+  });
+
+  it("list() surfaces bound inputs for get_session", () => {
+    const host = new ChainHost(() => registry(over), undefined, resolver({ live: liveTex }));
+    host.steps = host.plan([{ effect: "over", inputs: { overlay: { instance: "live" } } }]);
+    const info = host.list()[0]!;
+    expect(info.inputs).toEqual({ overlay: { instance: "live" } });
+  });
+});
+
+// Exercise the SourceRef type import.
+const _exampleRef: SourceRef = { instance: "live" };
+void _exampleRef;
