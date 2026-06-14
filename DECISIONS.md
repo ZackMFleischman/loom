@@ -245,7 +245,7 @@ merging the registry's manifest with the input rack's, routed by path prefix
 - **`agent-updates.md` retired** (archived as `docs/history/agent-updates-m0-m6.md`): milestone ships are now ≤6-line SHIPPED entries here — one log, not two. Durable gotchas distilled into the skills.
 - **`artifacts/` gitignored** — supersedes the M0 "validation artifacts committed as evidence" decision; the evidence is the validator's pass/fail output, screenshots are regenerable local scratch.
 - **`loom:catalog` Vite plugin**: the dev server regenerates `content/CATALOG.md` on every module/scene save (debounced, failures logged and swallowed), closing the gap where live sessions never run `pnpm typecheck` and the library's search surface went stale exactly when agents needed it.
-- Spec: `docs/superpowers/specs/2026-06-11-docs-refactor-design.md`. The in-flight `m6-color-chains` worktree predates this layout — on rebase, redirect its doc steps (ship entry → DECISIONS, guide edits → new paths).
+- Spec: `docs/history/superpowers/specs/2026-06-11-docs-refactor-design.md` (archived 2026-06-13). The in-flight `m6-color-chains` worktree predates this layout — on rebase, redirect its doc steps (ship entry → DECISIONS, guide edits → new paths).
 
 ## 2026-06-11 — mandelbloom palette showcase SHIPPED
 
@@ -263,11 +263,11 @@ merging the registry's manifest with the input rack's, routed by path prefix
   accent-stop boundary rim for contrast, then feedback → glitch → levels. One `palette.source`
   flip (own/primary/secondary) retints the whole frame with no rebuild (verified `builds`=1).
 - Gates: `pnpm typecheck` + `pnpm test` green; `pnpm validate:m6` green; eyes-on via MCP
-  (retint with no rebuild; garden blooms on mic audio). Spec + plan under `docs/superpowers/`.
+  (retint with no rebuild; garden blooms on mic audio). Spec + plan under `docs/history/superpowers/`.
 
 ## 2026-06-11 — Console UI redesign SHIPPED
 
-- **Console cockpit rebuilt for cohesion + density** (spec/plan under `docs/superpowers/`):
+- **Console cockpit rebuilt for cohesion + density** (spec/plan under `docs/history/superpowers/`):
   LOOM wordmark; BPM readout and TAP consolidated into one tappable chip; FPS promoted to a
   first-class mono readout; output/staged open in new tabs; slim stage bar; tiles carry their
   chrome as overlays (LIVE = red ring + chip, hover-only destroy ×); drag-reorder persists to
@@ -448,7 +448,7 @@ ok tiles via stage/commit as a human gesture (mash-safe; clobbers a pending
 staged candidate by design). Gates: typecheck, unit (154), validate-m5 34/34,
 full pnpm validate. Stumble: validator waitFor treats falsy as "not yet" —
 never return a flipped bool from a poll. Spec:
-docs/superpowers/specs/2026-06-11-midi-button-bindings-design.md.
+docs/history/superpowers/specs/2026-06-11-midi-button-bindings-design.md (archived 2026-06-13).
 
 ## 2026-06-11 — Stdlib tests & robustness SHIPPED
 
@@ -475,7 +475,7 @@ docs/superpowers/specs/2026-06-11-midi-button-bindings-design.md.
   render non-black with a clean console; appended to `pnpm validate`.
 - Gates: typecheck; `pnpm test` = 312 tests (168 package + 144 content); full
   `pnpm validate` = 162 checks across 9 suites, all green. Spec + plan under
-  `docs/superpowers/`.
+  `docs/history/superpowers/`.
 
 ## 2026-06-12 — Better panic button (PANIC modes: hold | safe scene)
 
