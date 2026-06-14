@@ -151,7 +151,7 @@ export const warpGrid = defineModule(
 
     // Displacement FIELD: RG = signed warp vector, B = glow. The escape hatch for
     // crowds — a whole particle system baked into one sampled texture.
-    let fieldPasses = opts.field?.passes ?? [];
+    const fieldPasses = opts.field?.passes ?? [];
     if (opts.field) {
       const fAmt = ctx.uniformOf(opts.fieldAmount ?? 0.12);
       const fc = opts.field.color;
@@ -175,6 +175,6 @@ export const warpGrid = defineModule(
     const rgb = bg
       .add(lineCol.mul(lit))
       .add(wellCol.mul(wellGlow).mul(energy.mul(0.5).add(0.6)));
-    return texNode(vec4(rgb, 1));
+    return texNode(vec4(rgb, 1), fieldPasses); // propagate the field's buffer pass
   },
 );

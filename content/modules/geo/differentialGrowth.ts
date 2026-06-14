@@ -95,7 +95,10 @@ export const differentialGrowth = defineModule(
         const p = nodes[i]!;
         const k = (Math.floor(p.x / cell) * 73856093) ^ (Math.floor(p.y / cell) * 19349663);
         let bucket = grid.get(k);
-        if (!bucket) grid.set(k, (bucket = []));
+        if (!bucket) {
+          bucket = [];
+          grid.set(k, bucket);
+        }
         bucket.push(i);
       }
 
