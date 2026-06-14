@@ -3,73 +3,28 @@
 // PANIC/RESUME pause without catch-up, FR-5 BPM retune, and pixels actually
 // responding to a modulated param. Runs on isolated ports like the other
 // validators; pins pulse as the live scene and restores it afterwards.
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { execSync, spawn } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
-import { glArgs, forceWebGL2, resQuery } from "./_browser.mjs";
+import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  ROOT,
+  ARTIFACTS,
+  bootStack,
+  makeResults,
+  sleep,
+  toolJson,
+  callOk,
+  waitFor,
+} from "./_harness.mjs";
 import { PNG } from "pngjs";
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const ARTIFACTS = join(ROOT, "artifacts");
-const SCENE = join(ROOT, "content", "scenes", "live.scene.ts");
 const SCRATCH = join(ROOT, "content", "scenes", "modtest.scene.ts");
 const PORT = 5203;
 const WS_PORT = 7346;
 // state=off: persisted tunings (M5) must never skew validation assertions.
-const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off${resQuery}`;
+const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off`;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const results = [];
-function check(name, ok, detail = "") {
-  results.push({ name, ok });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` â€” ${detail}` : ""}`);
-}
-
-async function waitForServer(url, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {}
-    await sleep(250);
-  }
-  throw new Error(`dev server did not come up at ${url}`);
-}
-
-function toolJson(res) {
-  const text = res.content?.find((c) => c.type === "text")?.text ?? "";
-  return JSON.parse(text);
-}
-
-async function callOk(client, name, args = {}) {
-  const res = await client.callTool({ name, arguments: args });
-  if (res.isError) throw new Error(`${name} failed: ${res.content?.[0]?.text}`);
-  return res;
-}
-
+const { results, check } = makeResults();
 const loomState = (page) => page.evaluate(() => ({ ...window.__loom, instances: window.__loom.instances }));
-
-async function waitFor(fn, timeoutMs = 10_000, label = "condition") {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(100);
-  }
-  throw new Error(`timed out waiting for ${label}`);
-}
-
-const waitForFps = (page) =>
-  page.waitForFunction(
-    () => /\d+ fps/.test(document.querySelector("#fps")?.textContent ?? ""),
-    null,
-    { timeout: 20_000 },
-  );
 
 /** Mean luminance of a full page screenshot (and save it). */
 async function pageLum(page, savePath) {
@@ -122,62 +77,20 @@ ${paths.map((p) => `    ctx.float(${JSON.stringify(p)}, { default: 0.5, min: 0, 
 });
 `;
 
-mkdirSync(ARTIFACTS, { recursive: true });
-const PULSE_PIN = `export { default } from "./pulse.scene";\n`;
-const originalScene = readFileSync(SCENE, "utf8");
-writeFileSync(SCENE, PULSE_PIN);
-
-const vite = spawn("pnpm", ["exec", "vite", "--port", String(PORT), "--strictPort"], {
-  cwd: join(ROOT, "packages", "engine-app"),
-  shell: true,
-  stdio: ["ignore", "pipe", "pipe"],
-  windowsHide: true,
-});
-vite.stdout.on("data", (d) => process.stdout.write(`[vite] ${d}`));
-vite.stderr.on("data", (d) => process.stderr.write(`[vite] ${d}`));
-let viteExit = null;
-vite.on("exit", (code) => {
-  viteExit = code ?? -1;
-});
-
-let browser;
-let client;
+const T_START = Date.now();
+let tChecks = T_START;
+let teardown = async () => {};
 try {
-  await Promise.race([
-    waitForServer(`http://localhost:${PORT}/`),
-    (async () => {
-      while (viteExit === null) await sleep(200);
-      throw new Error(`vite exited early (code ${viteExit}) â€” is port ${PORT} already in use?`);
-    })(),
-  ]);
-
-  client = new Client({ name: "validate-modulators", version: "0.0.0" });
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: ["--import", "tsx", "packages/sidecar/src/index.ts"],
-    cwd: ROOT,
-    env: { ...process.env, LOOM_WS_PORT: String(WS_PORT) },
-    stderr: "pipe",
+  const boot = await bootStack({
+    name: "validate-modulators",
+    port: PORT,
+    wsPort: WS_PORT,
+    url: OUTPUT_URL,
+    viewport: { width: 960, height: 540 },
   });
-  await client.connect(transport);
-  transport.stderr?.on("data", (d) => process.stderr.write(`[sidecar] ${d}`));
-
-  browser = await chromium.launch({
-    headless: true,
-    args: [
-      ...glArgs,
-      "--autoplay-policy=no-user-gesture-required",
-    ],
-  });
-  const context = await browser.newContext({ viewport: { width: 960, height: 540 } });
-  await forceWebGL2(context);
-  const output = await context.newPage();
-  await output.goto(OUTPUT_URL);
-  await waitForFps(output);
-  await waitFor(async () => {
-    const res = await client.callTool({ name: "get_session", arguments: {} });
-    return res.isError ? null : toolJson(res);
-  }, 15_000, "engine to connect to sidecar");
+  teardown = boot.teardown;
+  const { client, output } = boot;
+  tChecks = Date.now();
 
   const manifestVal = async (instance, path) =>
     toolJson(await callOk(client, "get_manifest", { instance })).params[path].value;
@@ -365,15 +278,11 @@ try {
 } catch (err) {
   check("validation run completed", false, String(err));
 } finally {
-  writeFileSync(SCENE, originalScene);
+  console.log(
+    `[timing] modulators boot=${((tChecks - T_START) / 1000).toFixed(1)}s checks=${((Date.now() - tChecks) / 1000).toFixed(1)}s`,
+  );
+  await teardown();
   rmSync(SCRATCH, { force: true });
-  if (client) await client.close().catch(() => {});
-  if (browser) await browser.close();
-  if (process.platform === "win32") {
-    try { execSync(`taskkill /pid ${vite.pid} /T /F`, { stdio: "ignore" }); } catch {}
-  } else {
-    vite.kill("SIGTERM");
-  }
 }
 
 const failed = results.filter((r) => !r.ok);

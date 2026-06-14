@@ -11,66 +11,30 @@
 // back; the engine keeps ticking under scene-panic; hold→scene escalation; the
 // designated target is destroy-protected; and a designated target whose scene
 // throws on rebuild degrades PANIC to hold (never worse than today).
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { execSync, spawn } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
-import { glArgs, forceWebGL2, resQuery } from "./_browser.mjs";
+import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  ROOT,
+  ARTIFACTS,
+  bootStack,
+  makeResults,
+  sleep,
+  toolJson,
+  callOk,
+  waitFor,
+} from "./_harness.mjs";
 import { PNG } from "pngjs";
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const ARTIFACTS = join(ROOT, "artifacts");
-const LIVE = join(ROOT, "content", "scenes", "live.scene.ts");
 // A throwaway scene we designate as the SAFE target, then break on rebuild to
-// exercise the broken-target → hold fallback (FR-7). Restored in `finally`.
+// exercise the broken-target → hold fallback (FR-7). Removed in `finally`.
 const SAFE = join(ROOT, "content", "scenes", "panic-canary.scene.ts");
 const PORT = 5200;
 const WS_PORT = 7343;
-const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off${resQuery}`;
+const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off`;
 const CONSOLE_URL = `http://localhost:${PORT}/console.html`;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const results = [];
-function check(name, ok, detail = "") {
-  results.push({ name, ok });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
-}
-
-async function waitForServer(url, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {}
-    await sleep(250);
-  }
-  throw new Error(`dev server did not come up at ${url}`);
-}
-
-function toolJson(res) {
-  const text = res.content?.find((c) => c.type === "text")?.text ?? "";
-  return JSON.parse(text);
-}
-async function callOk(client, name, args = {}) {
-  const res = await client.callTool({ name, arguments: args });
-  if (res.isError) throw new Error(`${name} failed: ${res.content?.[0]?.text}`);
-  return res;
-}
+const { results, check } = makeResults();
 const loomState = (page) => page.evaluate(() => ({ ...window.__loom, instances: window.__loom.instances }));
-
-async function waitFor(fn, timeoutMs = 10_000, label = "condition") {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(100);
-  }
-  throw new Error(`timed out waiting for ${label}`);
-}
 
 /**
  * Click a Console control until the engine reflects it. MUI re-renders on
@@ -133,20 +97,10 @@ async function centerStats(page, savePath) {
 }
 const rgbDelta = (a, b) => Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b);
 
-async function waitForFps(page) {
-  await page.waitForFunction(
-    () => /\d+ fps/.test(document.querySelector("#fps")?.textContent ?? ""),
-    null,
-    { timeout: 20_000 },
-  );
-}
-
-mkdirSync(ARTIFACTS, { recursive: true });
-const originalLive = readFileSync(LIVE, "utf8");
-// Pin a light, deterministic live scene (heavy feedback scenes starve software GL).
-writeFileSync(LIVE, `export { default } from "./pulse.scene";\n`);
-// A known-good SAFE-target candidate (a calm gradient). Written fresh so the run
-// is hermetic; deleted in `finally`.
+// A known-good SAFE-target candidate (a calm gradient). Written fresh BEFORE the
+// boot so the dev server picks it up; deleted in `finally`. (bootStack pins
+// pulse as the live scene and restores the real one — a light scene matters here
+// because heavy feedback scenes starve software GL.)
 const SAFE_OK = `import { defineScene, texNode } from "@loom/runtime";
 import { mix, uv, vec2, vec3, vec4 } from "three/tsl";
 
@@ -163,50 +117,21 @@ export default defineScene({
 `;
 writeFileSync(SAFE, SAFE_OK);
 
-const vite = spawn("pnpm", ["exec", "vite", "--port", String(PORT), "--strictPort"], {
-  cwd: join(ROOT, "packages", "engine-app"),
-  shell: true,
-  stdio: ["ignore", "pipe", "pipe"],
-  windowsHide: true,
-});
-vite.stdout.on("data", (d) => process.stdout.write(`[vite] ${d}`));
-vite.stderr.on("data", (d) => process.stderr.write(`[vite] ${d}`));
-let viteExit = null;
-vite.on("exit", (code) => {
-  viteExit = code ?? -1;
-});
-
-let browser;
-let client;
+const T_START = Date.now();
+let tChecks = T_START;
+let teardown = async () => {};
 try {
-  await Promise.race([
-    waitForServer(`http://localhost:${PORT}/`),
-    (async () => {
-      while (viteExit === null) await sleep(200);
-      throw new Error(`vite exited early (code ${viteExit}) — is port ${PORT} already in use?`);
-    })(),
-  ]);
-
-  client = new Client({ name: "validate-panic", version: "0.0.0" });
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: ["--import", "tsx", "packages/sidecar/src/index.ts"],
-    cwd: ROOT,
-    env: { ...process.env, LOOM_WS_PORT: String(WS_PORT) },
-    stderr: "pipe",
+  const boot = await bootStack({
+    name: "validate-panic",
+    port: PORT,
+    wsPort: WS_PORT,
+    url: OUTPUT_URL,
+    viewport: { width: 960, height: 540 },
   });
-  await client.connect(transport);
-  transport.stderr?.on("data", (d) => process.stderr.write(`[sidecar] ${d}`));
+  teardown = boot.teardown;
+  const { client, context, output } = boot;
+  tChecks = Date.now();
 
-  browser = await chromium.launch({
-    headless: true,
-    args: [...glArgs, "--autoplay-policy=no-user-gesture-required"],
-  });
-  const context = await browser.newContext({ viewport: { width: 960, height: 540 } });
-  await forceWebGL2(context);
-  const output = await context.newPage();
-  await output.goto(OUTPUT_URL);
-  await waitForFps(output);
   const consolePage = await context.newPage();
   await consolePage.goto(CONSOLE_URL);
 
@@ -385,15 +310,11 @@ try {
 } catch (err) {
   check("validation run completed", false, String(err));
 } finally {
-  writeFileSync(LIVE, originalLive);
+  console.log(
+    `[timing] panic boot=${((tChecks - T_START) / 1000).toFixed(1)}s checks=${((Date.now() - tChecks) / 1000).toFixed(1)}s`,
+  );
+  await teardown(); // closes engine/sidecar/vite and restores the pinned live scene
   try { rmSync(SAFE, { force: true }); } catch {}
-  if (client) await client.close().catch(() => {});
-  if (browser) await browser.close();
-  if (process.platform === "win32") {
-    try { execSync(`taskkill /pid ${vite.pid} /T /F`, { stdio: "ignore" }); } catch {}
-  } else {
-    vite.kill("SIGTERM");
-  }
 }
 
 const failed = results.filter((r) => !r.ok);
