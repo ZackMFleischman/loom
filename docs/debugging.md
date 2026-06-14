@@ -93,12 +93,14 @@ surviving event was evicted during a quiet poll gap — you missed those events
 | `perf.frame.spike` | warn | an instance's frameMs crossed ~25 ms (1.5× budget) | `perf-events.ts:81` |
 | `perf.sample` | info | periodic heartbeat, every 60 frames (~1 s) | `perf-events.ts:97` |
 
-> **Subtle but important:** `instance.frozen` and `loopguard.tripped` carry the
-> *scene name* in their `instance` field, not the instance id — they're emitted
-> from the kernel via a static sink that only knows `sceneName`
-> (`instance.ts:115`). Every other kind carries the instance id. Filtering
-> `get_diagnostics { instance }` on a frozen event therefore matches by scene
-> name. (A documentation-worthy quirk; see "Gaps found" at the bottom.)
+> **`instance.frozen` / `loopguard.tripped` carry the instance id.** The kernel
+> `Instance` is built knowing only its scene name, so the engine stamps the
+> owning entry's id onto `Instance.instanceId` after create/rebuild/rename
+> (`session.ts`); the freeze/loop-guard emit uses that id (falling back to the
+> scene name only when unset — headless kernel use), and keeps the scene name in
+> the event's `data.scene` (`instance.ts`). So `get_diagnostics { instance:<id> }`
+> matches a freeze even on a sandbox whose id ≠ scene name. (Asserted in
+> `packages/runtime/test/instance-freeze-id.test.ts` and `validate:m2`.)
 
 The two `perf.fps.*` thresholds (50/57) and the spike high-water mark
 (`FRAME_BUDGET_MS * 1.5`, ~25 ms) are the *edge* emitters that let you find a sag
@@ -346,13 +348,12 @@ coverage step.
 
 These are signals worth a follow-up, surfaced by writing this doc against the code:
 
-1. **`instance.frozen` / `loopguard.tripped` report scene name, not instance id.**
-   The kernel's static `diagSink` only has `this.sceneName` (`instance.ts:115`),
-   so these two error kinds put the *scene name* in the `instance` field while
-   every other kind uses the instance id. `get_diagnostics { instance: <id> }`
-   will therefore miss a freeze on a sandbox instance whose id ≠ scene name.
-   Either the doc must warn agents (done above) or the engine should map
-   sceneName→id before emit.
+1. ~~**`instance.frozen` / `loopguard.tripped` report scene name, not instance
+   id.**~~ FIXED (console-performance-stability): the engine now stamps the
+   entry id onto `Instance.instanceId` after create/rebuild/rename and the emit
+   uses it (scene name preserved in `data.scene`). `get_diagnostics
+   { instance:<id> }` matches a freeze on any sandbox. See the "For the agent"
+   note above and `packages/runtime/test/instance-freeze-id.test.ts`.
 2. **No `get_perf` tool exists**, despite being referenced as a surface. The perf
    rollup is delivered only via `get_session.perf` and `get_diagnostics.perf`.
    This doc says so explicitly so an agent doesn't try to call it.
