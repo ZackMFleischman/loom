@@ -26,7 +26,16 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ChainStepInfo } from "@loom/sidecar/protocol";
 import type { ParamDesc } from "../engine-link";
 import { useEngine, useEngineState } from "../hooks";
-import { chainSteps, insertStep, removeStep, reorderStep, stepKnobs } from "./chain-ops";
+import {
+  chainSteps,
+  insertStep,
+  loadCollapsed,
+  removeStep,
+  reorderStep,
+  saveCollapsed,
+  stepKnobs,
+  toggleCollapsed,
+} from "./chain-ops";
 import { ParamWidget } from "./ParamWidget";
 
 type Props = {
@@ -50,6 +59,17 @@ export function FxChain({ instance, manifest, node }: Props) {
   const [err, setErr] = useState<string | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
+
+  // Per-step collapse state (UI only — never touches the engine). Keyed by the
+  // step's full `<prefix><id>` so the root chain and each layer node collapse
+  // independently; persisted across reloads via localStorage.
+  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
+  const toggleStep = (key: string) =>
+    setCollapsed((c) => {
+      const next = toggleCollapsed(c, key);
+      saveCollapsed(next);
+      return next;
+    });
 
   // A node's chain params live at <node>.fx.*; the root chain keeps fx.* (M6).
   const prefix = node != null ? `${node}.fx.` : "fx.";
@@ -229,15 +249,19 @@ export function FxChain({ instance, manifest, node }: Props) {
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
       <SortableContext items={chain.map((s) => s.id)} strategy={verticalListSortingStrategy}>
       {chain.map((step, i) => {
-        const mix = manifest[`${prefix}${step.id}.mix`];
-        const enabledP = manifest[`${prefix}${step.id}.enabled`];
+        const stepKey = `${prefix}${step.id}`;
+        const mix = manifest[`${stepKey}.mix`];
+        const enabledP = manifest[`${stepKey}.enabled`];
         const en = enabledP?.value !== false;
         const dim = (typeof mix?.value === "number" && mix.value < 0.02) || !en;
+        const isCollapsed = collapsed.has(stepKey);
         return (
           <Box key={step.id}>
             <SortableStep id={step.id} dim={dim}>
               {(handleProps) => (
                 <>
+              {/* Step HEADER: drag · collapse · name · enable · remove. The
+                  enable control and remove stay reachable while collapsed. */}
               <Stack direction="row" alignItems="center" spacing={0.5}>
                 <Box
                   {...handleProps}
@@ -246,23 +270,40 @@ export function FxChain({ instance, manifest, node }: Props) {
                 >
                   ⠿
                 </Box>
-                <Typography variant="body2" sx={{ flex: 1, fontWeight: 600 }} noWrap title={step.effect}>
+                <Tooltip title={isCollapsed ? "expand step" : "collapse step"}>
+                  <IconButton
+                    size="small"
+                    data-fxcollapse={step.id}
+                    aria-expanded={!isCollapsed}
+                    onClick={() => toggleStep(stepKey)}
+                    sx={{ color: "text.secondary", fontSize: 12, p: 0.25, lineHeight: 1 }}
+                  >
+                    {isCollapsed ? "▸" : "▾"}
+                  </IconButton>
+                </Tooltip>
+                <Typography
+                  variant="body2"
+                  sx={{ flex: 1, fontWeight: 600, cursor: "pointer", minWidth: 0 }}
+                  noWrap
+                  title={step.effect}
+                  onClick={() => toggleStep(stepKey)}
+                >
                   {step.kind === "composite" ? "✦ " : ""}
                   {step.effect}
                 </Typography>
+                {/* The ONE enable/disable control: a bool toggle + MIDI-learn,
+                    hoisted into the header so it works while collapsed. */}
                 {enabledP != null && (
-                  <Tooltip title={en ? "disable (fades to bypass over fade)" : "enable"}>
-                    <IconButton
-                      size="small"
-                      data-fxpower={step.id}
-                      onClick={() =>
-                        link.sendParam(instance, `${prefix}${step.id}.enabled`, !en)
-                      }
-                      sx={{ color: en ? "primary.main" : "text.secondary", fontSize: 13, p: 0.25 }}
-                    >
-                      ⏻
-                    </IconButton>
-                  </Tooltip>
+                  <Box data-fxenable={step.id} sx={{ flex: "0 0 auto" }}>
+                    <ParamWidget
+                      instance={instance}
+                      path={`${stepKey}.enabled`}
+                      p={enabledP}
+                      label=""
+                      dense
+                      fill
+                    />
+                  </Box>
                 )}
                 <Tooltip title="remove from chain">
                   <IconButton
@@ -275,30 +316,24 @@ export function FxChain({ instance, manifest, node }: Props) {
                   </IconButton>
                 </Tooltip>
               </Stack>
-              {mix != null && (
-                <ParamWidget instance={instance} path={`${prefix}${step.id}.mix`} p={mix} label="mix" dense fill />
+              {!isCollapsed && (
+                <>
+                  {mix != null && (
+                    <ParamWidget instance={instance} path={`${stepKey}.mix`} p={mix} label="mix" dense fill />
+                  )}
+                  {stepKnobs(manifest, prefix, step.id).map(([path, p]) => (
+                    <ParamWidget
+                      key={path}
+                      instance={instance}
+                      path={path}
+                      p={p}
+                      label={path.slice(`${stepKey}.`.length)}
+                      dense
+                      fill
+                    />
+                  ))}
+                </>
               )}
-              {enabledP != null && (
-                <ParamWidget
-                  instance={instance}
-                  path={`${prefix}${step.id}.enabled`}
-                  p={enabledP}
-                  label="enabled"
-                  dense
-                  fill
-                />
-              )}
-              {stepKnobs(manifest, prefix, step.id).map(([path, p]) => (
-                <ParamWidget
-                  key={path}
-                  instance={instance}
-                  path={path}
-                  p={p}
-                  label={path.slice(`${prefix}${step.id}.`.length)}
-                  dense
-                  fill
-                />
-              ))}
                 </>
               )}
             </SortableStep>
