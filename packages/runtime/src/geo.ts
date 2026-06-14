@@ -1,4 +1,4 @@
-import type { Camera, Object3D } from "three/webgpu";
+import type { Camera, Object3D } from "./tsl";
 
 /**
  * The 3D path (M7). Geo modules return scene-graph fragments instead of

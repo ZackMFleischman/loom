@@ -1,4 +1,4 @@
-import type { Node, WebGPURenderer } from "three/webgpu";
+import type { Node, WebGPURenderer } from "./tsl";
 import type { FrameCtx } from "./frame";
 
 /** TexNodes always carry a vec4 color expression — keeps composition typed. */

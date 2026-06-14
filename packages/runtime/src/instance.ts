@@ -1,9 +1,4 @@
-import {
-  MeshBasicNodeMaterial,
-  QuadMesh,
-  type RenderTarget,
-  type WebGPURenderer,
-} from "three/webgpu";
+import { MeshBasicNodeMaterial, QuadMesh, type RenderTarget, type WebGPURenderer } from "./tsl";
 import { BuildCtx, type Updater } from "./buildctx";
 import type { FrameCtx } from "./frame";
 import type { AudioBusLike } from "./inputbus/audio";

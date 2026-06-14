@@ -1,6 +1,5 @@
-import { texture, uniform, vec2 } from "three/tsl";
-import { Color, DataTexture, LinearFilter, SRGBColorSpace } from "three/webgpu";
-import type { Node } from "three/webgpu";
+import { Color, DataTexture, LinearFilter, SRGBColorSpace, texture, uniform, vec2 } from "./tsl";
+import type { Node } from "./tsl";
 import type { Updater } from "./buildctx";
 import { Manifest, normalizeHex, type Param } from "./param";
 import { PALETTE_SOURCE_PATH, paletteStopPath } from "./paths";

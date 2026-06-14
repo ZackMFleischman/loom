@@ -1,13 +1,21 @@
-import { abs, cos, screenSize, sin, step, texture, uv, vec2, vec4 } from "three/tsl";
 import {
+  abs,
+  cos,
   HalfFloatType,
   MeshBasicNodeMaterial,
   NoBlending,
   QuadMesh,
   RenderTarget,
+  screenSize,
+  sin,
+  step,
+  texture,
+  uv,
+  vec2,
+  vec4,
   Vector2,
   type WebGPURenderer,
-} from "three/webgpu";
+} from "./tsl";
 import type { BuildCtx } from "./buildctx";
 import type { FrameCtx } from "./frame";
 import { layerRigPath } from "./paths";
