@@ -4,133 +4,46 @@
 // asserted here as two INSTANCES rendering identical pixels); and
 // screenshot({frames:[…]}) is deterministic against a fixture: the same
 // fixture + frame list returns byte-identical images on every call.
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { execSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
-import { glArgs, forceWebGL2, resQuery } from "./_browser.mjs";
+import {
+  ARTIFACTS,
+  STATE_DIR,
+  bootStack,
+  makeResults,
+  toolJson,
+  callOk,
+  waitFor,
+  backupState,
+} from "./_harness.mjs";
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const ARTIFACTS = join(ROOT, "artifacts");
-const SCENE = join(ROOT, "content", "scenes", "live.scene.ts");
-const STATE_DIR = join(ROOT, "content", "state");
 const PORT = 5208;
 const WS_PORT = 7353;
-const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off${resQuery}`;
+const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off`;
 const FIXTURE = "valtrace";
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const results = [];
-function check(name, ok, detail = "") {
-  results.push({ name, ok });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
-}
-
-async function waitForServer(url, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {}
-    await sleep(250);
-  }
-  throw new Error(`dev server did not come up at ${url}`);
-}
-
-function toolJson(res) {
-  const text = res.content?.find((c) => c.type === "text")?.text ?? "";
-  return JSON.parse(text);
-}
+const { results, check } = makeResults();
 
 function toolImages(res) {
   return (res.content ?? []).filter((c) => c.type === "image").map((c) => c.data);
 }
 
-async function callOk(client, name, args = {}) {
-  const res = await client.callTool({ name, arguments: args });
-  if (res.isError) throw new Error(`${name} failed: ${res.content?.[0]?.text}`);
-  return res;
-}
+// The trace file is written under content/state/ — snapshot it for restore.
+const stateBackup = backupState();
 
-async function waitFor(fn, timeoutMs = 15_000, label = "condition") {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(100);
-  }
-  throw new Error(`timed out waiting for ${label}`);
-}
-
-const waitForFps = (page) =>
-  page.waitForFunction(
-    () => /\d+ fps/.test(document.querySelector("#fps")?.textContent ?? ""),
-    null,
-    { timeout: 20_000 },
-  );
-
-// ---- pin the scene, snapshot tuned state (the trace file is written under it) ----
-const PULSE_PIN = `export { default } from "./pulse.scene";\n`;
-const originalScene = readFileSync(SCENE, "utf8");
-writeFileSync(SCENE, PULSE_PIN);
-
-const stateBackup = new Map();
-if (existsSync(STATE_DIR)) {
-  for (const rel of readdirSync(STATE_DIR, { recursive: true })) {
-    const file = join(STATE_DIR, String(rel));
-    if (file.endsWith(".json")) stateBackup.set(String(rel), readFileSync(file, "utf8"));
-  }
-}
-mkdirSync(ARTIFACTS, { recursive: true });
-
-const vite = spawn("pnpm", ["exec", "vite", "--port", String(PORT), "--strictPort"], {
-  cwd: join(ROOT, "packages", "engine-app"),
-  shell: true,
-  stdio: ["ignore", "pipe", "pipe"],
-  windowsHide: true,
-});
-vite.stdout.on("data", (d) => process.stdout.write(`[vite] ${d}`));
-vite.stderr.on("data", (d) => process.stderr.write(`[vite] ${d}`));
-let viteExit = null;
-vite.on("exit", (code) => {
-  viteExit = code ?? -1;
-});
-
-let browser;
-let client;
+const T_START = Date.now();
+let tChecks = T_START;
+let teardown = async () => {};
 try {
-  await Promise.race([
-    waitForServer(`http://localhost:${PORT}/`),
-    (async () => {
-      while (viteExit === null) await sleep(200);
-      throw new Error(`vite exited early (code ${viteExit}) — is port ${PORT} already in use?`);
-    })(),
-  ]);
-
-  client = new Client({ name: "validate-fixtures", version: "0.0.0" });
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: ["--import", "tsx", "packages/sidecar/src/index.ts"],
-    cwd: ROOT,
-    env: { ...process.env, LOOM_WS_PORT: String(WS_PORT) },
-    stderr: "pipe",
+  const boot = await bootStack({
+    name: "validate-fixtures",
+    port: PORT,
+    wsPort: WS_PORT,
+    url: OUTPUT_URL,
   });
-  await client.connect(transport);
-  transport.stderr?.on("data", (d) => process.stderr.write(`[sidecar] ${d}`));
-
-  browser = await chromium.launch({
-    headless: true,
-    args: [...glArgs, "--autoplay-policy=no-user-gesture-required"],
-  });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  await forceWebGL2(context);
-  const output = await context.newPage();
-  await output.goto(OUTPUT_URL);
-  await waitForFps(output);
+  teardown = boot.teardown;
+  const { client } = boot;
+  tChecks = Date.now();
   await waitFor(async () => {
     const res = await client.callTool({ name: "get_session", arguments: {} });
     return res.isError ? null : toolJson(res);
@@ -200,14 +113,10 @@ try {
 } catch (err) {
   check("validation run completed", false, String(err));
 } finally {
-  if (client) await client.close().catch(() => {});
-  if (browser) await browser.close();
-  if (process.platform === "win32") {
-    try { execSync(`taskkill /pid ${vite.pid} /T /F`, { stdio: "ignore" }); } catch {}
-  } else {
-    vite.kill("SIGTERM");
-  }
-  writeFileSync(SCENE, originalScene);
+  console.log(
+    `[timing] fixtures boot=${((tChecks - T_START) / 1000).toFixed(1)}s checks=${((Date.now() - tChecks) / 1000).toFixed(1)}s`,
+  );
+  await teardown(); // closes engine/sidecar/vite and restores the original live scene
   rmSync(join(STATE_DIR, "fixtures"), { recursive: true, force: true });
   for (const [rel, content] of stateBackup) {
     const file = join(STATE_DIR, rel);

@@ -6,47 +6,17 @@
 // this is the eyes-on half the headless tests can't cover.
 import { execSync, spawn } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
+import { ROOT, ARTIFACTS, SCENE, makeResults, sleep, waitForServer, waitFor } from "./_harness.mjs";
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const ARTIFACTS = join(ROOT, "artifacts");
-const SCENE = join(ROOT, "content", "scenes", "live.scene.ts");
 const MODULES_DIR = join(ROOT, "content", "modules");
 const PORT = 5204;
 const WS_PORT = 7349; // isolated — never a live session's sidecar
 const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off`;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const results = [];
-function check(name, ok, detail = "") {
-  results.push({ name, ok });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
-}
-
-async function waitForServer(url, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {}
-    await sleep(250);
-  }
-  throw new Error(`dev server did not come up at ${url}`);
-}
-
-async function waitFor(fn, timeoutMs = 10_000, label = "condition") {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(100);
-  }
-  throw new Error(`timed out waiting for ${label}`);
-}
+const { results, check } = makeResults();
 
 /** Mean luminance of a full page screenshot. */
 async function pageLum(page, savePath) {

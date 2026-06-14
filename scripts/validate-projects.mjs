@@ -12,7 +12,6 @@ import {
   STATE_DIR,
   bootStack,
   makeResults,
-  sleep,
   toolJson,
   callOk,
   waitFor,
