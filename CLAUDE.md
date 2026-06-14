@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **LOOM** is an AI-driven live-visuals instrument: you describe visuals in natural language, agents write typed TypeScript, and the engine hot-renders it the moment the file is saved.
 
+This file stays slim: orientation, the never-go-black invariant, the command surface, and conventions. **Never restate architecture here** — `docs/architecture.md` is the single source; link it, don't copy it.
+
 Doc map (pull on demand, don't pre-read):
 - `docs/architecture.md` — how it's built: layout, kernel contracts, the "Testing & validation" section (all four test layers: when/why/how). **Read before changing `packages/`.**
 - `docs/requirements-v1.md` — what LOOM is; its §8 out-of-scope list is load-bearing.
