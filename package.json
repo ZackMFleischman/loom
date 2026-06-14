@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "pnpm --filter @loom/engine-app dev",
     "sidecar": "pnpm --filter @loom/sidecar dev",
+    "plugin:build": "node packages/sidecar/build.mjs plugin/server/index.js",
     "typecheck": "node scripts/build-catalog.mjs && tsc --noEmit -p .",
     "lint": "biome lint .",
     "format": "biome format --write .",

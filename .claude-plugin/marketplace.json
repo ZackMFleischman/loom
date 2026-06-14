@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "loom",
+  "owner": {
+    "name": "LOOM"
+  },
+  "description": "Plugins for using LOOM, the AI-driven live-visuals instrument.",
+  "plugins": [
+    {
+      "name": "loom-use",
+      "source": "./plugin",
+      "description": "Drive a LOOM live-visuals rig with an agent: the loom MCP control surface plus the using-LOOM skills (library-use, module-authoring, scene-composition, loom-driving).",
+      "category": "creative",
+      "tags": ["loom", "visuals", "vj", "live-visuals", "mcp", "creative-coding"]
+    }
+  ]
+}

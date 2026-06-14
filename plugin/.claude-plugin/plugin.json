@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "loom-use",
+  "displayName": "LOOM (use)",
+  "description": "Drive a LOOM live-visuals rig with an agent: the loom MCP control surface plus the using-LOOM skills (library-use, module-authoring, scene-composition). For people who have LOOM running, not for developing LOOM itself.",
+  "version": "0.1.0",
+  "author": {
+    "name": "LOOM"
+  },
+  "homepage": "https://github.com/ZackMFleischman/loom",
+  "repository": "https://github.com/ZackMFleischman/loom",
+  "license": "MIT",
+  "keywords": ["loom", "visuals", "vj", "live-visuals", "mcp", "creative-coding"],
+  "userConfig": {
+    "ws_port": {
+      "type": "number",
+      "title": "LOOM WebSocket port",
+      "description": "Port the sidecar listens on for your LOOM engine to dial in. Must match the port your LOOM engine connects to (its ?ws= / LOOM_WS_PORT). Default 7341.",
+      "default": 7341,
+      "min": 1,
+      "max": 65535
+    }
+  }
+}
