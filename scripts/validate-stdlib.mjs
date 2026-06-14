@@ -45,6 +45,9 @@ const SOURCE_OPTS = {
   shape: `{ kind: "ring", radius: 0.35, thickness: 0.12, soft: 0.05 }`,
   gradient: `{ mode: "radial", scroll: 0.1 }`,
   checker: `{ count: 8, line: 0.05 }`,
+  // bullets is a scene-fed projectile layer (default shots: []); give the smoke
+  // render a spread of fat tracers so the frame is non-black standalone.
+  bullets: `{ shots: [{ x: 0.3, y: 0.35, angle: 0.4, life: 1 }, { x: 0.7, y: 0.4, angle: 2.1, life: 1 }, { x: 0.5, y: 0.55, angle: 1.0, life: 1 }, { x: 0.4, y: 0.7, angle: 3.0, life: 1 }, { x: 0.65, y: 0.7, angle: 0.8, life: 1 }], length: 0.12, width: 0.03, brightness: 2 }`,
 };
 const EFFECT_EXTRA = {
   over: `, overlay: osc(ctx, { freq: 3, offset: 0.3 })`,
