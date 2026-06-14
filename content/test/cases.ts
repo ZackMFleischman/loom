@@ -57,6 +57,7 @@ import { noiseField } from "../modules/sources/noiseField";
 import { noodles } from "../modules/sources/noodles";
 import { osc } from "../modules/sources/osc";
 import { pulseRings } from "../modules/sources/pulseRings";
+import { reactionDiffusion } from "../modules/sources/reactionDiffusion";
 import { ripples } from "../modules/sources/ripples";
 import { softServe } from "../modules/sources/softServe";
 import { sprinkles } from "../modules/sources/sprinkles";
@@ -108,6 +109,7 @@ export const CASES: Record<string, ModuleCase> = {
   noodles: (ctx) => noodles(ctx, { energy: ctx.input("kick") }),
   osc: (ctx) => osc(ctx, {}),
   pulseRings: (ctx) => pulseRings(ctx, { energy: ctx.input("kick") }),
+  reactionDiffusion: (ctx) => reactionDiffusion(ctx, { inject: ctx.input("kick"), reseed: ctx.input("kick") }),
   ripples: (ctx) => ripples(ctx, { energy: ctx.input("kick") }),
   softServe: (ctx) => softServe(ctx, { energy: ctx.input("bass") }),
   sprinkles: (ctx) => sprinkles(ctx, { count: 12, burst: ctx.input("kick") }),
