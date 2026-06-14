@@ -1,10 +1,17 @@
 import type { BuildCtx, ColorNode, FrameCtx, Pass, SignalLike, TexNode } from "@loom/runtime";
-import { dot, float, floor, fract, mix, screenSize, sin, texture, uniform, uv, vec2 } from "three/tsl";
+import { dot, exp, float, floor, fract, int, ivec2, mix, screenSize, sin, texture, textureLoad, uniform, uv, vec2, vec3, vec4, vertexIndex } from "three/tsl";
 import {
+  AdditiveBlending,
+  BufferAttribute,
+  BufferGeometry,
   ClampToEdgeWrapping,
   HalfFloatType,
   MeshBasicNodeMaterial,
+  NearestFilter,
   NoBlending,
+  OrthographicCamera,
+  Points,
+  PointsNodeMaterial,
   QuadMesh,
   RenderTarget,
   RepeatWrapping,
@@ -447,4 +454,329 @@ export function simBufferMulti(ctx: BuildCtx, opts: SimBufferMultiOpts): SimBuff
   };
 
   return { sampleOut, pass };
+}
+
+// ---------------------------------------------------------------------------
+// particleState — a true GPU particle pool: position/velocity live in a
+// ping-ponged HalfFloat TEXTURE (one texel per particle, indexed by vertexIndex
+// in the additive draw), advanced each frame by a `update` step shader and
+// respawned by a `spawn` shader. The million-point "silk" payoff: splat the live
+// particles into a float accumulation buffer with ADDITIVE blending, then
+// tone-map → filamentary smoke-of-points.
+//
+// Generalizes the machinery `physarum` first owned inline (agent texture +
+// instanced `Points` deposit reading it via `textureLoad`, the WebGL2/WebGPU
+// render-target Y-flip gotcha) into a reusable, seeded, frame-clocked primitive.
+// Stateful like `simBuffer`/`feedback`: a code change (NFR-5) drops the pool and
+// it re-seeds next frame; frame-clocked `phase` + in-shader hash seeding (no
+// Math.random / DataTexture) keep fixture replays byte-identical.
+// ---------------------------------------------------------------------------
+
+/** Stateless identity NDC camera for the deposit draw (positionNode writes clip
+ *  space directly). OrthographicCamera carries the updateProjectionMatrix the
+ *  WebGPU backend calls — the base Camera lacks it. */
+const PARTICLE_CAM = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+/** What a `particleState` step/spawn closure is handed to read the pool + clock. */
+export interface ParticleStepApi {
+  /** This particle's CURRENT state (rgba) — read posX,posY in .xy, velocity in .zw (your convention). */
+  self: ColorNode;
+  /**
+   * A deterministic hash in 0..1 seeded by THIS particle's index and the given
+   * salt (vary the salt per channel so x/y/vx/vy scatter independently). In the
+   * step closure the frame `phase` is folded in for per-frame jitter; in the
+   * spawn closure it is stable per particle.
+   */
+  rand: (salt: number) => Node<"float">;
+  /** Frame-clocked counter (whole frames) — deterministic motion, never TSL `time`. */
+  phase: Node<"float">;
+}
+
+export interface ParticleStateOpts {
+  /** Particle count (compile-time; packed into a ceil(√count)² texture). 256..1M-ish. */
+  count: number;
+  /** Per-particle initial state → vec4 (posX, posY, vx, vy by convention). Runs on seed + reseed + respawn. */
+  spawn: (api: ParticleStepApi) => ColorNode;
+  /** One integration step → the particle's next vec4 state. */
+  update: (api: ParticleStepApi) => ColorNode;
+  /**
+   * Return a value > 0.5 to RESPAWN this particle this frame (dead / out-of-bounds).
+   * The step shader picks `spawn` over `update` where this is high. Default: never.
+   */
+  respawn?: (api: ParticleStepApi) => Node<"float">;
+  /** Rising past 0.5 re-seeds the WHOLE pool (a trigger). */
+  reseed?: SignalLike;
+  /** Seed — deterministic so fixture replays are byte-identical. */
+  seed?: number;
+}
+
+export interface ParticleStateHandle {
+  /** Side length of the (square) state texture; particle i lives at texel (i%side, i/side). */
+  side: number;
+  /** Actual packed particle count (side²). */
+  count: number;
+  /** Load particle `idx`'s freshly-updated state (rgba) in a deposit shader — `textureLoad`, no VTF guesswork. */
+  load: (idx: Node<"int">) => ColorNode;
+  /** The simulation (seed + step) pass — runs BEFORE any deposit pass that calls `load`. */
+  pass: Pass;
+}
+
+/** A 0..1 hash from a vec2 node — deterministic per-particle seeding (no Math.random).
+ *  The inner coord is pre-reduced with `fract` so the `sin` argument never grows
+ *  past a few hundred — large args (uv*side*salt reaches 10^5+) collapse to a few
+ *  values under ANGLE/WebGL2 mediump and the pool clusters onto a sparse grid. */
+const hashNode = (p: Node<"vec2">): Node<"float"> => {
+  const q = fract(p.mul(0.1031));
+  const d = dot(q, vec2(127.1, 311.7)).add(q.x.mul(q.y).mul(1024));
+  return fract(sin(d).mul(43758.5453));
+};
+
+/**
+ * THE GPU particle-pool skeleton. Positions/velocities live in a ping-ponged
+ * HalfFloat texture; `update` advances them, `spawn`/`respawn` recycle them.
+ * Returns `load(idx)` so an additive instanced-`Points` deposit can pull each
+ * particle's position by `vertexIndex` (see `additiveDeposit`).
+ */
+export function particleState(ctx: BuildCtx, opts: ParticleStateOpts): ParticleStateHandle {
+  const want = Math.max(256, Math.min(1_048_576, Math.round(opts.count)));
+  const side = Math.ceil(Math.sqrt(want));
+  const count = side * side;
+  const seedSalt = ((opts.seed ?? 1337) % 997) + 1;
+
+  const rtOpts = { type: HalfFloatType, depthBuffer: false } as const;
+  const a = new RenderTarget(side, side, rtOpts);
+  const b = new RenderTarget(side, side, rtOpts);
+  for (const rt of [a, b]) {
+    rt.texture.minFilter = rt.texture.magFilter = NearestFilter; // exact per-particle texels, never blend
+  }
+  let read = a;
+  let write = b;
+
+  const phase = uniform(0); // frames — deterministic, never TSL time
+  const reseedU = ctx.uniformOf(opts.reseed ?? 0);
+
+  // Per-particle deterministic hash: index texel + a salt (and the fixed seed).
+  const stateSrc = texture(a.texture);
+  const self = stateSrc.sample(uv()) as ColorNode;
+  // Per-particle id = integer texel coords (0..side, bounded) offset by the seed,
+  // kept small so the hash's `sin` stays precise on WebGL2/ANGLE.
+  const idVec = floor(uv().mul(side)).add(float(seedSalt));
+  const mkApi = (withPhase: boolean): ParticleStepApi => ({
+    self,
+    phase: phase as unknown as Node<"float">,
+    rand: (salt: number) =>
+      hashNode(
+        idVec
+          .add(vec2(salt * 12.9898 + 1, salt * 78.233 + 1))
+          .add(withPhase ? (phase as unknown as Node<"float">) : float(0)),
+      ),
+  });
+
+  // Seed/spawn material (no frame variation in the base scatter → stable cloud).
+  const seedMat = new MeshBasicNodeMaterial();
+  seedMat.blending = NoBlending;
+  seedMat.colorNode = opts.spawn(mkApi(false));
+  const seedQuad = new QuadMesh(seedMat);
+
+  // Step material: respawn-or-update per particle (phase folded into rand for jitter).
+  const stepApi = mkApi(true);
+  const stepMat = new MeshBasicNodeMaterial();
+  stepMat.blending = NoBlending;
+  {
+    const updated = opts.update(stepApi);
+    if (opts.respawn) {
+      const dead = opts.respawn(stepApi).clamp(0, 1);
+      const respawned = opts.spawn(stepApi);
+      stepMat.colorNode = mix(updated, respawned, dead) as ColorNode;
+    } else {
+      stepMat.colorNode = updated;
+    }
+  }
+  const stepQuad = new QuadMesh(stepMat);
+
+  // Output loader for the deposit pass: textureLoad the freshly-written target.
+  const loadTex = texture(a.texture);
+  const load = (idx: Node<"int">): ColorNode => {
+    const sideI = int(side);
+    return textureLoad(loadTex, ivec2(idx.mod(sideI), idx.div(sideI))) as ColorNode;
+  };
+
+  let seeded = false;
+  let reseedWas = false;
+  const pass: Pass = {
+    render(renderer: WebGPURenderer, f: FrameCtx) {
+      phase.value = f.frame;
+      const prev = renderer.getRenderTarget();
+
+      const reseedHigh = (reseedU.value as number) > 0.5;
+      if (!seeded || (reseedHigh && !reseedWas)) {
+        renderer.setRenderTarget(read);
+        seedQuad.render(renderer);
+        seeded = true;
+      }
+      reseedWas = reseedHigh;
+
+      stateSrc.value = read.texture;
+      renderer.setRenderTarget(write);
+      stepQuad.render(renderer);
+      [read, write] = [write, read];
+
+      renderer.setRenderTarget(prev);
+      loadTex.value = read.texture; // freshly written this frame
+    },
+    dispose() {
+      a.dispose();
+      b.dispose();
+      seedMat.dispose();
+      stepMat.dispose();
+    },
+  };
+
+  return { side, count, load, pass };
+}
+
+/** What `additiveDeposit`'s colorNode closure is handed per particle. */
+export interface DepositApi {
+  /** This particle's freshly-updated state (rgba) from `particleState.load`. */
+  state: ColorNode;
+  /** This particle's index as an int node. */
+  index: Node<"int">;
+}
+
+export interface AdditiveDepositOpts {
+  /** The pool to draw. */
+  particles: ParticleStateHandle;
+  /**
+   * Particle position in 0..1 SCREEN space → vec2 (the pass flips Y to NDC for the
+   * active backend). Typically `api.state.xy` if you stored normalized positions.
+   */
+  positionUv: (api: DepositApi) => Node<"vec2">;
+  /**
+   * Per-particle additive RGB contribution → vec3 (added into the float buffer).
+   * Default: a faint white splat. Wire audio/age/velocity here for color + flash.
+   */
+  color?: (api: DepositApi) => Node<"vec3">;
+  /** Point sprite size in pixels (1..4 — small keeps the silk filamentary). Default 1. */
+  size?: number;
+  /** Accumulation buffer grid (fixed HalfFloat, 16:9). Default 1280×720. */
+  width?: number;
+  height?: number;
+  /**
+   * Tone-map the accumulated density → final vec4. Default: a soft
+   * `1 - exp(-d * exposure)` saturation. `exposureU` is a live uniform.
+   */
+  tone?: (density: ColorNode, exposureU: Node<"float">) => ColorNode;
+  /** Exposure for the default tone-map (higher = brighter silk). SignalLike. Default 1.5. */
+  exposure?: SignalLike;
+  /** Density carried frame-to-frame (0 = pure single-frame splat; >0 = glowing trails). SignalLike 0..0.98. Default 0. */
+  persistence?: SignalLike;
+}
+
+export interface AdditiveDepositHandle {
+  /** The tone-mapped silk color (vec4) — wrap in `texNode(color, [...particles.pass, deposit.pass])`. */
+  color: ColorNode;
+  /** The deposit + tone-map pass — append AFTER the pool's own pass. */
+  pass: Pass;
+}
+
+/**
+ * THE additive-accumulation skeleton: splat every particle (read by
+ * `vertexIndex → textureLoad`) into a HalfFloat buffer with ADDITIVE blending,
+ * optionally bleed the previous frame for trails, then tone-map → the glowing
+ * "silk"/smoke-of-points density. Pair with `particleState`. Handles the
+ * WebGL2-vs-WebGPU render-target Y orientation so positions land where the
+ * sim put them on both backends.
+ */
+export function additiveDeposit(ctx: BuildCtx, opts: AdditiveDepositOpts): AdditiveDepositHandle {
+  const { particles } = opts;
+  const W = Math.max(64, Math.round(opts.width ?? 1280));
+  const H = Math.max(64, Math.round(opts.height ?? 720));
+  const size = Math.max(1, Math.round(opts.size ?? 1));
+  const exposureU = ctx.uniformOf(opts.exposure ?? 1.5);
+  const persistU = ctx.uniformOf(opts.persistence ?? 0);
+  const flipY = uniform(1); // +1 WebGL2 (bottom-up RT), -1 WebGPU (top-down)
+
+  const rtOpts = { type: HalfFloatType, depthBuffer: false } as const;
+  let accA = new RenderTarget(W, H, rtOpts);
+  let accB = new RenderTarget(W, H, rtOpts);
+
+  // Deposit geometry: one vertex per particle; positionNode reads its texel.
+  const geo = new BufferGeometry();
+  geo.setAttribute("position", new BufferAttribute(new Float32Array(particles.count * 3), 3));
+  geo.setDrawRange(0, particles.count);
+
+  const depMat = new PointsNodeMaterial();
+  depMat.blending = AdditiveBlending;
+  depMat.depthTest = false;
+  depMat.depthWrite = false;
+  depMat.transparent = true;
+  depMat.size = size;
+  {
+    const idx = vertexIndex.toInt();
+    const state = particles.load(idx);
+    const api: DepositApi = { state, index: idx };
+    const p = opts.positionUv(api); // 0..1 screen space
+    const ndc = p.mul(2).sub(1);
+    depMat.positionNode = vec4(ndc.x, ndc.y.mul(flipY), 0, 1);
+    const rgb = opts.color ? opts.color(api) : (vec3(0.04, 0.04, 0.04) as unknown as Node<"vec3">);
+    depMat.colorNode = vec4(rgb, 1);
+  }
+  const depPoints = new Points(geo, depMat);
+  depPoints.frustumCulled = false;
+
+  // Fade-carry quad: bleed the previous accumulation forward (trails).
+  const carrySrc = texture(accA.texture);
+  const carryMat = new MeshBasicNodeMaterial();
+  carryMat.blending = NoBlending;
+  carryMat.colorNode = vec4(carrySrc.sample(uv()).rgb.mul(persistU), 1);
+  const carryQuad = new QuadMesh(carryMat);
+
+  // Tone-map the accumulated density to the visible silk.
+  const accSrc = texture(accA.texture);
+  const density = accSrc.sample(uv()) as ColorNode;
+  const expU = exposureU as unknown as Node<"float">;
+  // Soft Reinhard-ish tone-map: 1 - exp(-d * exposure), component-wise. TSL `exp`
+  // is component-wise at runtime; the cast satisfies the scalar-typed overload.
+  const faded = density.rgb.mul(expU).negate();
+  const tone =
+    opts.tone?.(density, expU) ??
+    (vec4(vec3(1, 1, 1).sub(exp(faded as unknown as Node<"float">) as unknown as Node<"vec3">), 1) as ColorNode);
+
+  const pass: Pass = {
+    render(renderer: WebGPURenderer, f: FrameCtx) {
+      flipY.value = (renderer.backend as { isWebGLBackend?: boolean }).isWebGLBackend ? 1 : -1;
+      const prev = renderer.getRenderTarget();
+      const prevAutoClear = renderer.autoClear;
+
+      // 1. Start the frame buffer: either cleared (persistence 0) or the bled-forward
+      //    previous frame (persistence > 0). Write into accB.
+      renderer.autoClear = false;
+      renderer.setRenderTarget(accB);
+      if ((persistU.value as number) > 0.001) {
+        carrySrc.value = accA.texture;
+        carryQuad.render(renderer); // overwrites accB with faded previous
+      } else {
+        renderer.setClearColor(0x000000, 1);
+        renderer.clear();
+      }
+
+      // 2. Additively splat the live particles on top.
+      renderer.render(depPoints, PARTICLE_CAM);
+      renderer.autoClear = prevAutoClear;
+
+      [accA, accB] = [accB, accA];
+      accSrc.value = accA.texture; // freshly accumulated this frame
+
+      renderer.setRenderTarget(prev);
+    },
+    dispose() {
+      accA.dispose();
+      accB.dispose();
+      geo.dispose();
+      depMat.dispose();
+      carryMat.dispose();
+    },
+  };
+
+  return { color: tone, pass };
 }
