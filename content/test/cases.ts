@@ -52,6 +52,7 @@ import { fireflies } from "../modules/sources/fireflies";
 import { image } from "../modules/sources/image";
 import { julia } from "../modules/sources/julia";
 import { mandelbrot } from "../modules/sources/mandelbrot";
+import { mandelbulb } from "../modules/sources/mandelbulb";
 import { noise } from "../modules/sources/noise";
 import { noiseField } from "../modules/sources/noiseField";
 import { noodles } from "../modules/sources/noodles";
@@ -103,6 +104,7 @@ export const CASES: Record<string, ModuleCase> = {
   image: (ctx) => image(ctx, { url: ASSET }),
   julia: (ctx) => julia(ctx, {}),
   mandelbrot: (ctx) => mandelbrot(ctx, {}),
+  mandelbulb: (ctx) => mandelbulb(ctx, {}),
   noise: (ctx) => noise(ctx, {}),
   noiseField: (ctx) => noiseField(ctx, { type: "perlin" }),
   noodles: (ctx) => noodles(ctx, { energy: ctx.input("kick") }),
