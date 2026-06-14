@@ -17,7 +17,7 @@ import {
   type InputsDef,
   type SceneDef,
 } from "@loom/runtime";
-import { DEFAULT_WS_PORT, type InstanceStatus, type ScreenshotResult } from "@loom/sidecar/protocol";
+import { DEFAULT_WS_PORT, type ScreenshotResult } from "@loom/sidecar/protocol";
 import { texture, vec4 } from "three/tsl";
 import { RenderTarget, WebGPURenderer } from "three/webgpu";
 import inputsDef from "../../../content/inputs";
@@ -25,6 +25,7 @@ import liveScene from "../../../content/scenes/live.scene";
 import panicScene from "../../../content/scenes/panic.scene";
 import { startBridge } from "./bridge";
 import { Compositor } from "./compositor";
+import { DebugSurface } from "./debug-surface";
 import { ProjectsController } from "./projects-controller";
 import { readTargetToDataUrl } from "./readback";
 import { startConsoleChannel } from "./console-channel";
@@ -35,56 +36,9 @@ import { FixtureService } from "./fixture-service";
 import { MidiRouter } from "./midi-router";
 import { PanicController } from "./panic-controller";
 import { getScenes } from "./scenes";
-import { entryStatus, SessionStore } from "./session";
+import { SessionStore } from "./session";
 import { StateClient, StateKey } from "./state";
 import { workerInterval } from "./worker-clock";
-
-declare global {
-  interface Window {
-    __loom?: {
-      sceneName: string | null;
-      audioMode: string;
-      bpm: number;
-      rms: number;
-      onsetCount: number;
-      instanceError: string | null;
-      frame: number;
-      fps: number;
-      /** Which clock drove the last frame: rAF (visible) or the worker fallback (hidden tab). */
-      clockSource?: "raf" | "worker";
-      live: string | null;
-      staged: string | null;
-      mix: number | null;
-      panicked: boolean;
-      /** Armed PANIC behavior ("hold" | "scene"). */
-      panicMode: "hold" | "scene";
-      /** Active PANIC mode, or null when not panicked. */
-      panicActive: "hold" | "scene" | null;
-      /** Designated Panic Scene name + build health. */
-      panicScene: { name: string; status: "ok" | "error"; error: string | null };
-      agentCommitArmed: boolean;
-      instances: Array<{
-        id: string;
-        scene: string;
-        status: InstanceStatus;
-        builds: number;
-        pinned: "panic" | null;
-        modulators: Array<{ path: string; type: string; error: string | null; enabled: boolean }>;
-        chain: Array<{ id: string; effect: string; kind: string; mix: number; enabled: boolean }>;
-        /** Costliest CPU signals (smoothed ms, desc) — per-signal cost attribution. */
-        slowSignals: Array<{ label: string; ms: number }>;
-      }>;
-      /** Input-rack channel values (rack meters / validation). */
-      inputs: Record<string, number>;
-      /** Global palette tunings (R7) — palette.<source>.<i> → "#rrggbb". */
-      palettes: Record<string, number | boolean | string>;
-      /** Mocked-hardware hook: feeds the same path as a real CC message. */
-      midiInject: (cc: number, ch: number, value01: number) => void;
-      /** Console (parent frame) forwards its click gesture here to unsuspend audio. */
-      resumeAudio: () => void;
-    };
-  }
-}
 
 const qs = new URLSearchParams(location.search);
 
@@ -465,29 +419,22 @@ const pendingShots: Array<{
   reject: (e: Error) => void;
 }> = [];
 
-window.__loom = {
-  sceneName: null,
-  audioMode: audio.mode,
-  bpm: timeBus.bpm,
-  rms: 0,
-  onsetCount: 0,
-  instanceError: null,
-  frame: 0,
-  fps: 0,
-  live: null,
-  staged: null,
-  mix: null,
-  panicked: false,
-  panicMode: "hold",
-  panicActive: null,
-  panicScene: panicController.info(),
-  agentCommitArmed: false,
-  instances: [],
-  inputs: {},
-  palettes: {},
-  midiInject: (cc, ch, value01) => midi.inject(cc, ch, value01),
-  resumeAudio: () => audio.resume(),
-};
+// The window.__loom debug surface validators read; built + installed here,
+// refreshed each frame by debug.update() (the heavy instances array throttled).
+// `armed` reads the EngineApi, constructed just below — a getter, called only
+// in-frame (after `api` exists).
+const debug = new DebugSurface({
+  audio,
+  timeBus,
+  fps,
+  stage,
+  session,
+  inputs,
+  palettes,
+  midi,
+  panicInfo: () => panicController.info(),
+  armed: () => ({ panicMode: api.armedPanicMode, agentCommitArmed: api.agentCommitArmed }),
+});
 
 trySwapLive(liveScene);
 // Build the warm panic instance alongside boot. A throw here leaves it in
@@ -647,39 +594,7 @@ const frameTick = (tMs: number): void => {
     job.done();
   }
 
-  const liveEntry = stage.live != null ? session.get(stage.live) : undefined;
-  const dbg = window.__loom!;
-  dbg.sceneName = liveEntry?.sceneName ?? null;
-  dbg.audioMode = audio.mode;
-  dbg.bpm = timeBus.bpm;
-  dbg.rms = audio.rms.get(f);
-  dbg.onsetCount = onsetCount;
-  dbg.instanceError = liveEntry?.instance.error != null ? String(liveEntry.instance.error) : null;
-  dbg.frame = f.frame;
-  dbg.fps = fps.current;
-  dbg.clockSource = document.hidden ? "worker" : "raf"; // which clock drove this frame
-  dbg.live = stage.live;
-  dbg.staged = stage.staged;
-  dbg.mix = currentMix;
-  dbg.panicked = stage.panicked;
-  dbg.panicMode = api.armedPanicMode;
-  dbg.panicActive = stage.panicActive;
-  dbg.panicScene = panicController.info();
-  dbg.agentCommitArmed = api.agentCommitArmed;
-  dbg.inputs = inputs.values();
-  dbg.palettes = palettes.manifest.values();
-  dbg.instances = [...session.entries.values()].map((e) => ({
-    id: e.id,
-    scene: e.sceneName,
-    status: entryStatus(e),
-    builds: e.builds,
-    pinned: e.pinned ?? null,
-    modulators: e.modulators
-      .list()
-      .map((m) => ({ path: m.path, type: m.spec.type, error: m.error, enabled: m.enabled })),
-    chain: e.chain.list(),
-    slowSignals: e.instance.slowSignals(),
-  }));
+  debug.update(f, { onsetCount, currentMix });
 };
 
 let lastRafAt = performance.now();
