@@ -10,9 +10,6 @@ import {
   FixturePlayer,
   InputRegistry,
   isFxPath,
-  isModBinding,
-  isPalettePath,
-  modTarget,
   Instance,
   MidiBus,
   ModulatorHost,
@@ -25,7 +22,6 @@ import {
   type FixtureData,
   type FrameCtx,
   type InputsDef,
-  type Param,
   type SceneDef,
 } from "@loom/runtime";
 import { DEFAULT_WS_PORT, type InstanceStatus, type ScreenshotResult } from "@loom/sidecar/protocol";
@@ -42,6 +38,7 @@ import { startConsoleChannel } from "./console-channel";
 import { EngineApi } from "./engine-api";
 import { FpsMeter } from "./fps";
 import { getEffectLibrary } from "./effects";
+import { MidiRouter } from "./midi-router";
 import { getScenes } from "./scenes";
 import { entryStatus, PREVIEW_H, PREVIEW_W, SessionStore } from "./session";
 import { fixtureKey, projectKey, repoStatePath, StateClient, StateDir, StateKey } from "./state";
@@ -231,69 +228,8 @@ const persist = {
   panicScene: () => state.save(StateKey.panic, () => ({ scene: panicSceneName })),
 };
 
-// MIDI routing: a CC completes a pending learn, then drives its bindings.
-// Absolute writes ride the same Manifest path as set_param; button modes
-// (set/cycle) fire per press; the "actions" pseudo-scene steps LIVE through
-// the tiles (wired to the EngineApi below once it exists — CCs can arrive
-// during the boot awaits, hence the late-bound holder).
-const ACTIONS = "actions";
-let onAction: (path: string) => void = () => {};
-
-function writeParam(scene: string, path: string, apply: (p: Param<unknown>) => void): void {
-  if (scene === "globals") {
-    const isPalette = isPalettePath(path);
-    const param = (isPalette ? palettes.manifest : inputs.manifest).get(path);
-    if (!param) return;
-    apply(param);
-    if (isPalette) persist.palettes();
-    else persist.globals();
-    return;
-  }
-  let touched = false;
-  for (const entry of session.entries.values()) {
-    if (entry.sceneName !== scene) continue;
-    const param = entry.instance.manifest.get(path);
-    if (param) {
-      apply(param);
-      touched = true;
-    }
-  }
-  if (touched) persist.scene(scene);
-}
-
-// "mod:<paramPath>" bindings pause/resume that param's modulator on every
-// instance of the scene (toggleEnabled is a safe no-op when none is attached).
-function setModEnabled(scene: string, paramPath: string, to: "toggle" | boolean): void {
-  if (scene === "globals") {
-    if (to === "toggle") globalsModulators.toggleEnabled(paramPath);
-    else if (globalsModulators.get(paramPath) != null) globalsModulators.setEnabled(paramPath, to);
-    persist.palettes();
-    return;
-  }
-  for (const entry of session.entries.values()) {
-    if (entry.sceneName !== scene) continue;
-    if (to === "toggle") entry.modulators.toggleEnabled(paramPath);
-    else if (entry.modulators.get(paramPath) != null) entry.modulators.setEnabled(paramPath, to);
-  }
-}
-
-midi.onCc((e) => {
-  const { learned } = bindings.handleCc(e, {
-    write: (scene, path, v01) => writeParam(scene, path, (p) => p.setNormalized(v01)),
-    setValue: (scene, path, value) => {
-      if (scene === ACTIONS) return onAction(path);
-      if (value === undefined) return; // a set binding without a target is inert
-      if (isModBinding(path)) return setModEnabled(scene, modTarget(path), value >= 0.5);
-      writeParam(scene, path, (p) => p.set(value));
-    },
-    cycle: (scene, path) => {
-      if (scene === ACTIONS) return onAction(path);
-      if (isModBinding(path)) return setModEnabled(scene, modTarget(path), "toggle");
-      writeParam(scene, path, (p) => p.cycle());
-    },
-  });
-  if (learned) persist.bindings();
-});
+// MIDI routing lives in MidiRouter (writeParam / setModEnabled / onCc) —
+// constructed and started below, once `session` exists.
 
 // The chainable-effect library (M6). Re-cached on an `./effects` hot-update so a
 // saved chain or an edited effect appears in the picker without a reload.
@@ -318,6 +254,11 @@ const session = new SessionStore(
   (scene) => tunedRanges.get(scene),
   (scene) => tunedColorSpaces.get(scene),
 );
+
+// CC handling (writeParam / setModEnabled / actions). `onAction` is late-bound
+// after the EngineApi exists; the CC subscription is live immediately.
+const midiRouter = new MidiRouter({ midi, session, inputs, palettes, globalsModulators, bindings, persist });
+midiRouter.start();
 
 // Effect-picker previews: fold a candidate effect over an instance's CURRENT
 // output (its already-rendered preview target — no extra scene render, so a live
@@ -853,7 +794,7 @@ const api = new EngineApi(
 
 // MIDI action bindings step LIVE through the tiles — a physical button press
 // is a human gesture, so this rides the human trust tier (no agent arming).
-onAction = (path) => {
+midiRouter.onAction = (path) => {
   if (path === "live.next") api.liveStep(1);
   else if (path === "live.prev") api.liveStep(-1);
 };
