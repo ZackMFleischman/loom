@@ -95,7 +95,10 @@ through a registered uniform updater that runs each frame (`BuildCtx.uniformOf`)
 - InputBus: `TimeBus` (BPM is manual — `?bpm=` or tap `t`; beat tracking is
   post-v1), `AudioBus` (mic, or synthetic test audio via `?audio=test` — also the
   automatic fallback when getUserMedia fails; feeds the same AnalyserNode path as
-  the mic), and `MidiBus` (WebMIDI CC state, hot-plug;
+  the mic. Voice-DSP — echo cancel / noise suppress / auto-gain — is requested
+  *off* so music reaches the analyser intact. Driving the rack from a network
+  stream like SonoBus via a virtual audio device: `docs/sonobus-audio.md`), and
+  `MidiBus` (WebMIDI CC state, hot-plug;
   `window.__loom.midiInject(cc, ch, v)` feeds the same path for mocked hardware).
 - The input rack: channels are code-defined in `content/inputs.ts`
   (`level`/`onset`/`cc` kinds), advanced once per frame by the engine

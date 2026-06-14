@@ -70,8 +70,19 @@ export class AudioBus implements AudioBusLike {
 
   async startMic(deviceId?: string): Promise<void> {
     this.stop();
+    // LOOM analyses *music*, not voice. Chrome enables echo cancellation,
+    // noise suppression and auto-gain by default, all of which pump levels and
+    // punch holes in the spectrum — they wreck beat/onset detection. Disable
+    // them so a clean signal (a real interface, or a virtual loopback device
+    // carrying e.g. a SonoBus stream) reaches the analyser intact.
     const constraints: MediaStreamConstraints = {
-      audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+      audio: {
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: 2,
+      },
     };
     this.micStream = await navigator.mediaDevices.getUserMedia(constraints);
     const ctx = this.ensureContext();
