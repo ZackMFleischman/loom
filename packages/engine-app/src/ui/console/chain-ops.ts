@@ -40,7 +40,8 @@ export function reorderStep(steps: BareStep[], from: number, to: number): BareSt
 
 /**
  * A step's tunable knobs: everything under `<prefix><id>.` except mix and
- * enabled, which render as dedicated rows at the top of the step card.
+ * enabled. mix renders as a dedicated row in the card body; enabled is the
+ * single enable control hoisted into the step header.
  */
 export function stepKnobs(
   manifest: Record<string, ParamDesc>,
@@ -51,4 +52,39 @@ export function stepKnobs(
   return Object.entries(manifest).filter(
     ([path]) => path.startsWith(head) && path !== `${head}mix` && path !== `${head}enabled`,
   );
+}
+
+const COLLAPSE_KEY = "loom.fxcollapsed";
+
+/**
+ * The set of collapsed FX-step keys, read from localStorage. A step is keyed by
+ * its `<prefix><id>` so the root chain and each layer node keep independent
+ * collapse state. Bad/absent storage yields an empty set (all expanded).
+ */
+export function loadCollapsed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSE_KEY);
+    if (raw == null) return new Set();
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? new Set(arr.filter((x): x is string => typeof x === "string")) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+/** Persist the collapsed-step set; storage failures are swallowed (no-op). */
+export function saveCollapsed(set: Set<string>): void {
+  try {
+    localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...set]));
+  } catch {
+    // collapse state just won't persist across reloads
+  }
+}
+
+/** Pure toggle: returns a NEW set with `key` flipped in/out of the collapsed set. */
+export function toggleCollapsed(set: Set<string>, key: string): Set<string> {
+  const next = new Set(set);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  return next;
 }

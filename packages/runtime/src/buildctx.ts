@@ -96,7 +96,9 @@ export class BuildCtx {
    * through the registry at pull time, so retuning/redefining a channel never
    * rebuilds this instance. Auto-declares a per-instance trim param
    * (`input.<name>.amount`) — trims, not overrides: the channel's detection
-   * meaning stays owned by the globals rack.
+   * meaning stays owned by the globals rack. The trim is flagged `hidden` so it
+   * stays out of the default params box (a scene never asked for it); it remains
+   * fully live and is revealed by the Console panel's advanced toggle.
    */
   input(name: string): Signal<number> {
     const reg = this.inputs;
@@ -108,6 +110,10 @@ export class BuildCtx {
         default: 1,
         min: 0,
         max: 2,
+        // Hidden from the default params box: a scene didn't ask for this knob,
+        // it's auto-added by consuming a channel. Still fully live (persisted,
+        // MIDI-bindable, modulatable) and revealed by the panel's advanced toggle.
+        hidden: true,
         description: `trim for input channel "${name}"`,
       });
     const chan = reg.signal(name);

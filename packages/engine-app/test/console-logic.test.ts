@@ -1,6 +1,15 @@
 import type { ChainStepInfo } from "@loom/sidecar/protocol";
-import { describe, expect, it } from "vitest";
-import { chainSteps, insertStep, removeStep, reorderStep, stepKnobs } from "../src/ui/console/chain-ops";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  chainSteps,
+  insertStep,
+  loadCollapsed,
+  removeStep,
+  reorderStep,
+  saveCollapsed,
+  stepKnobs,
+  toggleCollapsed,
+} from "../src/ui/console/chain-ops";
 import type { ParamDesc } from "../src/ui/engine-link";
 import { groupParams, splitRig } from "../src/ui/console/param-groups";
 
@@ -38,6 +47,29 @@ describe("groupParams", () => {
     expect(groups.has("halo")).toBe(true);
     expect(nodeIds.has("halo")).toBe(true);
     expect(parentOf.get("halo")).toBe("logo");
+  });
+
+  it("hides params flagged hidden by default but counts them", () => {
+    const m: Record<string, ParamDesc> = {
+      speed: f(),
+      "input.bass.amount": { ...f(), hidden: true },
+      "input.kick.amount": { ...f(), hidden: true },
+    };
+    const { flat, groups, hiddenCount } = groupParams(m, []);
+    expect(flat.map(([p]) => p)).toEqual(["speed"]);
+    expect(groups.has("input")).toBe(false); // the auto trim group never renders
+    expect(hiddenCount).toBe(2);
+  });
+
+  it("reveals hidden params (and groups them) when includeHidden is set", () => {
+    const m: Record<string, ParamDesc> = {
+      speed: f(),
+      "input.bass.amount": { ...f(), hidden: true },
+    };
+    const { flat, groups, hiddenCount } = groupParams(m, [], true);
+    expect(flat.map(([p]) => p)).toEqual(["speed"]);
+    expect(groups.get("input")!.map(([p]) => p)).toEqual(["input.bass.amount"]);
+    expect(hiddenCount).toBe(1); // still reported so the toggle stays available
   });
 });
 
@@ -90,5 +122,59 @@ describe("chain-ops", () => {
   it("stepKnobs returns knobs under the step prefix, excluding mix/enabled", () => {
     const m = manifest(["fx.glitch-1.mix", "fx.glitch-1.enabled", "fx.glitch-1.amount", "fx.blur-2.radius"]);
     expect(stepKnobs(m, "fx.", "glitch-1").map(([p]) => p)).toEqual(["fx.glitch-1.amount"]);
+  });
+});
+
+describe("fx-step collapse state", () => {
+  it("toggleCollapsed flips a key in/out without mutating the input", () => {
+    const start = new Set<string>(["fx.glitch-1"]);
+    const added = toggleCollapsed(start, "fx.blur-2");
+    expect([...added].sort()).toEqual(["fx.blur-2", "fx.glitch-1"]);
+    expect([...start]).toEqual(["fx.glitch-1"]); // original untouched
+
+    const removed = toggleCollapsed(added, "fx.glitch-1");
+    expect([...removed]).toEqual(["fx.blur-2"]);
+  });
+
+  describe("load/save persistence", () => {
+    // The engine-app vitest env is "node" (no DOM) — install a minimal
+    // localStorage so the storage-backed helpers can round-trip.
+    const store = new Map<string, string>();
+    const fakeStorage = {
+      getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+      clear: () => store.clear(),
+      key: () => null,
+      length: 0,
+    };
+    beforeEach(() => {
+      store.clear();
+      (globalThis as { localStorage?: unknown }).localStorage = fakeStorage;
+    });
+    afterEach(() => {
+      delete (globalThis as { localStorage?: unknown }).localStorage;
+    });
+
+    it("loadCollapsed is empty when nothing is stored", () => {
+      expect(loadCollapsed().size).toBe(0);
+    });
+
+    it("saveCollapsed → loadCollapsed round-trips the key set", () => {
+      saveCollapsed(new Set(["fx.glitch-1", "logo.fx.blur-2"]));
+      expect([...loadCollapsed()].sort()).toEqual(["fx.glitch-1", "logo.fx.blur-2"]);
+    });
+
+    it("loadCollapsed tolerates corrupt JSON and non-array payloads", () => {
+      store.set("loom.fxcollapsed", "{not json");
+      expect(loadCollapsed().size).toBe(0);
+      store.set("loom.fxcollapsed", JSON.stringify({ a: 1 }));
+      expect(loadCollapsed().size).toBe(0);
+    });
+
+    it("loadCollapsed drops non-string entries", () => {
+      store.set("loom.fxcollapsed", JSON.stringify(["fx.ok", 3, null, "fx.also"]));
+      expect([...loadCollapsed()].sort()).toEqual(["fx.also", "fx.ok"]);
+    });
   });
 });

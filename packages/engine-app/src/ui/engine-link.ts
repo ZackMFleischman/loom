@@ -19,6 +19,9 @@ export type ParamDesc = {
   /** Channel letter for a channel param: "h"/"s"/"v" or "r"/"g"/"b". */
   channel?: string;
   description?: string;
+  /** Hidden from the default params box (e.g. the auto-added input trim); the
+   *  panel's "advanced" toggle reveals it. Stays fully live regardless. */
+  hidden?: boolean;
   /** Active modulator config, or null when the param is hand-driven (FR-8). */
   modulator?: Record<string, unknown> | null;
   /** Author-declared [min, max]; present only when the live range was overridden. */

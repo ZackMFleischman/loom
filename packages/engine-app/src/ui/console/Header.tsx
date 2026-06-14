@@ -13,6 +13,7 @@ import {
 } from "@mui/material";
 import { useEffect, useRef, useState } from "react";
 import type { PanicMode, SessionSnapshot } from "@loom/sidecar/protocol";
+import { useRenderFps } from "../fps-meter";
 import { useEngine } from "../hooks";
 import { mono } from "../theme";
 import { fail, primeMidiPermission } from "../util";
@@ -27,6 +28,8 @@ type Props = {
 
 export function Header({ session: s, onToggleRack, previewing, onTogglePreview }: Props) {
   const link = useEngine();
+  // The Console's own paint rate — independent of the engine's output fps below.
+  const uiFps = useRenderFps();
   return (
     <Stack
       direction="row"
@@ -54,14 +57,24 @@ export function Header({ session: s, onToggleRack, previewing, onTogglePreview }
         onClick={() => void link.req("set_transport", { tap: true }).catch(fail)}
         sx={{ fontFamily: mono, px: 1 }}
       >
-        <Box component="b" id="bpm" sx={{ fontSize: 13 }}>{s.bpm.toFixed(0)}</Box>
+        <Box component="b" id="bpm" sx={{ fontSize: 13 }}>
+          {s.bpm.toFixed(0)}
+        </Box>
         <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
           BPM
         </Typography>
       </Button>
       <Box
         title="audio level"
-        sx={{ width: 80, height: 8, bgcolor: "#0006", border: 1, borderColor: "divider", borderRadius: "4px", overflow: "hidden" }}
+        sx={{
+          width: 80,
+          height: 8,
+          bgcolor: "#0006",
+          border: 1,
+          borderColor: "divider",
+          borderRadius: "4px",
+          overflow: "hidden",
+        }}
       >
         <Box
           id="rmsfill"
@@ -71,7 +84,9 @@ export function Header({ session: s, onToggleRack, previewing, onTogglePreview }
       </Box>
       <AudioPicker session={s} />
       <MidiStatus midi={s.midi} />
-      <Button onClick={onToggleRack} title="input rack (i)">RACK</Button>
+      <Button onClick={onToggleRack} title="input rack (i)">
+        RACK
+      </Button>
       <Button
         id="previewbtn"
         variant={previewing ? "contained" : "text"}
@@ -82,16 +97,44 @@ export function Header({ session: s, onToggleRack, previewing, onTogglePreview }
       </Button>
       <ProjectsControl session={s} />
       <Box sx={{ flex: 1 }} />
-      <Typography id="fps" title="render rate · frame counter" sx={{ fontFamily: mono, fontSize: 14, fontWeight: 700 }}>
+      {/* Two independent meters: the Output window's render rate (engine, from
+          the snapshot) and the Console's own paint rate (this React app). When
+          the Console janks while Output stays smooth, the gap shows it here. */}
+      <Typography
+        id="uifps"
+        title="Console UI paint rate — this app's own render loop (independent of the Output engine)"
+        sx={{
+          fontFamily: mono,
+          fontSize: 14,
+          fontWeight: 700,
+          color: uiFps > 0 && uiFps < 30 ? "warning.main" : "text.primary",
+        }}
+      >
+        {uiFps.toFixed(0)}
+        <Box component="span" sx={{ color: "text.secondary", fontSize: 11, fontWeight: 400 }}>
+          {" ui"}
+        </Box>
+      </Typography>
+      <Typography
+        id="fps"
+        title="Output window render rate · frame counter (engine)"
+        sx={{ fontFamily: mono, fontSize: 14, fontWeight: 700 }}
+      >
         {s.fps.toFixed(0)}
         <Box component="span" sx={{ color: "text.secondary", fontSize: 11, fontWeight: 400 }}>
-          {` fps · f${s.frame}`}
+          {` out · f${s.frame}`}
         </Box>
       </Typography>
       <Button component="a" href="/" target="_blank" rel="noopener" title="open the Output window in a new tab">
         output ⧉
       </Button>
-      <Button component="a" href="/staged.html" target="_blank" rel="noopener" title="open the staged preview in a new tab">
+      <Button
+        component="a"
+        href="/staged.html"
+        target="_blank"
+        rel="noopener"
+        title="open the staged preview in a new tab"
+      >
         staged ⧉
       </Button>
       <PanicControls session={s} />
@@ -143,7 +186,9 @@ function ProjectsControl({ session: s }: { session: SessionSnapshot }) {
           {s.projects.length > 0 ? "load project…" : "(no projects)"}
         </option>
         {s.projects.map((p) => (
-          <option key={p} value={p}>{p}</option>
+          <option key={p} value={p}>
+            {p}
+          </option>
         ))}
       </NativeSelect>
       <Button id="projsave" title="save the current instance set as a project" onClick={() => setSaveOpen(true)}>
@@ -250,16 +295,16 @@ function PanicControls({ session: s }: { session: SessionSnapshot }) {
             scene-panic cuts to. Spawn + tune a tile, then designate it here. */}
         {safeId == null && <option value="">(none)</option>}
         {s.instances.map((i) => (
-          <option key={i.id} value={i.id}>{i.id} · {i.scene}</option>
+          <option key={i.id} value={i.id}>
+            {i.id} · {i.scene}
+          </option>
         ))}
       </NativeSelect>
       <Button
         id="panic"
         color="error"
         variant={s.panicked ? "contained" : "outlined"}
-        onClick={() =>
-          void link.req(s.panicked ? "resume" : "panic", s.panicked ? {} : { mode }).catch(fail)
-        }
+        onClick={() => void link.req(s.panicked ? "resume" : "panic", s.panicked ? {} : { mode }).catch(fail)}
         sx={{ fontWeight: 700, fontSize: 15, px: 2.5 }}
       >
         {s.panicked ? "RESUME" : "PANIC"}
@@ -278,9 +323,7 @@ function AudioPicker({ session: s }: { session: SessionSnapshot }) {
     if (s.audioMode === "test") {
       setValue("test");
     } else if (s.audioMode === "mic") {
-      setValue((v) =>
-        v.startsWith("mic:") ? v : s.audioDevices[0] ? `mic:${s.audioDevices[0].id}` : v,
-      );
+      setValue((v) => (v.startsWith("mic:") ? v : s.audioDevices[0] ? `mic:${s.audioDevices[0].id}` : v));
     }
   }, [s.audioMode, s.audioDevices, focused]);
   return (
@@ -299,7 +342,9 @@ function AudioPicker({ session: s }: { session: SessionSnapshot }) {
     >
       <option value="test">test signal</option>
       {s.audioDevices.map((d) => (
-        <option key={d.id} value={`mic:${d.id}`}>{d.label}</option>
+        <option key={d.id} value={`mic:${d.id}`}>
+          {d.label}
+        </option>
       ))}
     </NativeSelect>
   );
@@ -331,7 +376,8 @@ function MidiStatus({ midi }: { midi: SessionSnapshot["midi"] }) {
           setMonitorOpen(true);
         }}
         sx={{
-          color: midi.status !== "ready" ? "warning.main" : midi.devices.length === 0 ? "text.secondary" : "text.primary",
+          color:
+            midi.status !== "ready" ? "warning.main" : midi.devices.length === 0 ? "text.secondary" : "text.primary",
           cursor: "pointer",
           textDecoration: midi.status !== "ready" ? "underline dotted" : "none",
         }}

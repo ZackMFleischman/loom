@@ -58,6 +58,8 @@ function harness(directive: StageDirective = { mode: "single", live: "boot" }) {
     debug: { update: tag("debug")() },
     captureLiveMirror: () => log.push("mirror"),
     tickPreview: () => log.push("preview-overlay"),
+    previewRoute: () => null,
+    mirrorPreviewCanvas: () => log.push("preview-canvas"),
     workerInterval: () => () => {},
   } as unknown as RenderServiceDeps;
   return { svc: new RenderService(deps), deps, log };
@@ -85,10 +87,11 @@ describe("RenderService.tick ordering", () => {
       "cull",
       "modulators",
       "globalsMods",
+      "preview-overlay",
       "render",
       "mirror",
+      "preview-canvas",
       "fps",
-      "preview-overlay",
       "screenshot",
       "preview",
       "preview-done",

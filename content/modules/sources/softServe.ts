@@ -1,5 +1,5 @@
 import { BuildCtx, defineModule, texNode, type SignalLike, type TexNode } from "@loom/runtime";
-import { clamp, float, max, mix, pow, sin, smoothstep, uv, vec3, vec4 } from "three/tsl";
+import { clamp, float, max, mix, pow, sin, smoothstep, sqrt, uv, vec3, vec4 } from "three/tsl";
 import { surfaceAspect } from "../_shared";
 
 const TAU = Math.PI * 2;
@@ -29,6 +29,8 @@ export interface SoftServeOpts {
   stream?: SignalLike;
   /** Wobble drive — feed a bass/kick signal so the cream shivers. */
   energy?: SignalLike;
+  /** Rounded base sink — how far the cream bottom bulges DOWN below `baseY` at center, so it plugs a cone mouth (0 = flat cut). */
+  baseDip?: SignalLike;
 }
 
 /**
@@ -38,7 +40,7 @@ export interface SoftServeOpts {
  * ice cream that's always getting more added. Vanilla by default, shaded with
  * a crest highlight and base occlusion. Premultiplied alpha (drops onto a cone
  * via `over`), pure, frame-clocked. The base/tip layout is shared with
- * `wafffleCone` and `sprinkles` so a scene can stack them into one cone.
+ * `waffleCone` and `sprinkles` so a scene can stack them into one cone.
  */
 export const softServe = defineModule(
   {
@@ -63,12 +65,13 @@ export const softServe = defineModule(
     const gloss = ctx.uniformOf(opts.gloss ?? 0.7);
     const stream = ctx.uniformOf(opts.stream ?? 0.6);
     const energy = ctx.uniformOf(opts.energy ?? 0);
+    const baseDip = ctx.uniformOf(opts.baseDip ?? 0);
 
     // Frame-clock time, NOT TSL `time` (wall clock) — keeps fixture replays deterministic.
     const t = ctx.uniformOf(ctx.time.now);
     const live = energy.mul(0.6).add(1);
     const x = uv().x.sub(0.5).mul(surfaceAspect());
-    const y = uv().y;
+    const y = float(1).sub(uv().y); // engine renders uv-y=0 at the top; flip so up-on-screen is up-in-math
     const span = float(tipY - baseY);
     const s = y.sub(baseY).div(span); // 0 at base, 1 at tip (outside the band beyond)
     const sc = clamp(s, 0, 1);
@@ -85,7 +88,12 @@ export const softServe = defineModule(
     const w = width.mul(taper).mul(coil.mul(ridge).mul(0.18).mul(live).add(1)).max(1e-3);
 
     const dx = x.sub(xc).abs();
-    const inY = smoothstep(float(-0.02), float(0.02), s).mul(smoothstep(float(1.04), float(0.95), s));
+    // Rounded base: the cream bottom bulges DOWN by `baseDip` at center (a convex
+    // plug that sinks into the cone mouth), tapering to a flat cut at the edges.
+    const bn = x.sub(xc).div(width).clamp(-1, 1);
+    const dipS = baseDip.div(span).mul(sqrt(float(1).sub(bn.mul(bn)).max(0)));
+    const sBottom = float(0).sub(dipS);
+    const inY = smoothstep(sBottom.sub(0.02), sBottom.add(0.02), s).mul(smoothstep(float(1.04), float(0.95), s));
     const body = smoothstep(w, w.mul(0.84), dx).mul(inY);
 
     const nx = clamp(dx.div(w), 0, 1);

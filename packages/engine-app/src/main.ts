@@ -474,6 +474,8 @@ const renderService = new RenderService({
   debug,
   captureLiveMirror: (mode) => api.captureLiveMirror(mode),
   tickPreview: (mode, currentFps) => api.tickPreview(mode, currentFps),
+  previewRoute: () => api.previewRoute(),
+  mirrorPreviewCanvas: () => api.mirrorPreviewCanvas(),
   workerInterval,
 });
 
@@ -483,6 +485,7 @@ const api: EngineApi = new EngineApi(
   {
     renderer,
     canvas,
+    renderSize: { width: RENDER_W, height: RENDER_H },
     session,
     stage,
     audio,

@@ -1,7 +1,7 @@
 import type { Clock, FrameCtx, ModulatorHost, PaletteRegistry, Stage, StageDirective } from "@loom/runtime";
 import type { WebGPURenderer } from "three/webgpu";
 import type { ScreenshotResult } from "@loom/sidecar/protocol";
-import type { Compositor } from "./compositor";
+import type { Compositor, PreviewRoute } from "./compositor";
 import type { DebugSurface } from "./debug-surface";
 import type { FpsMeter } from "./fps";
 import type { SessionStore } from "./session";
@@ -40,6 +40,10 @@ export interface RenderServiceDeps {
   captureLiveMirror: (mode: StageDirective["mode"]) => void;
   /** EngineApi hook: full-res preview overlay + fps auto-reduction ladder. */
   tickPreview: (mode: StageDirective["mode"], fps: number) => void;
+  /** EngineApi hook: the full-res preview route the compositor renders into (null when not previewing a sandbox). */
+  previewRoute: () => PreviewRoute | null;
+  /** EngineApi hook: mirror the live canvas into the preview source when the LIVE instance is being previewed. */
+  mirrorPreviewCanvas: () => void;
   /** Worker-clock factory (background-tab fallback). */
   workerInterval: (cb: () => void, ms: number) => () => void;
 }
@@ -53,11 +57,14 @@ export interface RenderServiceDeps {
  * FRAME ORDERING IS LOAD-BEARING — never-go-black depends on it. Within a tick:
  *
  *   advance clocks/buses → record fixture → stage.tick → CULL → modulators →
- *   RENDER (compositor) → MIRROR (live tile) → fps → preview-overlay →
- *   SCREENSHOT (live canvas read) → PREVIEW (effect-picker) → debug surface
+ *   PREVIEW-ROUTE (tickPreview) → RENDER (compositor) → MIRROR (live tile) →
+ *   MIRROR (preview canvas) → fps → SCREENSHOT (live canvas read) →
+ *   PREVIEW (effect-picker) → debug surface
  *
  *   - CULL runs before RENDER so a culled instance is never referenced by this
  *     frame's directive (it can't be: it isn't live).
+ *   - The preview ROUTE is decided before RENDER so the compositor redirects the
+ *     previewed sandbox into the full-res target that same frame.
  *   - Modulators write CPU-side BEFORE any leg renders (hold freezes them).
  *   - The SCREENSHOT canvas read happens in the same task as the render (the
  *     drawing buffer is only readable then), and BEFORE the effect-picker
@@ -163,12 +170,16 @@ export class RenderService {
     // Global palette color-channel modulators (R7.4) write the stops before any
     // leg reads them; hold freezes their phase like instance modulators (FR-10).
     if (directive.mode !== "hold") d.globalsModulators.tick(d.palettes.manifest, f);
-    d.compositor.render(d.renderer, f, directive, d.session);
-    d.captureLiveMirror(directive.mode); // same-task canvas read for the live tile
-    d.fps.tick();
-    // Full-res preview overlay: resize the previewed sandbox target / mirror the
-    // live canvas, and run the fps auto-reduction ladder (same task as the render).
+    // Full-res preview overlay: decide the route (which previewed sandbox renders
+    // into the fixed full-res preview target) and run the fps ladder BEFORE the
+    // render, so the route takes effect this frame.
     d.tickPreview(directive.mode, d.fps.current);
+    d.compositor.render(d.renderer, f, directive, d.session, d.previewRoute());
+    d.captureLiveMirror(directive.mode); // same-task canvas read for the live tile
+    // Mirror the live canvas into the preview source when the LIVE instance is the
+    // one being previewed (must follow the render — the canvas is readable here).
+    d.mirrorPreviewCanvas();
+    d.fps.tick();
 
     if (this.pendingShots.length > 0) {
       const waiting = this.pendingShots.splice(0);

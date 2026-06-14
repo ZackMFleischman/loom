@@ -1297,3 +1297,109 @@ thin composition root (~615 lines) + testable units, extracted **one per commit*
 - Cleared shipped feature-request: `architecture-refactor-render-path.md`.
 - Gates: typecheck + `pnpm test` (771) + `pnpm lint` green; `pnpm validate` not
   run (sandbox egress) — real-GPU validate is the remaining eyes-on check.
+
+## Hide the auto per-instance input trim from the default params box (2026-06-13)
+
+- **What the param is.** When a scene calls `ctx.input("bass")`, `BuildCtx.input`
+  auto-declares a per-instance float `input.<name>.amount` (default 1, range 0..2)
+  on that instance's manifest and returns `channel × trim`. It's a *per-instance*
+  scale on the named rack channel — distinct from the *global* `inputs.<name>.gain`
+  (which the rack already exposes on the "globals" pseudo-instance and which scales
+  the channel for every consumer + its meter/detection). In the Console it surfaced
+  as an `input` accordion with one slider per consumed channel — a knob the scene
+  author never wrote, appearing on every audio-reactive scene. The owner found this
+  distracting and asked whether it should "just be managed by the audio rack."
+- **Options weighed.** (a) Remove the auto-trim entirely and rely on global gain —
+  rejected as too destructive for a conservative pass: it silently changes the value
+  every scene reads (currently `channel × trim`), drops a real capability (per-
+  instance scaling, which global gain can't express), and would orphan any persisted/
+  MIDI-bound/modulated `input.*.amount` in `content/state/`. (b) Keep the engine
+  behavior but flag the param so the default params box omits it — chosen. (c) special-
+  case `input.*` paths in the Console — rejected in favor of a general flag.
+- **Decision + why.** Added a generic, reusable `hidden` param-meta flag (param.ts
+  `RangedSpec`, serialized via the existing `specMeta`/`toJSON` spread) and set it on
+  the auto-trim in `BuildCtx.input`. The Console's `groupParams` drops hidden params
+  by default and reports `hiddenCount`; `ParamPanel` shows a persisted "▸ advanced (n)"
+  toggle that reveals them. This removes the clutter (the actual complaint) while the
+  value path is **byte-for-byte unchanged** — at the default trim=1 nothing moves on
+  screen, persisted tunings still apply, and the knob stays fully `set_param`-able,
+  MIDI-bindable and modulatable. Fully reversible, non-breaking.
+- **Touched.** runtime: `param.ts` (flag + schema), `buildctx.ts` (set flag + doc).
+  sidecar: `protocol.ts` (`hidden` on `ParamDescriptor`; `looseObject` already passed
+  it). engine-app: `engine-link.ts` (`ParamDesc.hidden`), `param-groups.ts` (filter +
+  count), `ParamPanel.tsx` (advanced toggle). Docs: `.claude/CLAUDE.md` rule 7. Tests:
+  `param.test.ts`, `inputs.test.ts`, `console-logic.test.ts`.
+- **Generality.** `hidden` is now available to any future auto-machinery param, not
+  just the input trim. It is a UI-default-visibility hint only — it changes nothing
+  about clamping, persistence, MIDI, or modulation.
+- Gates: typecheck + `pnpm lint` (no new errors; pre-existing advisory warnings only)
+  + `pnpm test` green (runtime 239 · sidecar 35 · engine-app 39 · content 434 ·
+  scripts 11). validate suites not run (sandbox egress blocks Playwright chromium;
+  CI/preview is the eyes-on check, per prior entries).
+
+## FPS counters (Console + Output + per-tile) — 2026-06-13
+
+Three visible FPS readouts, reusing the engine's existing fps/frameMs rather than
+adding engine plumbing:
+- **Console UI paint rate (new):** `FrameRateCounter` (pure, rolling-window) +
+  `useRenderFps()` rAF hook in `packages/engine-app/src/ui/fps-meter.ts`. The
+  Console is a React app whose paint loop is independent of the engine render
+  loop, so its jank was previously unmeasured. Shown as `#uifps` in the Header
+  next to the engine readout.
+- **Output window fps:** already in `SessionSnapshot.fps` (from the engine's
+  `FpsMeter`, gated visible by `?hud=1` in the Output). Surfaced in the Console
+  Header as `#fps`, relabeled "out" to distinguish it from the new "ui" meter.
+- **Per-tile fps:** `tileFps(frameMs, engineFps, frozen)` — every instance renders
+  once per engine frame, so a tile's throughput is the engine fps capped by its
+  own CPU budget (`1000/frameMs`); a frozen (errored) instance reads 0. Shown on
+  each grid Tile (`.tilefps`) and in PreviewMode's header (`#preview-fps`)
+  alongside the existing `frameMs`. No new engine/protocol fields.
+
+**Perf findings (investigated; NOT fixed here to avoid destabilizing — sibling
+PRs concurrently edit Header + FxChain):**
+- The Console re-renders its whole tree on every engine **state** broadcast
+  (`STATE_MS = 100`, ~10 Hz): `useEngineState()` returns a fresh snapshot object
+  each tick (`engine-link.ts` `onMessage`/state), so `ConsoleApp` and all
+  descendants (Header, StageStrip, TileGrid, every Tile, ParamPanel) re-render
+  10×/s regardless of what changed. This is the dominant Console CPU cost. Safe
+  future fix: memoize tiles (`React.memo` on `Tile` keyed by the fields it reads)
+  and/or split the snapshot into narrower external-store selectors so a tile only
+  re-renders when its own instance changes — deferred because it touches the
+  shared render path the sibling PRs are also editing.
+- Thumbnails are a separate ~6.6 Hz store (`THUMBS_MS = 150`) already isolated via
+  `useThumb`; good as-is.
+- Dropdown/popover open-delay is consistent with MUI Menu/Popover mounting heavy
+  children *while* the 10 Hz re-render storm competes for the main thread —
+  i.e. a symptom of the re-render cost above, not an independent bug. The
+  `STATUS_BREAKPOINT` crash could not be reproduced headlessly (no WebGPU adapter
+  in headless Chromium); reasoned from code — most likely GPU/driver-side under
+  many simultaneous live preview canvases, outside this PR's scope.
+- Gates: `pnpm typecheck`, `pnpm lint` (no new errors — 37 pre-existing warnings
+  unchanged), `pnpm test` (engine-app 46, +9 new fps-meter tests) all green.
+
+## 2026-06-13 — Console preview fidelity + header declutter
+
+- **Console preview now renders at the LIVE resolution, not a fluctuating one.**
+  Root cause of the "preview doesn't match live / params break" bug: the preview
+  resized the previewed sandbox instance's OWN render target through an
+  fps-adaptive ladder (1080→720→540→360). Destination-sized stateful passes
+  (`layerRig`, `transform`, feedback, render3d) re-size/reset their buffers off
+  the target, and `screenSize`/`surfaceAspect` are resolution-dependent — so the
+  audition looked different from the fixed-1080p live canvas and params driving
+  those passes thrashed. Fix: a dedicated fixed full-res `previewRT` (RENDER_W×
+  RENDER_H); the compositor redirects the previewed NON-live instance there
+  (`PreviewRoute`, replacing its thumbnail render — one render, never a second/
+  stateful pass; live/crossfade/panic legs untouched, so "never go black" holds).
+  The fps ladder now only caps the **JPEG downscale** of the readback, never the
+  render — bandwidth/readback still throttle under load, pixels stay faithful.
+  The live instance keeps its canvas-mirror path (now full-res, downscaled at
+  JPEG time). `set_preview` no longer mutates entry targets.
+- **PreviewMode header declutter:** dropped the duplicated `#preview-stage` /
+  `#preview-golive` buttons — the ParamPanel rendered in the same overlay already
+  carries `#panel-stage` / `#panel-golive` as the single source. No validator
+  references the removed ids. Console main header / `StageStrip` (`#commit`,
+  `#unstage`, `#stagestrip`, drop-to-go-live) untouched — left for the sibling
+  Console PRs (FPS / FxChain) to avoid conflicts.
+- Gates: `pnpm typecheck`, `pnpm lint` (no new diagnostics), `pnpm test` green
+  (engine-api preview tests rewritten to assert the fixed-res route + no target
+  resize). GPU acceptance validators (m3/m4 preview paths) not run here.

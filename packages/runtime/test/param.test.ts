@@ -114,6 +114,15 @@ describe("Param / Manifest", () => {
     expect(j.source!.labels).toEqual(["primary", "secondary", "own"]);
   });
 
+  it("carries the hidden flag through to JSON, and omits it when unset", () => {
+    const m = new Manifest();
+    m.float("trim", { default: 1, min: 0, max: 2, hidden: true });
+    m.float("plain", { default: 0, min: 0, max: 1 });
+    const j = m.toJSON() as Record<string, Record<string, unknown>>;
+    expect(j.trim!.hidden).toBe(true);
+    expect("hidden" in j.plain!).toBe(false); // undefined optionals are dropped
+  });
+
   describe("editable ranges", () => {
     it("setRange widens the clamp and re-exposes the new bounds", () => {
       const m = new Manifest();

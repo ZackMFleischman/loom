@@ -78,7 +78,7 @@ export const sprinkles = defineModule(
 
     // x is aspect-corrected & centered; y stays in uv — matches softServe's frame.
     const px = uv().x.sub(0.5).mul(surfaceAspect());
-    const py = uv().y;
+    const py = float(1).sub(uv().y); // flip to match softServe/waffleCone (engine uv-y=0 is screen top)
     // Frame-clock time, NOT TSL `time` (wall clock) — keeps fixture replays deterministic.
     const t = ctx.uniformOf(ctx.time.now);
     const span = float(tipY - baseY);
