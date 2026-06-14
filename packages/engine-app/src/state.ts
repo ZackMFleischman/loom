@@ -22,8 +22,6 @@ export const StateKey = {
   paletteMods: "palette-mods",
   /** MIDI-learn bindings keyed by scene. */
   bindings: "bindings",
-  /** The designated Panic Scene name. */
-  panic: "panic",
   /** Per-scene tuned param values. */
   sceneValues: (scene: string): string => `values/${scene}`,
   /** Per-scene slider range overrides — load BEFORE the matching `sceneValues`. */

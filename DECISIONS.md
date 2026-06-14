@@ -1403,3 +1403,54 @@ PRs concurrently edit Header + FxChain):**
 - Gates: `pnpm typecheck`, `pnpm lint` (no new diagnostics), `pnpm test` green
   (engine-api preview tests rewritten to assert the fixed-res route + no target
   resize). GPU acceptance validators (m3/m4 preview paths) not run here.
+
+## 2026-06-13 — PANIC + safe-scene redesign (no default hatch; opt-in scene-panic; split button)
+
+Implements `feature-requests/panic-safe-scene-redesign.md`. Removes the
+boot-default warm "panic" instance and the boring `safe.scene`; PANIC now boots
+armed **hold** and **scene-panic is opt-in** — available only once the human
+designates an existing instance as the SAFE target. The Console's `HOLD | SAFE
+SCENE` button-group + loose `<select>` collapse into a single **PANIC split
+button** (`#panic` + a `▾` `#panicmenu`). The engine's panic *machinery* is
+unchanged (output-override scene-panic, hold-fallback, hold→scene escalation,
+destroy/rename protection, human-only trust tier).
+
+- **No engine logic change for "default hold" (resolved-decision #1).** The
+  engine already booted hold and already degraded a target-less scene-arm to
+  hold; the feature is achieved by *removing* the boot build, not adding logic.
+  `main.ts` drops the unconditional `panicController.tryBuild(panicScene)`, the
+  persisted-pick re-point, the `panic.scene` import, and `initialSceneName`.
+- **PanicController is now designation-only.** `PANIC_ID`/`tryBuild`/the warm
+  hatch lifecycle are gone; it owns only the runtime ⛑ designation
+  (`setInstance`) over existing instances and a health surface derived from the
+  designated instance's live `instance.error`. `instanceId()` returns null until
+  designated (or when the designated target has frozen), so the engine falls
+  back to hold (FR-7) exactly as before.
+- **Clean "none" status (Q + Phase 2).** `PanicSceneInfo.status` gains `"none"`
+  (no target designated) distinct from `"error"` (designated but broken). The
+  Console reads `"none"` as "pick a SAFE target" and `"error"` as the ⚠; an
+  agent reads either as "scene-panic can't fire → PANIC holds." Snapshot +
+  `window.__loom` carry it unchanged in shape otherwise.
+- **Designation is NOT persisted (NFR-2 — changes the 2026-06-12 decision).** A
+  runtime designation over an ephemeral instance id can't auto-rebuild without
+  the pointer-scene concept, so a fresh session boots to hold and the human
+  re-designates per session. `StateKey.panic` and its load/save are removed.
+- **Deleted `content/scenes/safe.scene.ts` AND `panic.scene.ts` (Q1).** The
+  `live.scene.ts`-twin pointer is vestigial with runtime-only designation; both
+  files and the pointer concept are dropped. The scene-barrel HMR block no
+  longer special-cases a pinned hatch (a designated target is an ordinary
+  instance: it rebuilds like any other and, if its scene file vanishes, is
+  destroyed → Stage degrades scene-panic to hold).
+- **Split-button DOM ids (NFR-1).** Primary `#panic` (PANIC/RESUME), the menu
+  toggle `#panicmenu` (`▾`), radio items `#panic-arm-hold` / `#panic-arm-scene`
+  (the scene arm is **disabled** until a target exists, Q4), and per-target
+  options `[data-panictarget="<id>"]`. The validator was rewritten to drive
+  these and to assert the new boot state (no pinned instance, `panicScene`
+  reports `"none"`, no ⛑ tile until designation; broken-target → hold reframed as
+  a designated instance that throws at render → freezes → falls back to hold).
+- **Scope.** Header.tsx changes are confined to the PANIC cluster (a later
+  console-ui-refactor restyles the rest). `Tile.tsx`'s ⛑ SAFE badge is unchanged
+  (it simply shows less often — only after opt-in).
+- Gates: `pnpm typecheck` green; `pnpm test` green (411 package + 434 content +
+  11 script tests; `panic-controller.test.ts` rewritten for the no-build API);
+  `pnpm validate:panic` **18/18 green** (ran in-env on the WebGL2 fallback).
