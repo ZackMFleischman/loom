@@ -85,9 +85,14 @@ try {
     /\*\*bloom\*\*.*⛓chainable/.test(catalog) && /\*\*blur\*\*.*⛓chainable/.test(catalog),
   );
   check(
-    "catalog marks two-input effects NOT chainable (mixer, over)",
-    /\*\*mixer\*\*(?!.*⛓)/.test(catalog.split("\n").find((l) => l.includes("**mixer**")) ?? "x⛓") &&
-      !(catalog.split("\n").find((l) => l.includes("**over**")) ?? "⛓").includes("⛓"),
+    // `over` became chainable as a multi-input step (declares a `tex` chainInput
+    // satisfiable by an instance/earlier-step source — see multi-input-chain-steps).
+    // `mixer`/`flyby` stay non-chainable: their second input isn't wired as a
+    // chainInput yet (flyby needs the M10 asset explorer).
+    "catalog marks over chainable (multi-input) while mixer/flyby stay non-chainable",
+    (catalog.split("\n").find((l) => l.includes("**over**")) ?? "").includes("⛓") &&
+      !(catalog.split("\n").find((l) => l.includes("**mixer**")) ?? "⛓").includes("⛓") &&
+      !(catalog.split("\n").find((l) => l.includes("**flyby**")) ?? "⛓").includes("⛓"),
   );
   // Modules take SignalLike opts by design (scenes do the channel wiring), so
   // the ⚡ marker lives on SCENE lines.
