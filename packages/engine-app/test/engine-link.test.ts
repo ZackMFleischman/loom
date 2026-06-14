@@ -174,16 +174,27 @@ describe("EngineLink", () => {
     expect(link.getSnapshot().connected).toBe(false);
   });
 
-  it("notifies subscribers on state and on thumbs separately", () => {
+  it("notifies subscribers on state and on thumbs separately (thumbs per-id)", () => {
     const onState = vi.fn();
-    const onThumbs = vi.fn();
+    const onThumb = vi.fn();
     link.subscribe(onState);
-    link.subscribeThumbs(onThumbs);
+    link.subscribeThumb("boot")(onThumb);
     engine.postMessage({ kind: "state", session: SESS, manifests: {} });
     engine.postMessage({ kind: "thumbs", thumbs: { boot: "data:image/png;base64,x" } });
     expect(onState).toHaveBeenCalledTimes(1);
-    expect(onThumbs).toHaveBeenCalledTimes(1);
+    expect(onThumb).toHaveBeenCalledTimes(1);
     expect(link.thumb("boot")).toBe("data:image/png;base64,x");
+  });
+
+  it("wakes only the tile whose thumbnail arrived this pass (FR-2 burst control)", () => {
+    const onA = vi.fn();
+    const onB = vi.fn();
+    link.subscribeThumb("a-1")(onA);
+    link.subscribeThumb("b-1")(onB);
+    // A pass that re-read only a-1 (the producer round-robin cap) must not wake b-1.
+    engine.postMessage({ kind: "thumbs", thumbs: { "a-1": "data:x" } });
+    expect(onA).toHaveBeenCalledTimes(1);
+    expect(onB).not.toHaveBeenCalled();
   });
 
   it("coalesces param writes per instance:path per frame", () => {
@@ -312,7 +323,16 @@ describe("EngineLink", () => {
         pinned: null,
       }) as never;
     const sess = (overrides: Record<string, unknown> = {}, instances = [inst("a-1", 1), inst("b-1", 2)]) =>
-      ({ live: "a-1", staged: null, panicked: false, fps: 60, frame: 1, availableScenes: [], instances, ...overrides }) as never;
+      ({
+        live: "a-1",
+        staged: null,
+        panicked: false,
+        fps: 60,
+        frame: 1,
+        availableScenes: [],
+        instances,
+        ...overrides,
+      }) as never;
 
     it("keeps a stable instance-slice reference while that instance is unchanged", () => {
       engine.postMessage({ kind: "state", session: sess({ frame: 1 }), manifests: {} });
@@ -418,10 +438,63 @@ describe("EngineLink", () => {
       expect(link.manifest("b-1")).toBeUndefined();
     });
 
+    it("exposes connected + sticky has-session stores (ConsoleApp's stable gate)", () => {
+      const onConn = vi.fn();
+      const onHas = vi.fn();
+      link.subscribeConnected(onConn);
+      link.subscribeHasSession(onHas);
+      expect(link.connected()).toBe(false);
+      expect(link.hasSession()).toBe(false);
+      engine.postMessage({ kind: "state", session: sess(), manifests: {} });
+      expect(link.connected()).toBe(true);
+      expect(link.hasSession()).toBe(true);
+      expect(onConn).toHaveBeenCalledTimes(1);
+      expect(onHas).toHaveBeenCalledTimes(1);
+      // A second state tick must NOT re-fire either (they only change on transition).
+      engine.postMessage({ kind: "state", session: sess({ frame: 2 }), manifests: {} });
+      expect(onConn).toHaveBeenCalledTimes(1);
+      expect(onHas).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a stable available-scenes list that wakes only on catalog change", () => {
+      engine.postMessage({
+        kind: "state",
+        session: sess({ availableScenes: ["pulse", "lava"] }),
+        manifests: {},
+      });
+      const first = link.availableScenes();
+      const onScenes = vi.fn();
+      link.subscribeAvailableScenes(onScenes);
+      // Frame bump, same catalog → identity held, no wake.
+      engine.postMessage({
+        kind: "state",
+        session: sess({ frame: 2, availableScenes: ["pulse", "lava"] }),
+        manifests: {},
+      });
+      expect(link.availableScenes()).toBe(first);
+      expect(onScenes).not.toHaveBeenCalled();
+      // New scene appears → wakes.
+      engine.postMessage({
+        kind: "state",
+        session: sess({ frame: 3, availableScenes: ["pulse", "lava", "julia"] }),
+        manifests: {},
+      });
+      expect(onScenes).toHaveBeenCalledTimes(1);
+      expect(link.availableScenes()).toEqual(["pulse", "lava", "julia"]);
+    });
+
     it("keeps a stable manifest-slice reference while unchanged", () => {
-      engine.postMessage({ kind: "state", session: sess(), manifests: { "a-1": { speed: { type: "float", value: 1, default: 1 } } } });
+      engine.postMessage({
+        kind: "state",
+        session: sess(),
+        manifests: { "a-1": { speed: { type: "float", value: 1, default: 1 } } },
+      });
       const first = link.manifest("a-1");
-      engine.postMessage({ kind: "state", session: sess({ frame: 2 }), manifests: { "a-1": { speed: { type: "float", value: 1, default: 1 } } } });
+      engine.postMessage({
+        kind: "state",
+        session: sess({ frame: 2 }),
+        manifests: { "a-1": { speed: { type: "float", value: 1, default: 1 } } },
+      });
       expect(link.manifest("a-1")).toBe(first);
     });
   });

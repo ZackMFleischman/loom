@@ -56,10 +56,28 @@ export function useInstanceIds(): string[] {
   return useSyncExternalStore(link.subscribeInstanceIds, link.ids);
 }
 
+/** Available scene names for the "+" picker — stable while the catalog is unchanged. */
+export function useAvailableScenes(): string[] {
+  const link = useEngine();
+  return useSyncExternalStore(link.subscribeAvailableScenes, link.availableScenes);
+}
+
 /** Session-level scalars (Header): bpm/rms/fps/frame/audio/midi/projects/panic/… */
 export function useSessionMeta(): SessionMeta | null {
   const link = useEngine();
   return useSyncExternalStore(link.subscribeMeta, link.meta);
+}
+
+/** Narrow connection flag — ConsoleApp reads this so its DndContext stays stable. */
+export function useConnected(): boolean {
+  const link = useEngine();
+  return useSyncExternalStore(link.subscribeConnected, link.connected);
+}
+
+/** Sticky "engine has sent state" flag — gates the ConsoleApp tree; flips once. */
+export function useHasSession(): boolean {
+  const link = useEngine();
+  return useSyncExternalStore(link.subscribeHasSession, link.hasSession);
 }
 
 /** Stage pointers (live/staged/panicked) — what a Tile reads; rarely changes. */
@@ -85,10 +103,16 @@ export function useManifest(id: string | null): Record<string, ParamDesc> | unde
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
-/** Latest thumbnail data-URL for one instance (~6.6 Hz). */
+/**
+ * Latest thumbnail data-URL for one instance (~6.6 Hz). Per-id subscription
+ * (FR-1/FR-2): a thumb pass wakes only the tiles it actually re-read, so an
+ * unchanged tile no longer re-renders + re-decodes its JPEG on every pass.
+ */
 export function useThumb(id: string | null): string | undefined {
   const link = useEngine();
-  return useSyncExternalStore(link.subscribeThumbs, () => (id == null ? undefined : link.thumb(id)));
+  const subscribe = useCallback((fn: () => void) => (id == null ? () => {} : link.subscribeThumb(id)(fn)), [link, id]);
+  const getSnapshot = useCallback(() => (id == null ? undefined : link.thumb(id)), [link, id]);
+  return useSyncExternalStore(subscribe, getSnapshot);
 }
 
 /** Latest full-res preview frame from the engine (Console preview overlay). */

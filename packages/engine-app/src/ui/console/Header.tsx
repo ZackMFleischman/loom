@@ -12,7 +12,6 @@ import {
   MenuItem,
   NativeSelect,
   Radio,
-  Stack,
   TextField,
   Typography,
 } from "@mui/material";
@@ -21,7 +20,7 @@ import type { PanicMode, SessionSnapshot } from "@loom/sidecar/protocol";
 import { useRenderFps } from "../fps-meter";
 import { useEngine } from "../hooks";
 import { mono } from "../theme";
-import { fail, primeMidiPermission } from "../util";
+import { countRender, fail, primeMidiPermission } from "../util";
 import { MidiMonitorDialog } from "./MidiMonitorDialog";
 import { TopBar } from "./primitives";
 
@@ -35,9 +34,12 @@ type Props = {
   onToggleRack: () => void;
   previewing: boolean;
   onTogglePreview: () => void;
+  perfOpen: boolean;
+  onTogglePerf: () => void;
 };
 
-export function Header({ session: s, onToggleRack, previewing, onTogglePreview }: Props) {
+export function Header({ session: s, onToggleRack, previewing, onTogglePreview, perfOpen, onTogglePerf }: Props) {
+  countRender("Header");
   const link = useEngine();
   // The Console's own paint rate — independent of the engine's output fps below.
   const uiFps = useRenderFps();
@@ -143,6 +145,16 @@ export function Header({ session: s, onToggleRack, previewing, onTogglePreview }
           {` out · f${s.frame}`}
         </Box>
       </Typography>
+      <Button
+        id="perfbtn"
+        variant={perfOpen ? "contained" : "outlined"}
+        color={perfOpen ? "primary" : "inherit"}
+        onClick={onTogglePerf}
+        title="perf diagnostics overlay (d)"
+        sx={{ fontWeight: 700, minWidth: "unset", px: 1 }}
+      >
+        PERF
+      </Button>
       <Button
         variant="ghost"
         component="a"

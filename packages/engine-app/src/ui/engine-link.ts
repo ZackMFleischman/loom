@@ -157,8 +157,21 @@ export class EngineLink {
 
   private snapshot: EngineSnapshot = { session: null, manifests: {}, connected: false };
   private readonly listeners = new Set<() => void>();
+  // Narrow connected-flag store (FR-1): ConsoleApp (which hosts the DndContext)
+  // subscribes to THIS, not the full 10 Hz snapshot — so its DndContext value
+  // stays stable across state ticks and the dnd-kit `useSortable` consumers (the
+  // tiles) don't re-render via context on every broadcast (memo can't stop a
+  // context change; keeping the provider stable is the fix).
+  private connectedFlag = false;
+  private readonly connectedListeners = new Set<() => void>();
+  private hasSessionFlag = false;
+  private readonly hasSessionListeners = new Set<() => void>();
   private thumbsMap: Record<string, string> = {};
-  private readonly thumbListeners = new Set<() => void>();
+  // Per-id thumb listeners (FR-1/FR-2): a thumb pass updates only the ~few tiles
+  // it actually re-read (the producer round-robin cap), so waking ALL tiles on
+  // every pass — even those whose JPEG is unchanged — was a needless decode/render
+  // burst. Notify ONLY the listeners for ids whose data-URL actually changed.
+  private readonly thumbListenersById = new Map<string, Set<() => void>>();
 
   // ── Narrow selector stores (FR-1) ──────────────────────────────────────────
   // Stable per-slice references so a component re-renders on ITS slice only.
@@ -177,6 +190,9 @@ export class EngineLink {
   private readonly tileListeners = new Map<string, Set<() => void>>();
   private instanceIds: string[] = [];
   private readonly idsListeners = new Set<() => void>();
+  private availableScenesList: string[] = [];
+  private availableScenesJson = "";
+  private readonly scenesListeners = new Set<() => void>();
   private sessionMeta: SessionMeta | null = null;
   private sessionMetaJson = "";
   private readonly metaListeners = new Set<() => void>();
@@ -217,6 +233,7 @@ export class EngineLink {
         const connected = this.now() - this.lastStateAt < STALE_MS;
         if (connected !== this.snapshot.connected) {
           this.snapshot = { ...this.snapshot, connected };
+          this.setConnected(connected);
           this.emit();
         }
       }, CONNECTED_POLL_MS),
@@ -231,12 +248,56 @@ export class EngineLink {
     };
   };
   getSnapshot = (): EngineSnapshot => this.snapshot;
-  subscribeThumbs = (fn: () => void): (() => void) => {
-    this.thumbListeners.add(fn);
+
+  /** Narrow connected-flag store — ConsoleApp reads this, not the full snapshot. */
+  subscribeConnected = (fn: () => void): (() => void) => {
+    this.connectedListeners.add(fn);
     return () => {
-      this.thumbListeners.delete(fn);
+      this.connectedListeners.delete(fn);
     };
   };
+  connected = (): boolean => this.connectedFlag;
+  private setConnected(connected: boolean): void {
+    if (connected === this.connectedFlag) return;
+    this.connectedFlag = connected;
+    if (connected) this.markHasSession();
+    for (const fn of this.connectedListeners) fn();
+  }
+
+  /**
+   * Sticky "the engine has sent at least one state" flag — flips true once and
+   * never churns. ConsoleApp gates its tree on this (instead of the 10 Hz
+   * snapshot) so the chrome stays mounted across a disconnect, and ConsoleApp
+   * itself doesn't re-render on every state tick (keeping the DndContext stable).
+   */
+  hasSession = (): boolean => this.hasSessionFlag;
+  subscribeHasSession = (fn: () => void): (() => void) => {
+    this.hasSessionListeners.add(fn);
+    return () => {
+      this.hasSessionListeners.delete(fn);
+    };
+  };
+  private markHasSession(): void {
+    if (this.hasSessionFlag) return;
+    this.hasSessionFlag = true;
+    for (const fn of this.hasSessionListeners) fn();
+  }
+  /** Subscribe to ONE instance's thumbnail; wakes only when that JPEG changes. */
+  subscribeThumb =
+    (id: string) =>
+    (fn: () => void): (() => void) => {
+      let set = this.thumbListenersById.get(id);
+      if (set == null) {
+        set = new Set();
+        this.thumbListenersById.set(id, set);
+      }
+      set.add(fn);
+      return () => {
+        const s = this.thumbListenersById.get(id);
+        s?.delete(fn);
+        if (s != null && s.size === 0) this.thumbListenersById.delete(id);
+      };
+    };
   thumb = (id: string): string | undefined => this.thumbsMap[id];
 
   // ── Selector-store accessors (FR-1) ─────────────────────────────────────────
@@ -296,6 +357,15 @@ export class EngineLink {
     };
   };
   ids = (): string[] => this.instanceIds;
+
+  /** Subscribe to the available scene-name list (the "+" picker), stable while unchanged. */
+  subscribeAvailableScenes = (fn: () => void): (() => void) => {
+    this.scenesListeners.add(fn);
+    return () => {
+      this.scenesListeners.delete(fn);
+    };
+  };
+  availableScenes = (): string[] => this.availableScenesList;
 
   /** Subscribe to the stage pointers (live/staged/panicked) — what a Tile reads. */
   subscribeStagePointers = (fn: () => void): (() => void) => {
@@ -382,6 +452,16 @@ export class EngineLink {
     if (JSON.stringify(this.instanceIds) !== idsJson) {
       this.instanceIds = ids;
       for (const fn of this.idsListeners) fn();
+    }
+
+    // 1b. Available scene names (the "+" picker) — their own slice with a stable
+    // reference so TileGrid (memoized) isn't re-rendered by the fresh array
+    // identity the engine sends every tick.
+    const scenesJson = JSON.stringify(session.availableScenes);
+    if (scenesJson !== this.availableScenesJson) {
+      this.availableScenesJson = scenesJson;
+      this.availableScenesList = session.availableScenes;
+      for (const fn of this.scenesListeners) fn();
     }
 
     // 2. Session-meta slice (everything except the instances array). This DOES
@@ -524,14 +604,18 @@ export class EngineLink {
       const session = msg.session as SessionSnapshot;
       const manifests = (msg.manifests as Manifests | undefined) ?? {};
       this.snapshot = { session, manifests, connected: true };
+      this.setConnected(true);
       this.updateSlices(session, manifests);
       this.pruneThumbs(session);
       this.emit();
       return;
     }
     if (msg.kind === "thumbs") {
-      this.thumbsMap = { ...this.thumbsMap, ...(msg.thumbs as Record<string, string>) };
-      this.emitThumbs();
+      const incoming = msg.thumbs as Record<string, string>;
+      this.thumbsMap = { ...this.thumbsMap, ...incoming };
+      // Wake only the tiles whose JPEG actually arrived this pass (the producer's
+      // round-robin cap means that's a handful, not all of them).
+      for (const id of Object.keys(incoming)) this.notifyThumb(id);
       return;
     }
     if (msg.kind === "preview") {
@@ -577,20 +661,20 @@ export class EngineLink {
   private pruneThumbs(session: SessionSnapshot | null): void {
     if (session == null) return;
     const live = new Set((session.instances ?? []).map((i) => i.id));
-    let changed = false;
     for (const id of Object.keys(this.thumbsMap)) {
       if (!live.has(id)) {
         delete this.thumbsMap[id];
-        changed = true;
+        this.notifyThumb(id); // wake that (unmounting) tile's subscriber once
       }
     }
-    if (changed) this.emitThumbs();
+  }
+
+  /** Notify only the listeners watching one instance's thumbnail. */
+  private notifyThumb(id: string): void {
+    for (const fn of this.thumbListenersById.get(id) ?? []) fn();
   }
 
   private emit(): void {
     for (const fn of this.listeners) fn();
-  }
-  private emitThumbs(): void {
-    for (const fn of this.thumbListeners) fn();
   }
 }
