@@ -60,6 +60,7 @@ import { noodles } from "../modules/sources/noodles";
 import { osc } from "../modules/sources/osc";
 import { pulseRings } from "../modules/sources/pulseRings";
 import { physarum } from "../modules/sources/physarum";
+import { silk } from "../modules/sources/silk";
 import { fluid2d } from "../modules/sources/fluid2d";
 import { reactionDiffusion } from "../modules/sources/reactionDiffusion";
 import { waveField } from "../modules/sources/waveField";
@@ -125,6 +126,7 @@ export const CASES: Record<string, ModuleCase> = {
   osc: (ctx) => osc(ctx, {}),
   pulseRings: (ctx) => pulseRings(ctx, { energy: ctx.input("kick") }),
   physarum: (ctx) => physarum(ctx, { count: 4096, sensorAngle: ctx.input("kick"), reseed: ctx.input("kick") }),
+  silk: (ctx) => silk(ctx, { count: 4096, field: "curl", force: ctx.input("bass"), curlScale: ctx.input("kick"), reseed: ctx.input("kick") }),
   fluid2d: (ctx) => fluid2d(ctx, { inject: ctx.input("kick"), pressureIters: 8, reseed: ctx.input("kick") }),
   reactionDiffusion: (ctx) => reactionDiffusion(ctx, { inject: ctx.input("kick"), reseed: ctx.input("kick") }),
   waveField: (ctx) => waveField(ctx, { impact: ctx.input("kick"), reseed: ctx.input("kick") }),
