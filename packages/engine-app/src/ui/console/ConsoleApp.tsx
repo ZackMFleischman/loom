@@ -10,13 +10,14 @@ import {
 } from "@dnd-kit/core";
 import { arrayMove } from "@dnd-kit/sortable";
 import { Box } from "@mui/material";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { downloadConsoleCapture } from "../../console-capture";
 import { Disconnected } from "../Disconnected";
-import { useEngine, useEngineState } from "../hooks";
-import { fail } from "../util";
+import { useAvailableScenes, useConnected, useEngine, useEngineState, useHasSession, useInstanceIds } from "../hooks";
+import { countRender, fail } from "../util";
 import { Header } from "./Header";
 import { ParamPanel } from "./ParamPanel";
+import { PerfOverlay } from "./PerfOverlay";
 import { PreviewMode } from "./PreviewMode";
 import { Rack } from "./Rack";
 import { STAGE_ZONE_ID, StageDropZone } from "./StageDropZone";
@@ -43,44 +44,115 @@ const collision: CollisionDetection = (args) => {
 
 type EngineWindow = Window & { __loom?: { resumeAudio?: () => void } };
 
+/**
+ * The top chrome (Header + StageStrip) that DOES need the live ~10 Hz session.
+ * Isolated into its own subcomponent so its per-tick re-render stays here — it is
+ * a SIBLING of TileGrid, not an ancestor, so it can't cascade into the tiles
+ * (FR-1). ConsoleApp itself never reads the full snapshot.
+ */
+function TopChrome(props: {
+  onToggleRack: () => void;
+  previewing: boolean;
+  onTogglePreview: () => void;
+  perfOpen: boolean;
+  onTogglePerf: () => void;
+}) {
+  const { session } = useEngineState();
+  if (session == null) return null;
+  return (
+    <StageDropZone>
+      <Header
+        session={session}
+        onToggleRack={props.onToggleRack}
+        previewing={props.previewing}
+        onTogglePreview={props.onTogglePreview}
+        perfOpen={props.perfOpen}
+        onTogglePerf={props.onTogglePerf}
+      />
+      <StageStrip session={session} />
+    </StageDropZone>
+  );
+}
+
+/** The rack drawer — needs live `inputs` meter values + the globals manifest. */
+function RackDrawer() {
+  const { session, manifests } = useEngineState();
+  if (session == null) return null;
+  return <Rack session={session} globals={manifests.globals ?? {}} />;
+}
+
+/** The full-res preview overlay — needs the live session for pointers/scene. */
+function PreviewOverlay({ instance, onExit }: { instance: string | null; onExit: () => void }) {
+  const { session } = useEngineState();
+  if (session == null) return null;
+  return <PreviewMode instance={instance} session={session} onExit={onExit} />;
+}
+
 export function ConsoleApp() {
+  countRender("ConsoleApp");
   const link = useEngine();
-  const { session, manifests, connected } = useEngineState();
+  // FR-1: ConsoleApp hosts the DndContext, whose value the dnd-kit `useSortable`
+  // tiles consume. A context-value change re-renders EVERY consumer regardless of
+  // React.memo, so ConsoleApp must NOT re-render on the 10 Hz state broadcast. It
+  // subscribes ONLY to rarely-changing narrow stores — never the full snapshot.
+  // The chrome that needs live session data reads it in its own subcomponent
+  // (TopChrome / RackDrawer / PreviewOverlay), so the churn never reaches the grid.
+  const hasSession = useHasSession();
+  const connected = useConnected();
+  const ids = useInstanceIds();
+  const scenes = useAvailableScenes();
   const [selected, setSelected] = useState<string | null>(null);
   const [solo, setSolo] = useState<string | null>(null);
   const [rackOpen, setRackOpen] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  const [perfOpen, setPerfOpen] = useState(false);
   const [order, setOrder] = useState<string[]>(loadOrder);
+  // Refs let the drag handler read the current ids/order without re-subscribing,
+  // keeping its identity (and thus the DndContext value) stable across renders.
+  const idsRef = useRef(ids);
+  idsRef.current = ids;
+  const orderRef = useRef(order);
+  orderRef.current = order;
 
-  const applyOrder = (next: string[]) => {
+  // Stable callbacks (FR-1): a fresh function identity every render would defeat
+  // the memoized Tiles (their `onSelect`/`onSolo`/`onRenamed`/`onCreated` props),
+  // re-rendering the whole grid on every state tick despite the slice stores.
+  const applyOrder = useCallback((next: string[]) => {
     try {
       localStorage.setItem(ORDER_KEY, JSON.stringify(next));
     } catch {
       // order just won't persist across reloads
     }
     setOrder(next);
-  };
+  }, []);
+  const onSolo = useCallback((id: string) => setSolo((cur) => (cur === id ? null : id)), []);
 
   // Tile drags start after 8px of slop, so click/double-click still work.
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
-  const onDragEnd = (e: DragEndEvent) => {
-    const activeId = String(e.active.id);
-    const overId = e.over != null ? String(e.over.id) : null;
-    if (overId === STAGE_ZONE_ID) {
-      // One gesture, all the way: drop on the top bar = stage + commit.
-      void link
-        .req("stage", { instance: activeId })
-        .then(() => link.req("commit", {}))
-        .catch(fail);
-      return;
-    }
-    if (overId == null || overId === activeId || session == null) return;
-    const cur = sortTiles(session.instances, order).map((i) => i.id);
-    const from = cur.indexOf(activeId);
-    const to = cur.indexOf(overId);
-    if (from < 0 || to < 0) return;
-    applyOrder(arrayMove(cur, from, to));
-  };
+  const onDragEnd = useCallback(
+    (e: DragEndEvent) => {
+      const activeId = String(e.active.id);
+      const overId = e.over != null ? String(e.over.id) : null;
+      if (overId === STAGE_ZONE_ID) {
+        // One gesture, all the way: drop on the top bar = stage + commit.
+        void link
+          .req("stage", { instance: activeId })
+          .then(() => link.req("commit", {}))
+          .catch(fail);
+        return;
+      }
+      if (overId == null || overId === activeId) return;
+      const cur = sortTiles(
+        idsRef.current.map((id) => ({ id })),
+        orderRef.current,
+      ).map((i) => i.id);
+      const from = cur.indexOf(activeId);
+      const to = cur.indexOf(overId);
+      if (from < 0 || to < 0) return;
+      applyOrder(arrayMove(cur, from, to));
+    },
+    [link, applyOrder],
+  );
 
   // The Output window is optional: if no engine says hello within a grace
   // period, boot one in a hidden same-origin iframe. It stands down by itself
@@ -95,22 +167,24 @@ export function ConsoleApp() {
     return () => window.clearTimeout(t);
   }, [allowEmbed, embed, connected]);
 
-  // Hotkeys — "i" toggles the rack, "p" toggles preview mode, "s" downloads a
-  // self-capture of the cockpit (the same path the screenshot_console MCP tool
-  // exercises — free human debugging), Escape leaves preview. All ignore the
-  // human typing in a field (rename box, save dialog).
+  // Hotkeys — "i" toggles the rack, "p" toggles preview mode, "d" toggles the
+  // perf overlay, "s" downloads a self-capture of the cockpit (the same path the
+  // screenshot_console MCP tool exercises), Escape leaves preview/overlay. All
+  // ignore the human typing in a field (rename box, save dialog).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target;
       const typing =
-        t instanceof HTMLInputElement ||
-        t instanceof HTMLSelectElement ||
-        t instanceof HTMLTextAreaElement;
+        t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement;
       if (typing) return;
       if (e.key === "i") setRackOpen((o) => !o);
       else if (e.key === "p") setPreviewing((p) => !p);
+      else if (e.key === "d") setPerfOpen((o) => !o);
       else if (e.key === "s") void downloadConsoleCapture().catch(fail);
-      else if (e.key === "Escape") setPreviewing(false);
+      else if (e.key === "Escape") {
+        setPreviewing(false);
+        setPerfOpen(false);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -125,49 +199,34 @@ export function ConsoleApp() {
         (embedFrame.current?.contentWindow as EngineWindow | null)?.__loom?.resumeAudio?.();
       }}
     >
-      {session && (
+      {hasSession && (
         <DndContext sensors={sensors} collisionDetection={collision} onDragEnd={onDragEnd}>
-          <StageDropZone>
-            <Header
-              session={session}
-              onToggleRack={() => setRackOpen((o) => !o)}
-              previewing={previewing}
-              onTogglePreview={() => setPreviewing((p) => !p)}
-            />
-            <StageStrip session={session} />
-          </StageDropZone>
+          <TopChrome
+            onToggleRack={() => setRackOpen((o) => !o)}
+            previewing={previewing}
+            onTogglePreview={() => setPreviewing((p) => !p)}
+            perfOpen={perfOpen}
+            onTogglePerf={() => setPerfOpen((o) => !o)}
+          />
           <Box component="main" sx={{ flex: 1, display: "flex", minHeight: 0 }}>
             <TileGrid
-              session={session}
+              scenes={scenes}
               selected={selected}
               solo={solo}
               order={order}
               onOrderChange={applyOrder}
               onSelect={setSelected}
-              onSolo={(id) => setSolo((cur) => (cur === id ? null : id))}
+              onSolo={onSolo}
               onCreated={setSelected}
             />
             {/* While previewing, the overlay carries the (single) params drawer —
                 don't mount a second one here or two #panel ids would collide. */}
-            {!previewing && (
-              <ParamPanel
-                instance={selected}
-                manifest={selected != null ? manifests[selected] : undefined}
-                session={session}
-              />
-            )}
+            {!previewing && <ParamPanel instance={selected} />}
           </Box>
-          {rackOpen && <Rack session={session} globals={manifests.globals ?? {}} />}
+          {rackOpen && <RackDrawer />}
         </DndContext>
       )}
-      {session && previewing && (
-        <PreviewMode
-          instance={selected}
-          manifest={selected != null ? manifests[selected] : undefined}
-          session={session}
-          onExit={() => setPreviewing(false)}
-        />
-      )}
+      {hasSession && previewing && <PreviewOverlay instance={selected} onExit={() => setPreviewing(false)} />}
       {embed && (
         <Box
           component="iframe"
@@ -187,6 +246,7 @@ export function ConsoleApp() {
           }}
         />
       )}
+      {perfOpen && <PerfOverlay onClose={() => setPerfOpen(false)} />}
       <Disconnected connected={connected} starting={embed} />
     </Box>
   );

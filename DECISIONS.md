@@ -1554,6 +1554,53 @@ surfaces lacked (what build/swap/freeze/perf event led to a number).
   surfaced @frame 558 on "boot", live pixels unchanged, `since` paging, sidecar
   latency table, `?diag=0` vs `?diag=1` both 60 fps).
 
+## 2026-06-14 — Console performance & stability (SHIPPED)
+
+The cockpit was janky/occasionally "Aw, snap" under a busy session. Root cause +
+fixes (all in the Console React app + OFF-LOOP producers; the in-frame `tick()`
+path and never-go-black are untouched, NFR-4):
+
+- **The re-render storm (FR-1) was the dominant cost — but memoization alone
+  didn't fix it.** `EngineLink` emitted a new snapshot identity every 10 Hz state
+  tick; nothing was memoized. The durable fix is narrow **selector stores** in
+  `EngineLink` (per-tile display slice / full instance slice / session-meta /
+  stage-pointers / rounded fps / instance-id list / scene catalog / per-id thumb /
+  connected / sticky has-session), each keeping a STABLE reference while its slice
+  is unchanged, + `React.memo` on Tile/TileGrid/ParamPanel. **The non-obvious
+  trap:** ConsoleApp hosts the dnd-kit `DndContext`; its 10 Hz re-render churned
+  the context value, re-rendering every `useSortable` tile *through context*
+  (bypassing memo entirely). Fix: ConsoleApp subscribes only to rarely-changing
+  narrow stores (never the full snapshot) with a useCallback'd drag handler over
+  refs, and the live-session chrome (Header/StageStrip/Rack/Preview) reads state
+  in isolated SIBLING subcomponents. Live telemetry (frameMs/slowSignals) is
+  quantized to display precision so a sub-threshold wiggle can't churn identity.
+- **Thumbnail back-pressure (FR-2) + memory (FR-4).** `thumbnails()` caps
+  non-priority readbacks per pass (`THUMB_READBACK_CAP=4`) and round-robins the
+  rest, always reading live+staged+panic-pinned (PANIC stays visible).
+  `readback.ts` reuses two scratch canvases (was 2 createElement/pass — canvas
+  churn). `scene-thumbs.ts` got LRU + entry/byte budget (was unbounded). The
+  in-memory thumbsMap prunes destroyed instances; per-id thumb subscription stops
+  the all-tiles decode burst.
+- **Crash (FR-5): residual risk documented.** STATUS_BREAKPOINT is a GPU/driver
+  renderer abort with no WebGPU adapter headless — not reproducible in CI.
+  Mitigations landed: memory eviction, single-canvas readback, and a
+  single-renderer guard (`console-channel.ts` logs a one-shot `engine.duplicate`
+  if two non-embedded engines broadcast on one origin — the two-WebGPU-device
+  scenario). A real-browser soak on the reference machine is the open follow-up.
+- **PerfOverlay (FR-6).** `src/ui/console/PerfOverlay.tsx` (PERF button + `d`
+  hotkey) — read-only, reads the same `PerfSnapshot` on `session.perf` the agent
+  gets via `get_diagnostics.perf` (one pipeline, two readers). No new dependency.
+- **Freeze-id fix (separate commit).** `instance.frozen`/`loopguard.tripped` now
+  carry the INSTANCE id (was scene name) — `Instance.instanceId` stamped by the
+  session on create/rebuild/rename; scene name kept in `data.scene`.
+- Evidence (10-instance headless WebGL2 harness, `scripts/perf-console.mjs`, 6 s
+  window): per-tile re-renders 860 → 48–360 (ConsoleApp 60 → 0); `#uifps` mean
+  50 → 60 (min 40 → 59); scene-picker p95 386 ms → ~175 ms. Headless renders the
+  heavy scenes cheap so the absolute fps win understates the reference machine;
+  the re-render-count drop is the machine-independent proof.
+- Gates: `pnpm typecheck` green; `pnpm test` green (242 runtime + 138 engine-app +
+  45 sidecar + 434 content + 16 script). Validators: see the PR (run on WebGL2).
+
 ## 2026-06-14 — Simulation sources: reaction-diffusion + the `simBuffer` field family
 
 - **New source class — cellular GPU simulations.** `reactionDiffusion`

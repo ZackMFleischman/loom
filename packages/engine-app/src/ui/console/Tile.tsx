@@ -2,22 +2,18 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Box, Button, Card, IconButton, Stack, Typography } from "@mui/material";
 import { alpha, type Theme } from "@mui/material/styles";
-import { useEffect, useState, type ChangeEvent, type KeyboardEvent, type MouseEvent } from "react";
-import type { InstanceInfo } from "@loom/sidecar/protocol";
+import { memo, useEffect, useState, type ChangeEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { tileFps } from "../fps-meter";
-import { useEngine, useThumb } from "../hooks";
+import { useEngine, useEngineFps, useStagePointers, useThumb, useTile } from "../hooks";
 import { snapshotScene } from "../scene-thumbs";
-import { fail } from "../util";
+import { countRender, fail } from "../util";
 import { StatusPill } from "./primitives";
 
 type Props = {
-  inst: InstanceInfo;
-  isLive: boolean;
-  isStaged: boolean;
+  /** This tile's instance id. Tile reads its own slice (FR-1) — no `inst` prop. */
+  id: string;
   selected: boolean;
   solo: boolean;
-  /** Output window render rate — the ceiling each tile's per-frame throughput hits. */
-  engineFps: number;
   onSelect: (id: string) => void;
   onSolo: (id: string) => void;
   /** The engine accepted a rename — keep order/selection pointing at the new id. */
@@ -36,20 +32,34 @@ type Props = {
  * green halo offset past a gap, plus a tinted name row — a selected live tile
  * reads as "red ring inside a green halo".
  */
-export function Tile({ inst, isLive, isStaged, selected, solo, engineFps, onSelect, onSolo, onRenamed }: Props) {
+function TileImpl({ id, selected, solo, onSelect, onSolo, onRenamed }: Props) {
+  countRender("Tile");
   const link = useEngine();
-  const thumb = useThumb(inst.id);
-  const fps = tileFps(inst.frameMs, engineFps, inst.status !== "ok");
+  const inst = useTile(id);
+  const pointers = useStagePointers();
+  const engineFps = useEngineFps();
+  const thumb = useThumb(id);
+  const isLive = pointers.live === id;
+  const isStaged = pointers.staged === id;
   // Every rendering instance keeps its scene's snapshot fresh — the scene
-  // picker shows these as "last time it ran".
-  useEffect(() => snapshotScene(inst.scene, thumb), [inst.scene, thumb]);
+  // picker shows these as "last time it ran". (Hooks before the early return.)
+  // Depend only on the scene + thumb actually read, not the whole slice — a
+  // frameMs tick must not re-run this. (biome wants `inst`; that's intentional.)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scene+thumb are the only inputs used
+  useEffect(() => {
+    if (inst != null) snapshotScene(inst.scene, thumb);
+  }, [inst?.scene, thumb]);
 
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(inst.id);
+  const [draft, setDraft] = useState(id);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: inst.id,
+    id,
     disabled: editing,
   });
+  // The slice can briefly be absent (a fresh id before the next state tick, or a
+  // just-destroyed one): render nothing rather than crash — TileGrid drives keys.
+  if (inst == null) return null;
+  const fps = tileFps(inst.frameMs, engineFps, inst.status !== "ok");
   const startRename = () => {
     setDraft(inst.id);
     setEditing(true);
@@ -253,3 +263,13 @@ export function Tile({ inst, isLive, isStaged, selected, solo, engineFps, onSele
     </Card>
   );
 }
+
+/**
+ * Memoized so a tile re-renders ONLY when its own props change (FR-1). Its
+ * instance data, thumbnail, stage pointers and fps all arrive via narrow
+ * selector stores (useInstance/useThumb/useStagePointers/useEngineFps), so the
+ * 10 Hz state broadcast no longer reconciles the whole grid — each tile wakes on
+ * its own slice. Props are now all primitives + stable callbacks, so the default
+ * shallow comparison is correct.
+ */
+export const Tile = memo(TileImpl);

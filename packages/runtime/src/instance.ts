@@ -22,6 +22,16 @@ export class Instance {
   frameMs = 0;
 
   /**
+   * The owning session entry's id (e.g. "pulse-2"), set by the engine after
+   * build and kept current across rename. The kernel itself only knows
+   * {@link Instance.sceneName} at construction; this lets a render-time freeze /
+   * loop-guard event carry the actual INSTANCE id (so `get_diagnostics
+   * { instance:<id> }` matches a freeze on a sandbox whose id ≠ scene name).
+   * Falls back to `sceneName` when unset (tests, headless kernel use).
+   */
+  instanceId: string | null = null;
+
+  /**
    * Per-updater cost attribution (EMA ms), keyed by the updater's label (a param
    * path, "palette", "input.kick", …) or `uniform#<i>` for unlabeled ones.
    * Populated only while {@link Instance.profilingEnabled} is on; lets a frame's
@@ -109,12 +119,15 @@ export class Instance {
       // guard trip is a distinct, high-value kind the agent should recognize.
       const message = err instanceof Error ? err.message : String(err);
       const isLoopGuard = err instanceof Error && err.message.startsWith(LOOP_GUARD_PREFIX);
+      // Carry the instance id (not the scene name) so `get_diagnostics
+      // { instance:<id> }` matches a freeze on a sandbox whose id ≠ scene name.
+      const id = this.instanceId ?? this.sceneName;
       Instance.emit({
         level: "error",
         kind: isLoopGuard ? "loopguard.tripped" : "instance.frozen",
-        instance: this.sceneName,
-        msg: `instance "${this.sceneName}" froze (NFR-2): ${message}`,
-        data: { error: message, frame: f.frame },
+        instance: id,
+        msg: `instance "${id}" froze (NFR-2): ${message}`,
+        data: { error: message, scene: this.sceneName, frame: f.frame },
       });
     }
     // CPU-side submit cost (GPU time is opaque here) — still the early-warning

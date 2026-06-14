@@ -1,4 +1,5 @@
 import { respond } from "./bridge";
+import { logDiag } from "./diagnostics";
 import type { EngineApi } from "./engine-api";
 import { workerInterval } from "./worker-clock";
 
@@ -33,6 +34,7 @@ export function startConsoleChannel(api: EngineApi, opts: ConsoleChannelOpts = {
   const engineId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   let lastHello = -Infinity;
   let yielded = false;
+  let twoEnginesWarned = false; // single-renderer guard: log the duplicate once
   const consolePresent = () => performance.now() - lastHello < PRESENCE_TIMEOUT_MS;
 
   // Reverse-envelope (engine→Console) state (Phase 2). `targetConsoleId` is the
@@ -102,6 +104,24 @@ export function startConsoleChannel(api: EngineApi, opts: ConsoleChannelOpts = {
       // embedded peers tie-break on id.
       if (opts.embedded && (msg.embedded !== true || (msg.engineId ?? "") < engineId)) {
         standDown();
+      } else if (!opts.embedded && msg.embedded !== true && !yielded) {
+        // Single-renderer guard (FR-5 crash mitigation): two NON-embedded engines
+        // both broadcasting state means two WebGPU devices are live on one origin
+        // — the "many simultaneous live preview canvases" GPU-pressure scenario
+        // that's the leading STATUS_BREAKPOINT suspect. The handshake already
+        // stands embedded engines down; this catches the case it can't (two real
+        // Output windows). Log ONCE so the human/agent sees it without spamming.
+        if (!twoEnginesWarned) {
+          twoEnginesWarned = true;
+          logDiag({
+            level: "warn",
+            kind: "engine.duplicate",
+            msg: `a second rendering engine is broadcasting on this origin (this=${engineId}, other=${
+              msg.engineId ?? "?"
+            }) — two WebGPU devices risk GPU-process pressure; close the extra Output window`,
+            data: { thisEngine: engineId, otherEngine: msg.engineId ?? null },
+          });
+        }
       }
       return;
     }
