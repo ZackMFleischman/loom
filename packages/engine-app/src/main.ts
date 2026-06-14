@@ -21,7 +21,6 @@ import { texture, vec4 } from "three/tsl";
 import { RenderTarget, WebGPURenderer } from "three/webgpu";
 import inputsDef from "../../../content/inputs";
 import liveScene from "../../../content/scenes/live.scene";
-import panicScene from "../../../content/scenes/panic.scene";
 import { startBridge } from "./bridge";
 import { Compositor } from "./compositor";
 import { DebugSurface } from "./debug-surface";
@@ -174,7 +173,6 @@ const persist = {
     state.save(StateKey.sceneColorSpaces(sceneName), () => tunedColorSpaces.get(sceneName) ?? {});
   },
   bindings: () => state.save(StateKey.bindings, () => bindings.toJSON()),
-  panicScene: () => state.save(StateKey.panic, () => ({ scene: panicController.sceneName })),
 };
 
 // MIDI routing lives in MidiRouter (writeParam / setModEnabled / onCc) —
@@ -300,14 +298,10 @@ function trySwapLive(def: SceneDef): boolean {
   }
 }
 
-// The always-warm Panic Scene instance (FR-3/FR-7): built at boot next to the
-// boot instance, rebuilt through HMR, never disposed. PanicController owns the
-// warm-instance lifecycle, the SAFE designation, and build-health reporting.
-const panicController = new PanicController({
-  session,
-  persistPanicScene: () => persist.panicScene(),
-  initialSceneName: panicScene?.name ?? "panic",
-});
+// Scene-panic's SAFE-target designation (panic-safe-scene-redesign): there is
+// no boot-default warm instance — scene-panic is opt-in. PanicController owns
+// only the runtime ⛑ designation over existing instances and its health surface.
+const panicController = new PanicController({ session });
 
 async function startAudio(): Promise<void> {
   if (qs.get("audio") === "test") {
@@ -323,14 +317,14 @@ async function startAudio(): Promise<void> {
 }
 
 /**
- * Load persisted tuned state (R6.2) into the registries/maps. Returns the
- * persisted Panic Scene pick (or null). The intra-step ordering is load-bearing
- * and documented inline: ranges before values, color decompositions before
- * palette values, channel modulators last (their targets must exist first).
+ * Load persisted tuned state (R6.2) into the registries/maps. The intra-step
+ * ordering is load-bearing and documented inline: ranges before values, color
+ * decompositions before palette values, channel modulators last (their targets
+ * must exist first). The SAFE-target designation is deliberately NOT persisted
+ * (panic-safe-scene-redesign NFR-2): a fresh session boots to hold.
  */
-async function loadPersistedState(): Promise<string | null> {
-  if (!state.enabled) return null;
-  let savedPanicScene: string | null = null;
+async function loadPersistedState(): Promise<void> {
+  if (!state.enabled) return;
   // Range overrides load BEFORE values so a widened bound is in place to hold a
   // value persisted outside the declared range.
   const savedInputRanges = await state.load(StateKey.inputRanges);
@@ -391,10 +385,6 @@ async function loadPersistedState(): Promise<string | null> {
       tunedColorSpaces.set(scene, spaces as Record<string, "hsv" | "rgb">);
     }
   }
-  const savedPanic = await state.load(StateKey.panic);
-  const name = (savedPanic as { scene?: unknown } | null)?.scene;
-  if (typeof name === "string") savedPanicScene = name;
-  return savedPanicScene;
 }
 
 // ============================ BOOT SEQUENCE ============================
@@ -409,8 +399,8 @@ renderer.setSize(RENDER_W, RENDER_H, false);
 await startAudio();
 
 // Boot 2 — load tuned state BEFORE the boot instance builds, so it comes up
-// already tuned (and the persisted Panic Scene pick is known).
-const savedPanicScene = await loadPersistedState();
+// already tuned.
+await loadPersistedState();
 
 // Audio input devices, cached for the (synchronous) session snapshot.
 let audioDevices: Array<{ id: string; label: string }> = [];
@@ -442,13 +432,8 @@ const debug = new DebugSurface({
 });
 
 trySwapLive(liveScene);
-// Build the warm panic instance alongside boot. A throw here leaves it in
-// hold-fallback (FR-7) rather than failing the engine.
-panicController.tryBuild(panicScene);
-// A persisted runtime pick overrides the panic.scene.ts boot default.
-if (savedPanicScene && savedPanicScene !== panicController.sceneName && currentScenes().has(savedPanicScene)) {
-  panicController.tryBuild(currentScenes().get(savedPanicScene)!);
-}
+// No boot-default safe scene (panic-safe-scene-redesign FR-1): PANIC boots armed
+// hold; scene-panic becomes available once the human designates a SAFE target.
 
 // Boot 4 — the render loop, the EngineApi, and the transports (bridge + console).
 // The render loop owns the frame tick + loop-local state (latest frame, mix,
@@ -591,9 +576,10 @@ if (import.meta.hot) {
 
   // Any scene file edit bubbles through the barrel: rebuild only instances
   // whose def identity actually changed (NFR-5), destroy ones whose scene file
-  // vanished. The warm panic instance rebuilds here by name like any other
-  // (so editing whichever scene is the safe target hot-reloads it), but is
-  // never destroyed — the escape hatch must stay warm.
+  // vanished. A designated SAFE target is now an ordinary instance: editing its
+  // scene hot-reloads it like any other, and if its scene file vanishes it is
+  // destroyed — Stage's onInstanceDestroyed degrades an active scene-panic to
+  // hold (FR-7), and PanicController.info() reverts to "none".
   import.meta.hot.accept("./scenes", (mod) => {
     if (!mod?.getScenes) return;
     currentScenes = mod.getScenes as typeof getScenes;
@@ -602,13 +588,11 @@ if (import.meta.hot) {
       if (entry.id === bootId) continue; // owned by the live.scene accept above
       const def = map.get(entry.sceneName);
       if (!def) {
-        if (entry.pinned === "panic") continue; // keep the hatch warm
         console.warn(`[loom] scene "${entry.sceneName}" removed; destroying instance "${entry.id}"`);
         stage.onInstanceDestroyed(entry.id);
         session.destroy(entry.id);
       } else if (def !== entry.def) {
         const ok = session.rebuild(entry.id, def);
-        if (entry.pinned === "panic") panicController.noteSafeRebuild(ok, def);
         console.info(
           ok
             ? `[loom] instance "${entry.id}" rebuilt (${def.name})`

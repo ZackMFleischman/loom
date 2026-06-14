@@ -526,7 +526,7 @@ export const InstanceInfo = z.object({
     .default([]),
   /** Successful builds (1 on create, ++ per rebuild) — validators assert "no rebuild". */
   builds: z.number().int(),
-  /** Pinned role, if any: "panic" = the always-warm safe-scene instance. */
+  /** Pinned role, if any: "panic" = the designated SAFE target for scene-panic. */
   pinned: z.literal("panic").nullable().default(null),
 });
 export type InstanceInfo = z.infer<typeof InstanceInfo>;
@@ -558,12 +558,24 @@ export const PreviewFrame = z.object({
 });
 export type PreviewFrame = z.infer<typeof PreviewFrame>;
 
-/** Health of the designated Panic Scene (FR-7/FR-10). */
+/**
+ * Health of the designated SAFE target (scene-panic).
+ *
+ * Scene-panic is **opt-in**: at boot nothing is designated, so the resting state
+ * is `"none"` — distinct from `"error"` (chosen but broken). The Console reads
+ * `"none"` as "pick a SAFE target" and `"error"` as the scary ⚠; an agent reads
+ * either as "scene-panic can't fire → PANIC will hold."
+ */
 export const PanicSceneInfo = z.object({
+  /** The designated instance's scene name; "" when nothing is designated. */
   name: z.string(),
-  /** "ok" = a warm panic instance exists; "error" = it never built (PANIC holds). */
-  status: z.enum(["ok", "error"]),
-  /** Last build error, surfaced even when a previous good instance still runs. */
+  /**
+   * "none"  = no SAFE target designated (scene-panic unavailable → PANIC holds);
+   * "ok"    = a healthy designated instance exists (scene-panic available);
+   * "error" = a designated instance that has errored (PANIC holds).
+   */
+  status: z.enum(["none", "ok", "error"]),
+  /** Last build error for an errored target, else null. */
   error: z.string().nullable(),
 });
 export type PanicSceneInfo = z.infer<typeof PanicSceneInfo>;
