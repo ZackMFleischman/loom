@@ -225,6 +225,23 @@ export const RenameInstanceArgs = z.object({
 });
 export type RenameInstanceArgs = z.infer<typeof RenameInstanceArgs>;
 
+/**
+ * Where a chain step's extra input slot reads its TexNode from (multi-input
+ * chain steps). Exactly one key is set — mirrors runtime `SourceRef`:
+ *  - `{ instance }` — another live tile's output, sampled as a texture.
+ *  - `{ step }` — an EARLIER step's folded output (linear chain → small DAG;
+ *    a cycle/ordering guard rejects self/forward refs).
+ *  - `{ asset }` — **DEFERRED, not yet wired (needs the M10 asset explorer).**
+ *    Carried in the schema now for forward-compat; the fold rejects it until
+ *    M10 lands, so an asset source never half-builds.
+ */
+export const SourceRefSchema = z.union([
+  z.object({ instance: z.string().min(1) }).strict(),
+  z.object({ step: z.string().min(1) }).strict(),
+  z.object({ asset: z.string().min(1) }).strict(),
+]);
+export type SourceRefSchema = z.infer<typeof SourceRefSchema>;
+
 /** One desired chain step. `id` is omitted for a new step, kept for a surviving one. */
 export const ChainStepInputSchema = z.object({
   id: z.string().min(1).optional(),
@@ -233,6 +250,12 @@ export const ChainStepInputSchema = z.object({
   params: z.record(z.string(), z.union([z.number(), z.boolean()])).optional(),
   /** Wet/dry 0..1; omitted = carry forward or 1. */
   mix: z.number().min(0).max(1).optional(),
+  /**
+   * Extra input-slot bindings (multi-input chain steps): slot name → SourceRef.
+   * Additive/optional — a classic single-input step omits it (existing chains
+   * unchanged). Each slot the effect declares in `chainInputs` must be bound.
+   */
+  inputs: z.record(z.string(), SourceRefSchema).optional(),
 });
 export type ChainStepInputSchema = z.infer<typeof ChainStepInputSchema>;
 
@@ -487,6 +510,8 @@ export const ChainStepInfo = z.object({
   mix: z.number(),
   /** The step's on/off toggle (`fx.<id>.enabled`) — off fades to bypass. */
   enabled: z.boolean().default(true),
+  /** Bound extra input slots (multi-input chain steps); omitted for single-input. */
+  inputs: z.record(z.string(), SourceRefSchema).optional(),
 });
 export type ChainStepInfo = z.infer<typeof ChainStepInfo>;
 
