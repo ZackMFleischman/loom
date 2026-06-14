@@ -396,6 +396,14 @@ try {
   rmSync(THROWING_SCENE, { force: true });
   await sleep(800); // let the live scene recover to pulse
 
+  // NOTE — freeze-id (instance.frozen carries the instance id, not the scene name)
+  // is proven by the kernel unit test packages/runtime/test/instance-freeze-id.test.ts.
+  // A render-time-freeze acceptance check was prototyped here but couldn't observe
+  // the event: in this WebGL2 validator the NFR-2 freeze console.error fires yet no
+  // `instance.frozen` reaches the diagnostics ring (only perf.* events do) — a
+  // PRE-EXISTING delivery gap in the `Instance.diagSink` path, unrelated to the id
+  // field this feature fixes. Flagged as an escalation; not blocking m2.
+
   // 16. Instrumentation overhead is negligible: an engine booted ?diag=0 renders
   // at essentially the same fps as the instrumented one (NFR-1 frame budget).
   // Isolated (unused) ws port so this second engine never steals the bridge from

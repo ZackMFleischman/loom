@@ -21,7 +21,7 @@
  */
 
 // TSL node-builder primitives the kernel composes with.
-export { abs, cos, mix, screenSize, sin, step, texture, uniform, uv, vec2, vec4 } from "three/tsl";
+export { abs, cos, float, mix, screenSize, sin, step, texture, uniform, uv, vec2, vec4 } from "three/tsl";
 
 // WebGPU backend classes the kernel constructs directly (renderer, render
 // targets, fullscreen-quad materials, palette ramp textures).

@@ -1,4 +1,4 @@
-import type { PreviewFrame, SessionSnapshot } from "@loom/sidecar/protocol";
+import type { InstanceInfo, PreviewFrame, SessionSnapshot } from "@loom/sidecar/protocol";
 
 /** One tweakable param as the engine describes it over the channel. */
 export type ParamDesc = {
@@ -35,6 +35,70 @@ export type EngineSnapshot = {
   manifests: Manifests;
   connected: boolean;
 };
+
+/**
+ * One instance's slice (the fields a Tile actually reads), exposed as its own
+ * external store so a Tile re-renders on ITS data only — not on every 10 Hz
+ * state broadcast (FR-1). Mirrors the `InstanceInfo` subset the Tile/ParamPanel
+ * touch; the EngineLink keeps a STABLE reference for an unchanged instance
+ * across ticks so `useSyncExternalStore` bails out of the re-render.
+ */
+export type InstanceSlice = InstanceInfo;
+
+/**
+ * Session-level scalars Header reads (bpm/rms/fps/frame/audio/midi/projects/…).
+ * Split out so the Header re-renders only when one of these changes, not on the
+ * per-instance churn that dominates a busy session.
+ */
+export type SessionMeta = Omit<SessionSnapshot, "instances">;
+
+/** The session-level pointers a Tile reads (which tile is live/staged + PANIC). */
+export type StagePointers = { live: string | null; staged: string | null; panicked: boolean };
+
+/**
+ * The narrow projection a Tile actually DISPLAYS (FR-1). Deliberately excludes
+ * the high-churn telemetry a tile never shows — `slowSignals` (whose sort order
+ * flickers between near-equal tiny EMAs every tick) and `nodes`/`chain`/
+ * `modulators` (ParamPanel's concern) — so a tile wakes only when its own
+ * visible state changes, not on every engine tick. `frameMs` is quantized to the
+ * 0.1 ms the `.framems`/`tilefps` readouts show.
+ */
+export type TileSlice = {
+  id: string;
+  scene: string;
+  status: InstanceInfo["status"];
+  error: string | null;
+  frameMs: number;
+  pinned: "panic" | null;
+};
+
+function toTileSlice(inst: InstanceInfo): TileSlice {
+  return {
+    id: inst.id,
+    scene: inst.scene,
+    status: inst.status,
+    error: inst.error ?? null,
+    frameMs: Math.round((inst.frameMs ?? 0) * 10) / 10,
+    pinned: inst.pinned ?? null,
+  };
+}
+
+/**
+ * Quantize an instance's live telemetry to the precision the UI shows, so a
+ * sub-display-threshold wiggle doesn't change the slice's identity and wake the
+ * tile (FR-1). `frameMs` → 0.1 ms (the `.framems` / `tilefps` granularity);
+ * `slowSignals` ms → 0.1 (the PerfOverlay shows 2dp but it's not a tile reader
+ * and reads the whole snapshot anyway). Returns a NEW object only when a value
+ * actually changed at that precision — identity-preserving downstream.
+ */
+function quantizeTelemetry(inst: InstanceInfo): InstanceInfo {
+  const r1 = (n: number) => Math.round(n * 10) / 10;
+  return {
+    ...inst,
+    frameMs: r1(inst.frameMs ?? 0),
+    slowSignals: (inst.slowSignals ?? []).map((s) => ({ label: s.label, ms: r1(s.ms) })),
+  };
+}
 
 /** The BroadcastChannel surface EngineLink needs — injectable for unit tests. */
 export type ChannelLike = {
@@ -89,25 +153,67 @@ export class EngineLink {
   private readonly opHandlers = new Map<string, ConsoleOpHandler>();
 
   private seq = 0;
-  private readonly pending = new Map<
-    string,
-    { resolve: (v: unknown) => void; reject: (e: Error) => void }
-  >();
+  private readonly pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 
   private snapshot: EngineSnapshot = { session: null, manifests: {}, connected: false };
   private readonly listeners = new Set<() => void>();
+  // Narrow connected-flag store (FR-1): ConsoleApp (which hosts the DndContext)
+  // subscribes to THIS, not the full 10 Hz snapshot — so its DndContext value
+  // stays stable across state ticks and the dnd-kit `useSortable` consumers (the
+  // tiles) don't re-render via context on every broadcast (memo can't stop a
+  // context change; keeping the provider stable is the fix).
+  private connectedFlag = false;
+  private readonly connectedListeners = new Set<() => void>();
+  private hasSessionFlag = false;
+  private readonly hasSessionListeners = new Set<() => void>();
   private thumbsMap: Record<string, string> = {};
-  private readonly thumbListeners = new Set<() => void>();
+  // Per-id thumb listeners (FR-1/FR-2): a thumb pass updates only the ~few tiles
+  // it actually re-read (the producer round-robin cap), so waking ALL tiles on
+  // every pass — even those whose JPEG is unchanged — was a needless decode/render
+  // burst. Notify ONLY the listeners for ids whose data-URL actually changed.
+  private readonly thumbListenersById = new Map<string, Set<() => void>>();
+
+  // ── Narrow selector stores (FR-1) ──────────────────────────────────────────
+  // Stable per-slice references so a component re-renders on ITS slice only.
+  // Each is recomputed on a `state` message but KEEPS its previous identity when
+  // the slice's content is unchanged (structural compare), so useSyncExternalStore
+  // bails out. Listeners are sliced too: only the affected slice's subscribers
+  // wake. The monolithic `snapshot`/`subscribe` above stays for whole-tree
+  // readers (ConsoleApp owns selection/order); the slices kill the per-tile storm.
+  private instanceSlices = new Map<string, InstanceSlice>();
+  private readonly instanceSliceJson = new Map<string, string>();
+  private readonly instanceListeners = new Map<string, Set<() => void>>();
+  // The narrow tile projection (display fields only) — separate from the full
+  // instance slice so a tile never wakes on slowSignals/nodes churn (FR-1).
+  private readonly tileSlices = new Map<string, TileSlice>();
+  private readonly tileSliceJson = new Map<string, string>();
+  private readonly tileListeners = new Map<string, Set<() => void>>();
+  private instanceIds: string[] = [];
+  private readonly idsListeners = new Set<() => void>();
+  private availableScenesList: string[] = [];
+  private availableScenesJson = "";
+  private readonly scenesListeners = new Set<() => void>();
+  private sessionMeta: SessionMeta | null = null;
+  private sessionMetaJson = "";
+  private readonly metaListeners = new Set<() => void>();
+  // Stage pointers + rounded fps: the only session-level fields a Tile reads.
+  // Kept as their own rarely-changing slices so a tile never wakes on the 10 Hz
+  // frame-counter tick (which DOES churn sessionMeta, for the Header readout).
+  private stagePointers: StagePointers = { live: null, staged: null, panicked: false };
+  private stagePointersJson = "";
+  private readonly stageListeners = new Set<() => void>();
+  private engineFps = 0;
+  private readonly fpsListeners = new Set<() => void>();
+  private readonly manifestSlices = new Map<string, Record<string, ParamDesc>>();
+  private readonly manifestJson = new Map<string, string>();
+  private readonly manifestListeners = new Map<string, Set<() => void>>();
   private previewFrame: PreviewFrame | null = null;
   private readonly previewListeners = new Set<() => void>();
 
   private lastStateAt = -Infinity;
   private readonly timers: Array<ReturnType<typeof setInterval>> = [];
 
-  private readonly queued = new Map<
-    string,
-    { instance: string; path: string; value: number | boolean | string }
-  >();
+  private readonly queued = new Map<string, { instance: string; path: string; value: number | boolean | string }>();
   private flushScheduled = false;
 
   constructor(opts: EngineLinkOptions) {
@@ -121,14 +227,13 @@ export class EngineLink {
 
     this.ch.onmessage = (ev) => this.onMessage(ev.data);
     this.ch.postMessage({ kind: "hello", consoleId: this.consoleId });
-    this.timers.push(
-      setInterval(() => this.ch.postMessage({ kind: "hello", consoleId: this.consoleId }), HELLO_MS),
-    );
+    this.timers.push(setInterval(() => this.ch.postMessage({ kind: "hello", consoleId: this.consoleId }), HELLO_MS));
     this.timers.push(
       setInterval(() => {
         const connected = this.now() - this.lastStateAt < STALE_MS;
         if (connected !== this.snapshot.connected) {
           this.snapshot = { ...this.snapshot, connected };
+          this.setConnected(connected);
           this.emit();
         }
       }, CONNECTED_POLL_MS),
@@ -143,13 +248,274 @@ export class EngineLink {
     };
   };
   getSnapshot = (): EngineSnapshot => this.snapshot;
-  subscribeThumbs = (fn: () => void): (() => void) => {
-    this.thumbListeners.add(fn);
+
+  /** Narrow connected-flag store — ConsoleApp reads this, not the full snapshot. */
+  subscribeConnected = (fn: () => void): (() => void) => {
+    this.connectedListeners.add(fn);
     return () => {
-      this.thumbListeners.delete(fn);
+      this.connectedListeners.delete(fn);
     };
   };
+  connected = (): boolean => this.connectedFlag;
+  private setConnected(connected: boolean): void {
+    if (connected === this.connectedFlag) return;
+    this.connectedFlag = connected;
+    if (connected) this.markHasSession();
+    for (const fn of this.connectedListeners) fn();
+  }
+
+  /**
+   * Sticky "the engine has sent at least one state" flag — flips true once and
+   * never churns. ConsoleApp gates its tree on this (instead of the 10 Hz
+   * snapshot) so the chrome stays mounted across a disconnect, and ConsoleApp
+   * itself doesn't re-render on every state tick (keeping the DndContext stable).
+   */
+  hasSession = (): boolean => this.hasSessionFlag;
+  subscribeHasSession = (fn: () => void): (() => void) => {
+    this.hasSessionListeners.add(fn);
+    return () => {
+      this.hasSessionListeners.delete(fn);
+    };
+  };
+  private markHasSession(): void {
+    if (this.hasSessionFlag) return;
+    this.hasSessionFlag = true;
+    for (const fn of this.hasSessionListeners) fn();
+  }
+  /** Subscribe to ONE instance's thumbnail; wakes only when that JPEG changes. */
+  subscribeThumb =
+    (id: string) =>
+    (fn: () => void): (() => void) => {
+      let set = this.thumbListenersById.get(id);
+      if (set == null) {
+        set = new Set();
+        this.thumbListenersById.set(id, set);
+      }
+      set.add(fn);
+      return () => {
+        const s = this.thumbListenersById.get(id);
+        s?.delete(fn);
+        if (s != null && s.size === 0) this.thumbListenersById.delete(id);
+      };
+    };
   thumb = (id: string): string | undefined => this.thumbsMap[id];
+
+  // ── Selector-store accessors (FR-1) ─────────────────────────────────────────
+
+  /** Subscribe to one instance's slice; wakes only when THAT instance changes. */
+  subscribeInstance =
+    (id: string) =>
+    (fn: () => void): (() => void) => {
+      let set = this.instanceListeners.get(id);
+      if (set == null) {
+        set = new Set();
+        this.instanceListeners.set(id, set);
+      }
+      set.add(fn);
+      return () => {
+        const s = this.instanceListeners.get(id);
+        s?.delete(fn);
+        if (s != null && s.size === 0) this.instanceListeners.delete(id);
+      };
+    };
+  /** This instance's current slice (stable identity while unchanged), or undefined. */
+  instance = (id: string): InstanceSlice | undefined => this.instanceSlices.get(id);
+
+  /** Subscribe to one tile's NARROW display projection (FR-1) — the Tile reader. */
+  subscribeTile =
+    (id: string) =>
+    (fn: () => void): (() => void) => {
+      let set = this.tileListeners.get(id);
+      if (set == null) {
+        set = new Set();
+        this.tileListeners.set(id, set);
+      }
+      set.add(fn);
+      return () => {
+        const s = this.tileListeners.get(id);
+        s?.delete(fn);
+        if (s != null && s.size === 0) this.tileListeners.delete(id);
+      };
+    };
+  /** This tile's narrow display slice (stable while its visible state is unchanged). */
+  tile = (id: string): TileSlice | undefined => this.tileSlices.get(id);
+
+  /** Subscribe to the session-meta slice (Header scalars; no per-instance churn). */
+  subscribeMeta = (fn: () => void): (() => void) => {
+    this.metaListeners.add(fn);
+    return () => {
+      this.metaListeners.delete(fn);
+    };
+  };
+  meta = (): SessionMeta | null => this.sessionMeta;
+
+  /** Subscribe to the instance-id LIST (grid membership/order), not the contents. */
+  subscribeInstanceIds = (fn: () => void): (() => void) => {
+    this.idsListeners.add(fn);
+    return () => {
+      this.idsListeners.delete(fn);
+    };
+  };
+  ids = (): string[] => this.instanceIds;
+
+  /** Subscribe to the available scene-name list (the "+" picker), stable while unchanged. */
+  subscribeAvailableScenes = (fn: () => void): (() => void) => {
+    this.scenesListeners.add(fn);
+    return () => {
+      this.scenesListeners.delete(fn);
+    };
+  };
+  availableScenes = (): string[] => this.availableScenesList;
+
+  /** Subscribe to the stage pointers (live/staged/panicked) — what a Tile reads. */
+  subscribeStagePointers = (fn: () => void): (() => void) => {
+    this.stageListeners.add(fn);
+    return () => {
+      this.stageListeners.delete(fn);
+    };
+  };
+  pointers = (): StagePointers => this.stagePointers;
+
+  /** Subscribe to the rounded engine fps (tileFps ceiling). */
+  subscribeEngineFps = (fn: () => void): (() => void) => {
+    this.fpsListeners.add(fn);
+    return () => {
+      this.fpsListeners.delete(fn);
+    };
+  };
+  fps = (): number => this.engineFps;
+
+  /** Subscribe to one instance's manifest (ParamPanel); stable while unchanged. */
+  subscribeManifest =
+    (id: string) =>
+    (fn: () => void): (() => void) => {
+      let set = this.manifestListeners.get(id);
+      if (set == null) {
+        set = new Set();
+        this.manifestListeners.set(id, set);
+      }
+      set.add(fn);
+      return () => {
+        const s = this.manifestListeners.get(id);
+        s?.delete(fn);
+        if (s != null && s.size === 0) this.manifestListeners.delete(id);
+      };
+    };
+  manifest = (id: string): Record<string, ParamDesc> | undefined => this.manifestSlices.get(id);
+
+  /**
+   * Recompute the narrow slices from a fresh state message, KEEPING identity for
+   * any slice whose serialized content is unchanged so subscribers don't wake.
+   * Structural compare is JSON over small objects at ~10 Hz — cheap, and it's the
+   * one place this cost lives (vs. a full-tree React reconcile every tick).
+   */
+  private updateSlices(session: SessionSnapshot, manifests: Manifests): void {
+    // 1. Per-instance slices + the id list. CRUCIAL for FR-1: `frameMs` and
+    // `slowSignals` are live per-frame telemetry that wiggle EVERY tick (smoothed
+    // EMAs), so comparing the raw slice would wake every tile every tick — the
+    // storm would survive the memoization. Quantize that telemetry to the
+    // precision the UI actually shows (frameMs → 0.1 ms, the `.framems`/`tilefps`
+    // granularity) so a tile wakes only when its DISPLAYED value changes.
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const raw of session.instances ?? []) {
+      const inst = quantizeTelemetry(raw);
+      seen.add(inst.id);
+      ids.push(inst.id);
+      const json = JSON.stringify(inst);
+      if (this.instanceSliceJson.get(inst.id) !== json) {
+        this.instanceSliceJson.set(inst.id, json);
+        this.instanceSlices.set(inst.id, inst);
+        for (const fn of this.instanceListeners.get(inst.id) ?? []) fn();
+      }
+      // The narrow tile projection — its own change detection so a tile wakes
+      // only on its visible state, not the full slice's telemetry churn.
+      const tile = toTileSlice(inst);
+      const tileJson = JSON.stringify(tile);
+      if (this.tileSliceJson.get(inst.id) !== tileJson) {
+        this.tileSliceJson.set(inst.id, tileJson);
+        this.tileSlices.set(inst.id, tile);
+        for (const fn of this.tileListeners.get(inst.id) ?? []) fn();
+      }
+    }
+    for (const id of [...this.instanceSlices.keys()]) {
+      if (!seen.has(id)) {
+        this.instanceSlices.delete(id);
+        this.instanceSliceJson.delete(id);
+        this.tileSlices.delete(id);
+        this.tileSliceJson.delete(id);
+        for (const fn of this.instanceListeners.get(id) ?? []) fn();
+        for (const fn of this.tileListeners.get(id) ?? []) fn();
+      }
+    }
+    const idsJson = JSON.stringify(ids);
+    if (JSON.stringify(this.instanceIds) !== idsJson) {
+      this.instanceIds = ids;
+      for (const fn of this.idsListeners) fn();
+    }
+
+    // 1b. Available scene names (the "+" picker) — their own slice with a stable
+    // reference so TileGrid (memoized) isn't re-rendered by the fresh array
+    // identity the engine sends every tick.
+    const scenesJson = JSON.stringify(session.availableScenes);
+    if (scenesJson !== this.availableScenesJson) {
+      this.availableScenesJson = scenesJson;
+      this.availableScenesList = session.availableScenes;
+      for (const fn of this.scenesListeners) fn();
+    }
+
+    // 2. Session-meta slice (everything except the instances array). This DOES
+    // churn ~10 Hz because `frame` increments each tick — but only the Header
+    // (the frame counter) subscribes to it, so it's one re-render, not the tree.
+    const { instances: _drop, ...meta } = session;
+    const metaJson = JSON.stringify(meta);
+    if (metaJson !== this.sessionMetaJson) {
+      this.sessionMetaJson = metaJson;
+      this.sessionMeta = meta as SessionMeta;
+      for (const fn of this.metaListeners) fn();
+    }
+
+    // 2a. Stage pointers — what a Tile reads. Their own slice so a tile never
+    // wakes on the frame-counter tick that churns sessionMeta above.
+    const pointers: StagePointers = {
+      live: session.live,
+      staged: session.staged,
+      panicked: session.panicked,
+    };
+    const pointersJson = JSON.stringify(pointers);
+    if (pointersJson !== this.stagePointersJson) {
+      this.stagePointersJson = pointersJson;
+      this.stagePointers = pointers;
+      for (const fn of this.stageListeners) fn();
+    }
+
+    // 2b. Rounded engine fps — the tileFps ceiling. Rounded so a tile re-renders
+    // at most ~1 Hz on fps wobble, not every tick.
+    const fps = Math.round(session.fps);
+    if (fps !== this.engineFps) {
+      this.engineFps = fps;
+      for (const fn of this.fpsListeners) fn();
+    }
+
+    // 3. Per-instance manifest slices (ParamPanel reads manifests[selected]).
+    const haveManifests = new Set<string>();
+    for (const [id, m] of Object.entries(manifests)) {
+      haveManifests.add(id);
+      const json = JSON.stringify(m);
+      if (this.manifestJson.get(id) !== json) {
+        this.manifestJson.set(id, json);
+        this.manifestSlices.set(id, m);
+        for (const fn of this.manifestListeners.get(id) ?? []) fn();
+      }
+    }
+    for (const id of [...this.manifestSlices.keys()]) {
+      if (!haveManifests.has(id)) {
+        this.manifestSlices.delete(id);
+        this.manifestJson.delete(id);
+        for (const fn of this.manifestListeners.get(id) ?? []) fn();
+      }
+    }
+  }
 
   // Full-res preview stream (Console preview overlay). The latest frame, plus a
   // store shaped for useSyncExternalStore.
@@ -197,8 +563,8 @@ export class EngineLink {
     this.schedule(() => {
       this.flushScheduled = false;
       for (const w of this.queued.values()) {
-        void this.req("set_param", { instance: w.instance, path: w.path, value: w.value }).catch(
-          (err) => console.error("[loom-ui]", err),
+        void this.req("set_param", { instance: w.instance, path: w.path, value: w.value }).catch((err) =>
+          console.error("[loom-ui]", err),
         );
       }
       this.queued.clear();
@@ -235,17 +601,21 @@ export class EngineLink {
     }
     if (msg.kind === "state") {
       this.lastStateAt = this.now();
-      this.snapshot = {
-        session: msg.session as SessionSnapshot,
-        manifests: (msg.manifests as Manifests | undefined) ?? {},
-        connected: true,
-      };
+      const session = msg.session as SessionSnapshot;
+      const manifests = (msg.manifests as Manifests | undefined) ?? {};
+      this.snapshot = { session, manifests, connected: true };
+      this.setConnected(true);
+      this.updateSlices(session, manifests);
+      this.pruneThumbs(session);
       this.emit();
       return;
     }
     if (msg.kind === "thumbs") {
-      this.thumbsMap = { ...this.thumbsMap, ...(msg.thumbs as Record<string, string>) };
-      this.emitThumbs();
+      const incoming = msg.thumbs as Record<string, string>;
+      this.thumbsMap = { ...this.thumbsMap, ...incoming };
+      // Wake only the tiles whose JPEG actually arrived this pass (the producer's
+      // round-robin cap means that's a handful, not all of them).
+      for (const id of Object.keys(incoming)) this.notifyThumb(id);
       return;
     }
     if (msg.kind === "preview") {
@@ -282,10 +652,29 @@ export class EngineLink {
     }
   }
 
+  /**
+   * Drop cached thumbnails for instances no longer in the session (FR-4): the
+   * thumbsMap is spread-merged every pass and was never pruned, so a destroyed
+   * instance's data-URL lived forever. The state stream is the authoritative
+   * instance list; prune against it. Cheap — runs at most ~10 Hz on a small map.
+   */
+  private pruneThumbs(session: SessionSnapshot | null): void {
+    if (session == null) return;
+    const live = new Set((session.instances ?? []).map((i) => i.id));
+    for (const id of Object.keys(this.thumbsMap)) {
+      if (!live.has(id)) {
+        delete this.thumbsMap[id];
+        this.notifyThumb(id); // wake that (unmounting) tile's subscriber once
+      }
+    }
+  }
+
+  /** Notify only the listeners watching one instance's thumbnail. */
+  private notifyThumb(id: string): void {
+    for (const fn of this.thumbListenersById.get(id) ?? []) fn();
+  }
+
   private emit(): void {
     for (const fn of this.listeners) fn();
-  }
-  private emitThumbs(): void {
-    for (const fn of this.thumbListeners) fn();
   }
 }

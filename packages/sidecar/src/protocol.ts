@@ -606,6 +606,11 @@ export const PerfSnapshot = z.object({
   /** The worst single-instance frameMs seen across the recent sampling window. */
   worstFrameMsRecent: z.number(),
   /**
+   * Wall-time (ms) of the most recent OFF-LOOP thumbnail readback pass — the
+   * Console back-pressure meter (PerfOverlay / FR-6). 0 until a pass has run.
+   */
+  thumbPassMs: z.number().optional(),
+  /**
    * three's renderer.info counters (geometries/textures/draw calls), best-effort
    * (FR-7) — the early-warning meter for texture/geometry leaks across rebuilds.
    * Absent when the active backend doesn't expose them.

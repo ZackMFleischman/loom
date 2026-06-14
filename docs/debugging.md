@@ -93,12 +93,22 @@ surviving event was evicted during a quiet poll gap — you missed those events
 | `perf.frame.spike` | warn | an instance's frameMs crossed ~25 ms (1.5× budget) | `perf-events.ts:81` |
 | `perf.sample` | info | periodic heartbeat, every 60 frames (~1 s) | `perf-events.ts:97` |
 
-> **Subtle but important:** `instance.frozen` and `loopguard.tripped` carry the
-> *scene name* in their `instance` field, not the instance id — they're emitted
-> from the kernel via a static sink that only knows `sceneName`
-> (`instance.ts:115`). Every other kind carries the instance id. Filtering
-> `get_diagnostics { instance }` on a frozen event therefore matches by scene
-> name. (A documentation-worthy quirk; see "Gaps found" at the bottom.)
+> **`instance.frozen` / `loopguard.tripped` carry the instance id.** The kernel
+> `Instance` is built knowing only its scene name, so the engine stamps the
+> owning entry's id onto `Instance.instanceId` after create/rebuild/rename
+> (`session.ts`); the freeze/loop-guard emit uses that id (falling back to the
+> scene name only when unset — headless kernel use), and keeps the scene name in
+> the event's `data.scene` (`instance.ts`). So `get_diagnostics { instance:<id> }`
+> matches a freeze even on a sandbox whose id ≠ scene name. (Asserted in
+> `packages/runtime/test/instance-freeze-id.test.ts`.)
+>
+> Known gap (escalation): in the WebGL2 validator a render-time freeze's
+> console.error fires but no `instance.frozen` reaches the diagnostics ring (only
+> `perf.*` events do) — so the `Instance.diagSink` → ring delivery for an NFR-2
+> freeze isn't observable end-to-end there, even though `Instance.profilingEnabled`
+> (the sibling static set the same way in main.ts) clearly applies to content
+> instances. The id fix above is correct and unit-proven; making the freeze event
+> actually arrive in the ring is a separate, pre-existing follow-up.
 
 The two `perf.fps.*` thresholds (50/57) and the spike high-water mark
 (`FRAME_BUDGET_MS * 1.5`, ~25 ms) are the *edge* emitters that let you find a sag
@@ -202,6 +212,26 @@ LOOM has three independent render rates, each with its own readout:
 
 `.framems` goes amber above 8 ms; `.tilefps` amber below 30 fps, red when frozen
 (`Tile.tsx:221,234`).
+
+### The PerfOverlay — the human reader of the perf rollup
+
+The Console has a toggleable, **read-only** perf-diagnostics panel
+(`src/ui/console/PerfOverlay.tsx`, `#perfoverlay`): the human's window into the
+SAME instrumentation the agent reads over MCP — **one pipeline, two readers**.
+It consumes the `PerfSnapshot` that rides on the broadcast `session.perf` (built
+by `EngineApi.perfSnapshot()`, the exact block `get_diagnostics.perf` /
+`get_session.perf` deliver) plus the Console-local meters; it builds no competing
+pipeline (NFR-5).
+
+- **Toggle:** the header **PERF** button (`#perfbtn`) or the **`d`** hotkey
+  (consistent with the existing `i` rack / `p` preview hotkeys); `Esc` closes it
+  alongside preview.
+- **Surfaces:** Console UI fps (`#uifps`), Output fps + clock source, the
+  thumbnail-pass wall time (`perf.thumbPassMs` — the back-pressure meter; nearing
+  the 150 ms thumb interval means the round-robin cap is saturating), worst recent
+  frame, instance count, a coarse JS heap readout (`performance.memory`, Chromium
+  only), three's `renderer.info` counts when exposed, and the costliest instance's
+  `frameMs` + `slowSignals` (the per-signal cost attribution from the snapshot).
 
 ### `window.__loom` — the in-page debug surface
 
@@ -332,13 +362,15 @@ coverage step.
   instance render targets) is being built in a sibling branch. It is **not on
   main**; there is no such tool in `protocol.ts`'s `RequestType` or
   `sidecar/src/index.ts`. Mentioned here only so the doc doesn't imply it exists.
-- **Console PerfOverlay / perf view** — the diagnostics ring is an in-page
-  singleton *explicitly designed* so a future Console perf view can read the same
-  ring the agent reads ("one pipeline, two readers",
-  `diagnostics.ts:21-23,202-206`). That reader does **not exist yet** — there is
-  no `PerfOverlay` component. Today the only consumers of the ring are the MCP
-  `get_diagnostics` path and the DevTools console (`logDiag` dual-writes,
-  `diagnostics.ts:219-235`).
+- ~~**Console PerfOverlay / perf view** does not exist yet.~~ SHIPPED
+  (console-performance-stability): `src/ui/console/PerfOverlay.tsx` is the human
+  reader of the perf rollup (PERF button / `d` hotkey) — see "The PerfOverlay" in
+  the "For the human" section above. It reads the `PerfSnapshot` carried on the
+  broadcast `session.perf` (the same block the agent's `get_diagnostics.perf`
+  delivers), not the raw event timeline — that timeline is still consumed only by
+  the MCP `get_diagnostics` path and the DevTools console (`logDiag` dual-writes,
+  `diagnostics.ts:219-235`). Broadcasting the event ring to the Console reader is
+  a future step.
 
 ---
 
@@ -346,13 +378,12 @@ coverage step.
 
 These are signals worth a follow-up, surfaced by writing this doc against the code:
 
-1. **`instance.frozen` / `loopguard.tripped` report scene name, not instance id.**
-   The kernel's static `diagSink` only has `this.sceneName` (`instance.ts:115`),
-   so these two error kinds put the *scene name* in the `instance` field while
-   every other kind uses the instance id. `get_diagnostics { instance: <id> }`
-   will therefore miss a freeze on a sandbox instance whose id ≠ scene name.
-   Either the doc must warn agents (done above) or the engine should map
-   sceneName→id before emit.
+1. ~~**`instance.frozen` / `loopguard.tripped` report scene name, not instance
+   id.**~~ FIXED (console-performance-stability): the engine now stamps the
+   entry id onto `Instance.instanceId` after create/rebuild/rename and the emit
+   uses it (scene name preserved in `data.scene`). `get_diagnostics
+   { instance:<id> }` matches a freeze on any sandbox. See the "For the agent"
+   note above and `packages/runtime/test/instance-freeze-id.test.ts`.
 2. **No `get_perf` tool exists**, despite being referenced as a surface. The perf
    rollup is delivered only via `get_session.perf` and `get_diagnostics.perf`.
    This doc says so explicitly so an agent doesn't try to call it.

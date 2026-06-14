@@ -101,9 +101,21 @@ const previewWidth = (h: number): number => Math.round((h * 16) / 9);
 const snapPreviewLevel = (h: number): number =>
   PREVIEW_LEVELS.reduce((best, l) => (Math.abs(l - h) < Math.abs(best - h) ? l : best), PREVIEW_LEVELS[0]);
 const stepPreviewDown = (h: number): number =>
-  PREVIEW_LEVELS[Math.min(PREVIEW_LEVELS.indexOf(h as (typeof PREVIEW_LEVELS)[number]) + 1, PREVIEW_LEVELS.length - 1)]!;
+  PREVIEW_LEVELS[
+    Math.min(PREVIEW_LEVELS.indexOf(h as (typeof PREVIEW_LEVELS)[number]) + 1, PREVIEW_LEVELS.length - 1)
+  ]!;
 const stepPreviewUp = (h: number): number =>
   PREVIEW_LEVELS[Math.max(PREVIEW_LEVELS.indexOf(h as (typeof PREVIEW_LEVELS)[number]) - 1, 0)]!;
+
+/**
+ * Max NON-priority (sandbox) instances read back per thumbnail pass (FR-2). The
+ * live/staged/panic-pinned set is always read on top of this; the rest
+ * round-robin across passes. Bounds a single pass's GPU-readback cost so the
+ * effective thumb rate degrades gracefully under a busy session rather than
+ * collapsing uniformly. ~4 readbacks/pass × 6.6 Hz keeps every tile fresh
+ * within a couple seconds even at a dozen instances.
+ */
+const THUMB_READBACK_CAP = 4;
 
 /** Pseudo-instance id serving the global manifest (input rack tunings). */
 const GLOBALS = "globals";
@@ -179,7 +191,10 @@ export interface EngineDeps {
   /** Fixtures — deterministic input traces (main.ts owns recording + replay shots). */
   fixtures: {
     /** Capture the live rack for N frames; resolves when the trace is written. */
-    record(name: string, frames: number): Promise<{ saved: string; path: string; frames: number; channels: string[]; bpm: number }>;
+    record(
+      name: string,
+      frames: number,
+    ): Promise<{ saved: string; path: string; frames: number; channels: string[]; bpm: number }>;
     /** Load + validate a saved trace. */
     load(name: string): Promise<FixtureData>;
     /** Deterministic offline captures of a fixture entry at the given frames. */
@@ -216,9 +231,7 @@ export class EngineApi {
    * most-recently-hello'd Console and awaits the reply. Null until the channel
    * wires it (so the agent gets a clean "no Console" error, never a crash).
    */
-  private consoleRequester:
-    | ((op: string, payload: Record<string, unknown>) => Promise<unknown>)
-    | null = null;
+  private consoleRequester: ((op: string, payload: Record<string, unknown>) => Promise<unknown>) | null = null;
 
   // The live output's thumbnail source. The WebGL canvas is only readable in
   // the task that rendered it, so the render loop mirrors it in here (a 2D
@@ -227,6 +240,11 @@ export class EngineApi {
   private readonly liveMirrorCtx: CanvasRenderingContext2D;
   private liveMirrorAt = -Infinity;
   private consoleSeenAt = -Infinity;
+
+  /** Round-robin cursor into the non-priority instance list (FR-2 thumb cap). */
+  private thumbCursor = 0;
+  /** Wall-time (ms) of the most recent thumbnails() pass (overlay/debug). */
+  private lastThumbMs = 0;
 
   // Full-res preview stream state. `preview` is the active request (instance +
   // user-chosen ceiling). The previewed instance always renders at the LIVE
@@ -757,8 +775,7 @@ export class EngineApi {
         const { name, tileOrder } = SaveProjectArgs.parse(req.args);
         if (source === "agent" && !this.agentCommitArmed) {
           throw new Error(
-            "agent project save is not armed — ask the human to save from the Console, " +
-              "or to arm agent commit",
+            "agent project save is not armed — ask the human to save from the Console, " + "or to arm agent commit",
           );
         }
         return await this.deps.projects.save(name, tileOrder);
@@ -775,10 +792,8 @@ export class EngineApi {
         // verbs, live-commit arming) is enforced exactly as a direct call would
         // be. Serial in request order; `stopOnError` aborts the remainder.
         const { mode, stopOnError, calls } = BatchArgs.parse(req.args);
-        const results: Array<
-          | { ok: true; tool: string; result: unknown }
-          | { ok: false; tool: string; error: string }
-        > = [];
+        const results: Array<{ ok: true; tool: string; result: unknown } | { ok: false; tool: string; error: string }> =
+          [];
         for (const call of calls) {
           if (call.tool === "batch") {
             // Reject nesting rather than recurse — keeps the fan-out one level
@@ -1004,6 +1019,7 @@ export class EngineApi {
       frame: this.deps.latestFrame().frame,
       instances,
       worstFrameMsRecent: Math.round(this.deps.worstFrameMsRecent() * 100) / 100,
+      thumbPassMs: this.thumbPassMs(),
       ...(renderer != null ? { renderer } : {}),
     };
   }
@@ -1054,30 +1070,78 @@ export class EngineApi {
     const params = e.instance.manifest.toJSON() as Record<string, Record<string, unknown>>;
     for (const path of Object.keys(params)) {
       const m = e.modulators.get(path);
-      params[path]!.modulator =
-        m != null && m.error == null ? { ...m.spec, enabled: m.enabled } : null;
+      params[path]!.modulator = m != null && m.error == null ? { ...m.spec, enabled: m.enabled } : null;
     }
     return params;
   }
 
-  /** Small JPEG thumbnails per instance for the Console tiles. */
+  /**
+   * Small JPEG thumbnails per instance for the Console tiles (FR-2: bounded
+   * back-pressure). Each pass:
+   *
+   *  - ALWAYS reads the priority set: the LIVE instance (cheap canvas mirror,
+   *    plus its panic-held last-good frame), the STAGED candidate, and any
+   *    panic-pinned SAFE target — the cockpit must never lose sight of these.
+   *  - Reads at most {@link THUMB_READBACK_CAP} *other* (sandbox) instances per
+   *    pass, ROUND-ROBINing the remainder across passes so every tile still
+   *    refreshes — just not all at once. A single pass's GPU-readback cost is
+   *    thus bounded by the cap, not by the instance count, so the effective
+   *    thumbnail rate degrades gracefully instead of collapsing uniformly under
+   *    a busy session (DECISIONS: the per-pass time grew linearly before).
+   *
+   * The pass wall-time is recorded ({@link lastThumbMs}) for the PerfOverlay /
+   * `window.__loom`. Off the render loop entirely (NFR-4).
+   */
   async thumbnails(width = 640, height = 360): Promise<Record<string, string>> {
+    const t0 = performance.now();
     const out: Record<string, string> = {};
-    for (const e of this.deps.session.entries.values()) {
+    const live = this.deps.stage.live;
+    const entries = [...this.deps.session.entries.values()];
+
+    // The always-on priority set: live + staged + panic-pinned (edge case from
+    // the spec — keep them in the priority set so PANIC stays visible).
+    const priority = new Set<string>();
+    if (live != null) priority.add(live);
+    if (this.deps.stage.staged != null) priority.add(this.deps.stage.staged);
+    for (const e of entries) if (e.pinned === "panic") priority.add(e.id);
+
+    const readOne = async (e: Entry): Promise<void> => {
       try {
         // The live entry shows what the audience sees (loop-mirrored canvas);
-        // everyone else reads back their offscreen preview target at its full
-        // 640×360 res — enough for the 2x tiles AND /staged.html full-screen
-        // (the old staged-only 2x special case is now just the default).
+        // everyone else reads back their offscreen preview target.
         out[e.id] =
-          e.id === this.deps.stage.live
+          e.id === live
             ? this.liveMirror.toDataURL("image/jpeg", 0.7)
             : await this.readTarget(e, width, height, "image/jpeg");
       } catch {
         // skip a tile this round rather than break the loop
       }
+    };
+
+    // 1. Priority instances — always, every pass.
+    for (const e of entries) {
+      if (priority.has(e.id)) await readOne(e);
     }
+
+    // 2. The rest, round-robined, capped per pass. Rotate the start index so a
+    // different slice refreshes each pass and no tile is starved forever.
+    const rest = entries.filter((e) => !priority.has(e.id));
+    if (rest.length > 0) {
+      const cap = Math.min(THUMB_READBACK_CAP, rest.length);
+      for (let k = 0; k < cap; k++) {
+        const e = rest[(this.thumbCursor + k) % rest.length]!;
+        await readOne(e);
+      }
+      this.thumbCursor = (this.thumbCursor + cap) % rest.length;
+    }
+
+    this.lastThumbMs = performance.now() - t0;
     return out;
+  }
+
+  /** Wall-time (ms) of the most recent {@link thumbnails} pass — overlay/debug only. */
+  thumbPassMs(): number {
+    return Math.round(this.lastThumbMs * 100) / 100;
   }
 
   /** Live output renders straight to the canvas outside a crossfade. */
@@ -1169,8 +1233,7 @@ export class EngineApi {
     // never route it through the compositor — mirror the canvas instead. During
     // hold / scene-panic the canvas isn't showing this instance, so we route its
     // offscreen render rather than mirror a stale canvas.
-    const isLive =
-      this.deps.stage.live === p.id && mode !== "hold" && mode !== "panic-scene";
+    const isLive = this.deps.stage.live === p.id && mode !== "hold" && mode !== "panic-scene";
     // Route a sandbox candidate into previewRT (replacing its thumbnail render —
     // one render, never a second/stateful pass); leave the live instance to its
     // canvas mirror.
@@ -1187,13 +1250,7 @@ export class EngineApi {
   mirrorPreviewCanvas(): void {
     if (this.preview == null || this.previewRouteId != null) return;
     try {
-      this.previewMirrorCtx.drawImage(
-        this.deps.canvas,
-        0,
-        0,
-        this.previewMirror.width,
-        this.previewMirror.height,
-      );
+      this.previewMirrorCtx.drawImage(this.deps.canvas, 0, 0, this.previewMirror.width, this.previewMirror.height);
     } catch {
       // A bad capture must never disturb the live loop.
     }

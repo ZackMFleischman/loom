@@ -1,1 +1,1 @@
-export { default } from "./soft-serve.scene";
+export { default } from "./mandelbulb.scene";
