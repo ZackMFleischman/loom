@@ -1516,3 +1516,40 @@ destroy/rename protection, human-only trust tier).
   86 engine-app + 35 sidecar; 434 content; 11 script; `panic-controller.test.ts`
   rewritten for the no-build API);
   `pnpm validate:panic` **18/18 green** (ran in-env on the WebGL2 fallback).
+
+## 2026-06-13 — App instrumentation: structured diagnostics ring + get_diagnostics (SHIPPED)
+
+A bounded, hot-path-safe event ring (`packages/engine-app/src/diagnostics.ts`)
+plus an MCP `get_diagnostics` tool give the agent the HISTORY the snapshot
+surfaces lacked (what build/swap/freeze/perf event led to a number).
+
+- **In-house ring, no library on the hot path (NFR-1/NFR-2).** ~512-entry
+  preallocated array; `push` is integer-stamp + modulo-write, WRAPPED so an
+  instrumentation bug can never throw into `renderFrame`/`tick`. Serialization
+  (Zod, filter, slice) happens ONLY in the request handler. `?diag=0` off switch
+  mirrors `?profile=0`. In-page singleton so the future Console perf view reads
+  the same ring (one pipeline, two readers).
+- **Runtime keeps no engine dependency.** The NFR-2 freeze emits through a static
+  `Instance.diagSink` (mirrors `Instance.profilingEnabled`); `instance.frozen` vs
+  `loopguard.tripped` is distinguished by the loop-guard message prefix, factored
+  into a dependency-free `loopguard-prefix.ts` so `instance.ts` never pulls the
+  `typescript` compiler into the browser bundle.
+- **22 `[loom]` console sites re-routed** via `logDiag` (console AND ring):
+  scene.swapped/rejected, instance.rebuilt/rejected/removed/frozen,
+  inputs.redefined/rejected, effects.reloaded, audio.fallback, panic.engaged/
+  resumed, loopguard.tripped. Sampled + threshold perf events (FR-3) in
+  `perf-events.ts` off the render tick (fps.low/recovered, frame.spike, sample).
+- **Wire contract (NFR-5).** `DiagEvent`/`PerfSnapshot`/`SidecarToolStat` Zod in
+  protocol.ts; `kind` is an OPEN string (new kinds emit without a protocol bump).
+  `perf` block folded onto `get_session` + standalone via `get_diagnostics`;
+  separate `get_diagnostics` tool for the timeline. Both read-only, agent-allowed.
+- **Sidecar latency (FR-6).** `ToolMetrics` grew a per-tool p50/p95/outcome
+  table; `Broker.onSettle` reports every mint→settle. `get_diagnostics
+  { scope:"sidecar" }` answers it locally (no engine round-trip).
+- **renderer.info (FR-7)** is best-effort (defensive read; any missing counter
+  drops the whole block) — not gated, cheap.
+- Gates: `pnpm typecheck` green; `pnpm test` green (302 package = 239 runtime +
+  120 engine-app + 43 sidecar; 434 content; 16 script); `pnpm validate:m2`
+  **24/24 green** on the WebGL2 fallback (forced bad save → `scene.rejected`
+  surfaced @frame 558 on "boot", live pixels unchanged, `since` paging, sidecar
+  latency table, `?diag=0` vs `?diag=1` both 60 fps).

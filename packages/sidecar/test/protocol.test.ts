@@ -5,8 +5,13 @@ import {
   ClearModulationArgs,
   CommitArgs,
   CreateInstanceArgs,
+  DiagEvent,
+  GetDiagnosticsArgs,
+  GetDiagnosticsResult,
+  GetSidecarDiagnosticsResult,
   InstanceArgs,
   MidiTargetArgs,
+  PerfSnapshot,
   ModulateParamArgs,
   RequestMsg,
   ResponseMsg,
@@ -24,7 +29,7 @@ describe("RequestMsg", () => {
       "screenshot", "create_instance", "destroy_instance", "stage", "unstage", "commit",
       "set_chain", "save_chain", "preview_effect",
       "panic", "resume", "set_transport", "arm_agent_commit",
-      "midi_learn", "midi_unbind", "batch",
+      "midi_learn", "midi_unbind", "get_diagnostics", "batch",
     ];
     for (const type of types) {
       const msg = RequestMsg.parse({ id: "r1", kind: "req", type, args: {} });
@@ -194,5 +199,80 @@ describe("chain args (M6)", () => {
     expect(SaveChainArgs.parse({ name: "vhsStack" }).instance).toBe("live");
     expect(() => SaveChainArgs.parse({})).toThrow();
     expect(() => SaveChainArgs.parse({ name: "VHS Stack" })).toThrow();
+  });
+});
+
+describe("Diagnostics schemas (app-instrumentation)", () => {
+  it("GetDiagnosticsArgs defaults scope to engine and accepts filters", () => {
+    expect(GetDiagnosticsArgs.parse({}).scope).toBe("engine");
+    const a = GetDiagnosticsArgs.parse({
+      since: 100,
+      kinds: ["scene.rejected", "instance.frozen"],
+      instance: "aurora-2",
+      level: "error",
+      limit: 50,
+    });
+    expect(a).toMatchObject({ scope: "engine", since: 100, instance: "aurora-2", level: "error", limit: 50 });
+    expect(GetDiagnosticsArgs.parse({ scope: "sidecar" }).scope).toBe("sidecar");
+    expect(() => GetDiagnosticsArgs.parse({ scope: "bogus" })).toThrow();
+    expect(() => GetDiagnosticsArgs.parse({ limit: 0 })).toThrow();
+  });
+
+  it("DiagEvent keeps kind an OPEN string (no enum gate — NFR-5)", () => {
+    const e = DiagEvent.parse({
+      seq: 7,
+      frame: 5101,
+      t: 1234.5,
+      level: "error",
+      kind: "scene.rejected",
+      instance: "boot",
+      msg: 'scene "aurora" rejected; keeping previous',
+      data: { error: "boom" },
+    });
+    expect(e.kind).toBe("scene.rejected");
+    // A brand-new kind parses without a protocol change.
+    expect(DiagEvent.parse({ seq: 1, frame: 1, t: 1, level: "info", kind: "brand.new.kind", msg: "x" }).kind).toBe(
+      "brand.new.kind",
+    );
+  });
+
+  it("PerfSnapshot makes renderer counts optional (best-effort FR-7)", () => {
+    const base = {
+      fps: 60,
+      clockSource: "raf" as const,
+      frameBudgetMs: 16.67,
+      frame: 100,
+      instances: [{ id: "boot", frameMs: 4.2, slowSignals: [{ label: "trail", ms: 0.3 }] }],
+      worstFrameMsRecent: 5.1,
+    };
+    expect(PerfSnapshot.parse(base).renderer).toBeUndefined();
+    expect(
+      PerfSnapshot.parse({ ...base, renderer: { geometries: 3, textures: 5, drawCalls: 12 } }).renderer,
+    ).toEqual({ geometries: 3, textures: 5, drawCalls: 12 });
+  });
+
+  it("GetDiagnosticsResult and the sidecar latency result parse", () => {
+    const engine = GetDiagnosticsResult.parse({
+      scope: "engine",
+      events: [{ seq: 0, frame: 1, t: 1, level: "info", kind: "scene.swapped", msg: "ok" }],
+      dropped: 0,
+      now: { frame: 2, fps: 60, seq: 1 },
+      perf: {
+        fps: 60,
+        clockSource: "raf",
+        frameBudgetMs: 16.67,
+        frame: 2,
+        instances: [],
+        worstFrameMsRecent: 0,
+      },
+    });
+    expect(engine.events[0]!.kind).toBe("scene.swapped");
+
+    const sidecar = GetSidecarDiagnosticsResult.parse({
+      scope: "sidecar",
+      engineConnected: true,
+      tools: [{ tool: "set_param", count: 3, ok: 2, error: 1, timeout: 0, p50: 10, p95: 30, max: 30, lastError: "x" }],
+    });
+    expect(sidecar.tools[0]!.tool).toBe("set_param");
   });
 });

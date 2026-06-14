@@ -19,6 +19,7 @@ import {
   ClearModulationArgs,
   CommitArgs,
   CreateInstanceArgs,
+  GetDiagnosticsArgs,
   InstanceArgs,
   LiveStepArgs,
   LoadProjectArgs,
@@ -48,6 +49,7 @@ import {
   type MidiMessageLog,
   type PanicMode,
   type PanicSceneInfo,
+  type PerfSnapshot,
   type PreviewFrame,
   type RequestMsg,
   type ScreenshotResult,
@@ -55,6 +57,8 @@ import {
 } from "@loom/sidecar/protocol";
 import { RenderTarget, type WebGPURenderer } from "three/webgpu";
 import { readTargetToDataUrl } from "./readback";
+import { diag } from "./diagnostics";
+import { FRAME_BUDGET_MS } from "./perf-events";
 import { entryStatus, PREVIEW_H, PREVIEW_W, type Entry, type SessionStore } from "./session";
 
 /** Who issued a command: the MCP bridge ("agent") or the Console ("human"). */
@@ -155,6 +159,10 @@ export interface EngineDeps {
   /** Same-task canvas capture, resolved by the render loop (live output only). */
   captureCanvas(): Promise<ScreenshotResult>;
   fps(): number;
+  /** Which clock drove the last frame (perf rollup, FR-5). */
+  clockSource(): "raf" | "worker";
+  /** Worst single-instance frameMs across the recent perf window (FR-5). */
+  worstFrameMsRecent(): number;
   rms(): number;
   onsetCount(): number;
   /** Current crossfade mix from the last directive, or null. */
@@ -303,6 +311,26 @@ export class EngineApi {
     switch (req.type) {
       case "get_session":
         return this.snapshot();
+      case "get_diagnostics": {
+        // Read-only timeline query. Serialization happens HERE (off the render
+        // tick) — the ring's hot path is append-only (NFR-1). scope:"sidecar" is
+        // answered by the sidecar itself; the engine only serves scope:"engine".
+        const args = GetDiagnosticsArgs.parse(req.args);
+        const q = diag.query({
+          ...(args.since != null ? { since: args.since } : {}),
+          ...(args.kinds != null ? { kinds: args.kinds } : {}),
+          ...(args.instance != null ? { instance: this.resolveId(args.instance) } : {}),
+          ...(args.level != null ? { level: args.level } : {}),
+          ...(args.limit != null ? { limit: args.limit } : {}),
+        });
+        return {
+          scope: "engine",
+          events: q.events,
+          dropped: q.dropped,
+          now: { frame: q.now.frame, fps: q.now.fps, seq: diag.total },
+          perf: this.perfSnapshot(),
+        };
+      }
       case "get_manifest": {
         const { instance } = InstanceArgs.parse(req.args);
         if (instance === GLOBALS) {
@@ -611,10 +639,17 @@ export class EngineApi {
         const effective = mode ?? this.armedPanicMode;
         const panicId = effective === "scene" ? this.deps.panicInstanceId() : null;
         stage.panic(panicId != null ? "scene" : "hold", panicId);
+        diag.push({
+          level: "warn",
+          kind: "panic.engaged",
+          msg: `PANIC engaged (${stage.panicActive})`,
+          data: { mode: stage.panicActive, ...(panicId != null ? { safe: panicId } : {}) },
+        });
         return { panicked: true, mode: stage.panicActive };
       }
       case "resume":
         stage.resume();
+        diag.push({ level: "info", kind: "panic.resumed", msg: "PANIC resumed; live output restored" });
         return { panicked: false };
       case "arm_panic_mode": {
         const { mode } = ArmPanicModeArgs.parse(req.args);
@@ -916,7 +951,53 @@ export class EngineApi {
       onsetCount: this.deps.onsetCount(),
       fps: this.deps.fps(),
       frame: this.deps.latestFrame().frame,
+      perf: this.perfSnapshot(),
     };
+  }
+
+  /**
+   * The engine-health rollup (FR-5): fps/clockSource/frameBudget, per-instance
+   * frameMs + costliest signals (reused from the snapshot), the worst recent
+   * frame, and best-effort renderer.info resource counts (FR-7). Folded onto
+   * get_session and returned by get_diagnostics. Pure read — never on the tick.
+   */
+  perfSnapshot(): PerfSnapshot {
+    const instances = [...this.deps.session.entries.values()].map((e) => ({
+      id: e.id,
+      frameMs: Math.round(e.instance.frameMs * 100) / 100,
+      slowSignals: e.instance.slowSignals(),
+    }));
+    return {
+      fps: this.deps.fps(),
+      clockSource: this.deps.clockSource(),
+      frameBudgetMs: Math.round(FRAME_BUDGET_MS * 100) / 100,
+      frame: this.deps.latestFrame().frame,
+      instances,
+      worstFrameMsRecent: Math.round(this.deps.worstFrameMsRecent() * 100) / 100,
+      ...(this.rendererInfo() != null ? { renderer: this.rendererInfo()! } : {}),
+    };
+  }
+
+  /**
+   * Best-effort three renderer.info counters (FR-7) — leak detection across
+   * rebuilds. Coverage varies by backend (WebGPU vs WebGL2 fallback), so this is
+   * defensive: any missing field drops the whole block rather than report zeros.
+   */
+  private rendererInfo(): { geometries: number; textures: number; drawCalls: number } | null {
+    try {
+      const info = (this.deps.renderer as { info?: unknown }).info as
+        | { memory?: { geometries?: number; textures?: number }; render?: { drawCalls?: number } }
+        | undefined;
+      const geometries = info?.memory?.geometries;
+      const textures = info?.memory?.textures;
+      const drawCalls = info?.render?.drawCalls;
+      if (typeof geometries !== "number" || typeof textures !== "number" || typeof drawCalls !== "number") {
+        return null;
+      }
+      return { geometries, textures, drawCalls };
+    } catch {
+      return null;
+    }
   }
 
   /** Console state payload: snapshot plus full manifests for param panels. */

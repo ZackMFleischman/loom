@@ -13,6 +13,7 @@ import {
   CommitArgs,
   CreateInstanceArgs,
   DEFAULT_WS_PORT,
+  GetDiagnosticsArgs,
   InstanceArgs,
   LoadProjectArgs,
   ModulateParamArgs,
@@ -440,6 +441,45 @@ const TOOLS = [
     },
   },
   {
+    name: "get_diagnostics",
+    description:
+      "Read the engine's structured event TIMELINE — what just happened across the build/swap/" +
+      "render path, the history get_session's instant snapshot can't show. Use the loop: act " +
+      "(save a scene, set_chain, create_instance) → get_diagnostics { since: <last now.seq> } → " +
+      "see what your action triggered (e.g. a scene.rejected event your save caused) → screenshot " +
+      "to confirm pixels. Events are { seq, frame, t, level, kind, instance?, msg, data? }; kind is " +
+      "a dotted name like scene.swapped, scene.rejected, instance.rebuilt, instance.frozen, " +
+      "loopguard.tripped, perf.fps.low, perf.frame.spike, perf.sample, panic.engaged. Page forward " +
+      "with `since` (the seq cursor in `now.seq`); `dropped` tells you how many events the ring " +
+      "evicted since your cursor (you missed them). Filter with kinds/instance/level/limit. The " +
+      "result also carries a `perf` rollup (fps, clockSource, per-instance frameMs/slowSignals, " +
+      "worst recent frame, best-effort renderer counts). Pass scope:\"sidecar\" instead to see " +
+      "THIS layer's own per-tool MCP-call latency (p50/p95, ok/error/timeout) — which tools are slow.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scope: {
+          type: "string",
+          enum: ["engine", "sidecar"],
+          description:
+            'Default "engine" = the event timeline + perf rollup. "sidecar" = this process\'s own per-tool MCP-call latency table.',
+        },
+        since: {
+          type: "integer",
+          description: "Return events with seq > this cursor (page forward from a prior now.seq).",
+        },
+        kinds: {
+          type: "array",
+          items: { type: "string" },
+          description: 'Filter to these event kinds, e.g. ["scene.rejected","instance.frozen"].',
+        },
+        instance: { type: "string", description: "Filter to one instance id." },
+        level: { type: "string", enum: ["info", "warn", "error"], description: "Minimum severity." },
+        limit: { type: "integer", description: "Cap returned events (newest kept; 1..512)." },
+      },
+    },
+  },
+  {
     name: "batch",
     description:
       "Run several of these tools in ONE call — the lowest-latency way to make many changes at " +
@@ -492,6 +532,10 @@ const server = new Server({ name: "loom", version: "0.2.0" }, { capabilities: { 
 // still streaming single set_param calls? A digest hits stderr every 25 calls
 // (and on shutdown) — read it from the MCP server logs. Off the hot path.
 const metrics = new ToolMetrics();
+// Per-tool MCP-call latency/outcome (FR-6): the broker reports every settled
+// request (mint→settle) here, so get_diagnostics { scope:"sidecar" } can show
+// the agent its own call cost — the one telemetry layer the engine ring can't see.
+broker.onSettle = (tool, durationMs, outcome, error) => metrics.observe(tool, durationMs, outcome, error);
 const METRICS_EVERY = 25;
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
@@ -626,6 +670,22 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const a = RecordFixtureArgs.parse(args);
         // Recording runs in real time: N frames at ~60 fps plus write headroom.
         const result = await broker.request("record_fixture", { ...a }, Math.ceil((a.frames / 60) * 1000) + 10_000);
+        return textResult(result);
+      }
+      case "get_diagnostics": {
+        const parsed = GetDiagnosticsArgs.parse(args);
+        if (parsed.scope === "sidecar") {
+          // Answered locally — this is the sidecar's OWN call-latency table; the
+          // engine can't see it. No engine round-trip needed.
+          return textResult({
+            scope: "sidecar",
+            engineConnected: broker.connected,
+            tools: metrics.latencyTable(),
+          });
+        }
+        // scope:"engine": the event timeline + perf rollup from the engine ring.
+        const { scope: _scope, ...engineArgs } = parsed;
+        const result = await broker.request("get_diagnostics", { ...engineArgs });
         return textResult(result);
       }
       case "batch": {
