@@ -39,6 +39,12 @@ jobs:
         run: pnpm lint
       - name: unit tests
         run: pnpm test
+      - name: coverage gate (packages/ only — never measures content/)
+        # v8 coverage over packages/*/src/**; thresholds = the ratchet floor
+        # (= current measured coverage), so this gates from day one without risk.
+        # Physically excludes content/ (vitest.coverage.shared.ts) — the creative
+        # loop is untouched (coverage lives only here + `pnpm test:coverage`).
+        run: pnpm test:coverage
       - name: production build (the static preview bundle)
         run: pnpm --filter @loom/engine-app exec vite build
 
