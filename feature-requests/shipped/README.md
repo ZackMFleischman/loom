@@ -14,3 +14,4 @@ when its PR merges.
 | app-instrumentation | #14 | `47b858e` |
 | console-ui-refactor | #15 | `be4ffcf` |
 | console-screenshot | #17 | `f9ac162` |
+| console-performance-stability | #24 | `8b99b02` |
