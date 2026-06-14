@@ -35,6 +35,14 @@ type Props = {
   dense?: boolean;
   /** Fill the parent's width instead of the fixed dense rack width (FX-chain rows). */
   fill?: boolean;
+  /**
+   * Main param-list mode: emit the row as cells of the parent section CSS grid
+   * (shared label column + aligned controls) instead of a self-contained flex
+   * row. The parent (`ParamPanel`) supplies the grid + `--label-max`; the label
+   * lands in column 1, the control cluster in column 2. Off for dense rack /
+   * FX-chain rows, which keep their compact flex layout.
+   */
+  grid?: boolean;
   /** A color param's channel widgets (when decomposed) — rendered inline below. */
   colorChannels?: Array<[string, ParamDesc]>;
 };
@@ -49,7 +57,7 @@ type Props = {
  * ToggleButton; data-learn on the learn button with exact text "M" / "···" /
  * "cc<N>"; data-value on the numeric readout.
  */
-export function ParamWidget({ instance, path, p, label, dense, fill, colorChannels }: Props) {
+export function ParamWidget({ instance, path, p, label, dense, fill, grid, colorChannels }: Props) {
   const link = useEngine();
   const { session } = useEngineState();
   const [drag, setDrag] = useState<number | null>(null);
@@ -69,7 +77,6 @@ export function ParamWidget({ instance, path, p, label, dense, fill, colorChanne
   const max = typeof p.max === "number" ? p.max : 1;
   // A plain slider (float or unlabelled int) has an editable range; toggles,
   // bools and colors don't.
-  const rangeable = (p.type === "float" || p.type === "int") && p.labels == null;
   const isSlider = (p.type === "float" || p.type === "int") && p.labels == null;
   const rangeOverridden = p.defaultRange != null;
   const openRange = (e: MouseEvent) => {
@@ -133,35 +140,52 @@ export function ParamWidget({ instance, path, p, label, dense, fill, colorChanne
 
   const inputAttrs = { "data-path": path } as InputHTMLAttributes<HTMLInputElement>;
 
-  return (
-    <Box
-      className={`widget${modulated ? " modulated" : ""}`}
-      sx={{ mb: dense ? (fill ? 0.5 : 0) : 0.75, width: fill || !dense ? "auto" : 170 }}
+  // Grid mode (main param list): the label is a grid cell in the section's
+  // shared column (sized by the parent grid, wrapping past --label-max), and
+  // the control cluster is a second cell. Dense rack / FX-chain rows keep the
+  // self-contained flex row. The label tooltip + full text are preserved both
+  // ways (FR-4).
+  const labelEl = (
+    <Tooltip
+      title={
+        p.description != null && p.description !== ""
+          ? `${label ?? path} — ${p.description}`
+          : (label ?? path)
+      }
+      placement="top"
+      enterDelay={350}
+      disableInteractive
     >
-      <Stack
-        direction="row"
-        spacing={0.5}
-        alignItems="center"
-        flexWrap={p.labels != null ? "wrap" : undefined}
+      <Typography
+        variant="body2"
+        noWrap={!grid}
+        sx={
+          grid
+            ? {
+                // Column 1 of the section grid: top-aligned to the first line,
+                // wraps inside the capped column instead of truncating (FR-2).
+                gridColumn: 1,
+                alignSelf: "start",
+                minWidth: 0,
+                pt: "3px",
+                overflowWrap: "anywhere",
+                wordBreak: "break-word",
+              }
+            : isSlider
+              ? { flex: "0 0 auto", maxWidth: 96, minWidth: 0 }
+              : { flex: 1, minWidth: 0 }
+        }
       >
-        <Tooltip
-          title={
-            p.description != null && p.description !== ""
-              ? `${label ?? path} — ${p.description}`
-              : (label ?? path)
-          }
-          placement="top"
-          enterDelay={350}
-          disableInteractive
-        >
-          <Typography
-            variant="body2"
-            noWrap
-            sx={isSlider ? { flex: "0 0 auto", maxWidth: 96, minWidth: 0 } : { flex: 1, minWidth: 0 }}
-          >
-            {label ?? path}
-          </Typography>
-        </Tooltip>
+        {label ?? path}
+      </Typography>
+    </Tooltip>
+  );
+
+  // The control cluster: modulator/learn/range buttons, the control itself, and
+  // the numeric readout. In grid mode this is column 2; otherwise it sits inline
+  // after the label inside the row's flex stack.
+  const cluster = (
+    <>
         {canModulate && (
           <IconButton
             size="small"
@@ -221,7 +245,7 @@ export function ParamWidget({ instance, path, p, label, dense, fill, colorChanne
           {learning ? "···" : bindingsFor.length > 1 ? `cc×${bindingsFor.length}` : binding ? `cc${binding.cc}` : "M"}
         </Button>
         )}
-        {rangeable && (
+        {isSlider && (
           <IconButton
             size="small"
             data-range={path}
@@ -347,13 +371,24 @@ export function ParamWidget({ instance, path, p, label, dense, fill, colorChanne
               {valueText}
             </Typography>
           ))}
-      </Stack>
+    </>
+  );
+
+  // Extras that render BELOW the row, spanning the full width in grid mode:
+  // the palette-index swatch chooser and the color channel decomposition.
+  const extras = (
+    <>
       {isSlider && p.swatches != null && (
         <PaletteChoice instance={instance} path={path} p={p} />
       )}
       {p.type === "color" && (
         <ColorChannels instance={instance} path={path} p={p} channels={colorChannels ?? []} />
       )}
+    </>
+  );
+
+  const popovers = (
+    <>
       {canModulate && (
         <ModPopover
           instance={instance}
@@ -363,7 +398,7 @@ export function ParamWidget({ instance, path, p, label, dense, fill, colorChanne
           onClose={() => setModAnchor(null)}
         />
       )}
-      {rangeable && (
+      {isSlider && (
         <RangePopover
           instance={instance}
           path={path}
@@ -384,6 +419,53 @@ export function ParamWidget({ instance, path, p, label, dense, fill, colorChanne
           onClose={() => setBindAnchor(null)}
         />
       )}
+    </>
+  );
+
+  // Grid mode: `.widget` is display:contents so its children ARE the section
+  // grid's items — label in column 1, cluster in column 2, extras spanning both.
+  // The `.widget` class, the `modulated` marker, and every data-* hook stay on
+  // the exact same elements as before (NFR-1) — only geometry changes.
+  if (grid) {
+    return (
+      <Box className={`widget${modulated ? " modulated" : ""}`} sx={{ display: "contents" }}>
+        {labelEl}
+        <Box
+          sx={{
+            gridColumn: 2,
+            minWidth: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: 0.5,
+            flexWrap: p.labels != null ? "wrap" : undefined,
+          }}
+        >
+          {cluster}
+        </Box>
+        {(isSlider && p.swatches != null) || p.type === "color" ? (
+          <Box sx={{ gridColumn: "1 / -1", minWidth: 0 }}>{extras}</Box>
+        ) : null}
+        {popovers}
+      </Box>
+    );
+  }
+
+  return (
+    <Box
+      className={`widget${modulated ? " modulated" : ""}`}
+      sx={{ mb: dense ? (fill ? 0.5 : 0) : 0.75, width: fill || !dense ? "auto" : 170 }}
+    >
+      <Stack
+        direction="row"
+        spacing={0.5}
+        alignItems="center"
+        flexWrap={p.labels != null ? "wrap" : undefined}
+      >
+        {labelEl}
+        {cluster}
+      </Stack>
+      {extras}
+      {popovers}
     </Box>
   );
 }
