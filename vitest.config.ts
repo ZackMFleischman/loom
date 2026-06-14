@@ -16,6 +16,12 @@ export default defineConfig({
     setupFiles: ["content/test/setup.ts"],
   },
   resolve: {
+    // A locally-linked module pack lives under packs/<name>/ but symlinks
+    // OUTSIDE the repo. Without this, Vite resolves a pack file to its real
+    // out-of-tree path and can no longer find the host's `three`/`three/tsl`
+    // from node_modules. Keeping the symlinked path makes bare specifiers
+    // resolve up through the repo's node_modules like any local content file.
+    preserveSymlinks: true,
     alias: {
       // Mirrors packages/engine-app/vite.config.ts — content/ sits outside
       // any package, so the runtime resolves through this alias.

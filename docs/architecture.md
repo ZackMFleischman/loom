@@ -210,6 +210,38 @@ builds sandboxes via `SessionStore.create`'s init seed (chains fold into build
 #1) and NEVER touches the Stage — the pre-load instances cull after a commit
 from the loaded set lands (deferred-cull check in the render loop).
 
+## Module packs
+
+Third-party repos of modules/scenes, imported into a project so the library
+isn't monorepo-only. A pack mirrors `content/`'s layout (no build step):
+`loom-pack.json` (`{ name, version, loomApi, description }`) + `modules/`,
+`scenes/`, optional `assets/` and `test/cases.ts`. Modules import ONLY
+`@loom/runtime` (+ three) — the same portability rule the golden patterns
+enforce in-repo.
+
+- **Registration** is `content/state/packs.json` (`{ packs: [{ name, source,
+  pin, loomApi? }] }`, committed) — the registered-roots idiom from
+  `media-roots.json`. `pnpm pack:add <git-url|path>` clones (pins the SHA) or
+  symlinks (`pin: null`) into the **gitignored** `packs/<name>/`; `pnpm
+  pack:update` re-pins. The checkout is scratch; the JSON is the source of truth.
+- **Discovery** is static `packs/*/…` globs added beside the `content/…` ones in
+  the engine barrels (`engine-app/src/scenes.ts`, `effects.ts`), the test harness,
+  and `scripts/build-catalog.mjs`. Absent until `pack:add`, so a pack-free repo is
+  byte-for-byte unchanged.
+- **Namespacing/precedence:** local content keeps its BARE name; pack content
+  surfaces as `<pack>/<name>` in CATALOG / `availableScenes` / `availableEffects`.
+  **Local wins** a bare-name collision (a pack's same-named item is reachable only
+  namespaced) — deterministic, the marketplace relies on it. One rule, two synced
+  helpers: `engine-app/src/packs.ts` (browser) and `scripts/lib/packs.mjs` (Node).
+- **Resolution:** `preserveSymlinks: true` (both Vite configs) lets a linked
+  out-of-tree pack resolve the host's `three`/`three/tsl` from node_modules.
+- **Gate & trust:** `packs/` is in the root tsconfig include, so **typecheck is
+  the real compatibility gate**; `loomApi` is a fast caret-major hint. A pack's
+  `test/cases.ts` merges into the completeness sweep (same enforcement as local
+  modules). A pack is arbitrary code at the SAME trust level as editing
+  `content/` — **documented, not sandboxed**, for v1. Full rationale: the
+  "Module packs (v1)" entry in `DECISIONS.md`.
+
 ## Testing & validation
 
 Four layers, cheapest first. The merge gate is all of them: milestone work merges

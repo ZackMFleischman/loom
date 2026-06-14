@@ -1403,3 +1403,57 @@ PRs concurrently edit Header + FxChain):**
 - Gates: `pnpm typecheck`, `pnpm lint` (no new diagnostics), `pnpm test` green
   (engine-api preview tests rewritten to assert the fixed-res route + no target
   resize). GPU acceptance validators (m3/m4 preview paths) not run here.
+
+## 2026-06-13 — Module packs (v1)
+
+Third-party repos of modules/scenes import into a project; the library stops
+being monorepo-only. Foundational infra for the later marketplace + plugin work,
+so the on-disk schema is deliberately small and stable. (Spec:
+`feature-requests/module-packs.md`.)
+
+- **`loom-pack.json` schema** (pack-side manifest): `{ name, version, loomApi,
+  description }`. `loomApi` is a caret-major HINT (`"^1"`), NOT a gate.
+- **`content/state/packs.json` schema** (host-side registry, committed; mirrors
+  `media-roots.json` — the checkout is scratch, the JSON travels in git):
+  `{ "packs": [ { name, source, pin, loomApi? } ] }`. `source` is a git URL or an
+  absolute local path; `pin` is the cloned commit SHA, or `null` for a linked
+  local path. The `packs/` checkout dir is **gitignored**.
+- **Namespacing + precedence (LOAD-BEARING — the marketplace depends on it):**
+  local content keeps its BARE name; pack content surfaces as `<pack>/<name>` in
+  CATALOG, `availableScenes`, and `availableEffects`. Precedence is
+  **local-wins**: a bare lookup always resolves local; a pack's same-named item
+  is reachable ONLY via its namespaced id. Pack ids are always prefixed and local
+  ids never are, so the merged maps can't actually collide — `mergeNamespaced`
+  (`engine-app/src/packs.ts`) and `namespacedId` (`scripts/lib/packs.mjs`) just
+  make the rule explicit and order-independent. Two helpers, one rule, kept in
+  sync between the browser (barrels) and Node (catalog) sides.
+- **Discovery is static globs, not dynamic imports:** the barrels
+  (`scenes.ts`/`effects.ts`), the test harness, and the catalog generator all add
+  `packs/*/…` globs alongside the `content/…` ones. A static pattern is the Vite
+  requirement and matches any installed pack automatically; the dir is absent
+  until `pnpm pack:add`, so a pack-free repo is byte-for-byte unchanged
+  (CATALOG.md included — the "Installed packs" section only emits when ≥1 pack is
+  present).
+- **`preserveSymlinks: true`** in both Vite/vitest resolve configs: a locally
+  *linked* pack (`pack:add <path>` → junction under `packs/`) points out-of-tree;
+  without this Vite resolves a pack file to its real path and can't find the
+  host's `three`/`three/tsl` in node_modules. Keeping the symlinked path lets bare
+  specifiers walk up to the repo's node_modules like local content. Cloned
+  (in-tree) packs are unaffected.
+- **typecheck is the real compatibility gate, `loomApi` is the fast hint** (per
+  the spec's open question — both, not either). `packs/` is added to the root
+  `tsconfig.json` include so pack content is typechecked exactly like `content/`.
+  A pack's `test/cases.ts` (keyed by bare module name) merges into the
+  completeness sweep — a pack module without a case fails tier-1 like a local one.
+- **Trust: document, don't sandbox (v1).** A pack is arbitrary TypeScript run in
+  the engine — the SAME trust level as editing `content/` yourself. We do not
+  sandbox; `pack:add` prints the trust note and the loomApi hint. Sandboxing is a
+  post-v1 question if/when packs come from untrusted marketplace authors.
+- **`pack:remove` not shipped (v1):** uninstall is `rm -rf packs/<name>` + drop
+  the registry entry. Add it if reviewers want symmetry.
+- Gates: `pnpm typecheck` green, `pnpm test` green (+5 engine-app namespacing/
+  precedence units, +4 scripts pack-discovery units), `pnpm test:content` green;
+  with a linked sample pack the sweep grew to 441 (glow swept tiers 1–2) and
+  CATALOG showed `samplePack/aurora|pulse|glow` namespaced while local bare
+  `pulse` still won. `pnpm validate:m11` 11/11 (WebGL2 fallback; headless has no
+  WebGPU). Full `pnpm validate` not run here (GPU suites).

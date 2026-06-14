@@ -16,6 +16,7 @@
     "packages/engine-app/vitest.config.ts",
     "packages/sidecar/src",
     "packages/sidecar/test",
-    "content"
+    "content",
+    "packs"
   ]
 }

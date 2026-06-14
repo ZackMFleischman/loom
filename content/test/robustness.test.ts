@@ -1,6 +1,6 @@
 import { Signal } from "@loom/runtime";
 import { describe, expect, it } from "vitest";
-import { buildCase, CASES } from "./cases";
+import { buildCase, caseFor } from "./cases";
 import { blackInput, discoverModules, makeCtx, nonFiniteProbes, tickFrames } from "./harness";
 
 /**
@@ -55,7 +55,7 @@ const effects = modules.filter((m) => m.factory.meta.kind === "effect");
 describe.each(effects)("tier-2 degenerate input: $name", (d) => {
   it("builds and ticks against a black constant input", () => {
     const h = makeCtx();
-    CASES[d.name]!(h.ctx, blackInput());
+    caseFor(d)!(h.ctx, blackInput());
     h.ctx.finalize();
     tickFrames(h, 60);
     expect(nonFiniteProbes(h.ctx)).toEqual([]);

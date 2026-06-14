@@ -7,6 +7,7 @@ import {
   type PrimitiveEffectEntry,
 } from "@loom/runtime";
 import { z } from "zod";
+import { packNameFromPath } from "./packs";
 
 /**
  * The chainable-effect library (M6). Two sources, one registry:
@@ -26,6 +27,11 @@ const codeMods = import.meta.glob("../../../content/modules/effects/*.ts", { eag
 const chainData = import.meta.glob("../../../content/modules/effects/chains/*.chain.json", {
   eager: true,
 });
+// Pack chainable effects (packs/<name>/modules/effects/*.ts), namespaced
+// "<pack>/<effect>" so they drop into chains like a local primitive without
+// colliding with local effect names. Pack composites (saved chains) are out of
+// scope for v1 — save_chain writes local content only.
+const packCodeMods = import.meta.glob("../../../packs/*/modules/effects/*.ts", { eager: true });
 
 const CompositeFile = z.object({
   name: z.string().regex(/^[a-z][a-zA-Z0-9]*$/),
@@ -55,20 +61,32 @@ export interface EffectLibrary extends EffectRegistry {
 function build(): EffectLibrary {
   const map = new Map<string, EffectEntry>();
 
-  for (const mod of Object.values(codeMods)) {
-    for (const exp of Object.values(mod as Record<string, unknown>)) {
-      const f = exp as AnyFactory;
-      if (typeof f !== "function" || f.meta?.kind !== "effect" || !f.meta.chainParams) continue;
-      const entry: PrimitiveEffectEntry = {
-        name: f.meta.name,
-        kind: "primitive",
-        chainParams: f.meta.chainParams as PrimitiveEffectEntry["chainParams"],
-        factory: f as unknown as ChainableEffect,
-        ...(f.meta.description != null ? { description: f.meta.description } : {}),
-      };
-      map.set(entry.name, entry);
+  const addPrimitives = (
+    mods: Record<string, unknown>,
+    namespaceFor: (path: string) => string | null,
+  ) => {
+    for (const [path, mod] of Object.entries(mods)) {
+      const ns = namespaceFor(path);
+      for (const exp of Object.values(mod as Record<string, unknown>)) {
+        const f = exp as AnyFactory;
+        if (typeof f !== "function" || f.meta?.kind !== "effect" || !f.meta.chainParams) continue;
+        const name = ns ? `${ns}/${f.meta.name}` : f.meta.name;
+        const entry: PrimitiveEffectEntry = {
+          name,
+          kind: "primitive",
+          chainParams: f.meta.chainParams as PrimitiveEffectEntry["chainParams"],
+          factory: f as unknown as ChainableEffect,
+          ...(f.meta.description != null ? { description: f.meta.description } : {}),
+        };
+        map.set(entry.name, entry);
+      }
     }
-  }
+  };
+
+  // Packs first, local last — so a (defensive) bare-name clash resolves
+  // local-wins. Pack names are namespaced, so they don't actually collide.
+  addPrimitives(packCodeMods, packNameFromPath);
+  addPrimitives(codeMods, () => null);
 
   // Composites reference primitives only (one level deep): drop any that don't resolve.
   for (const [path, mod] of Object.entries(chainData)) {

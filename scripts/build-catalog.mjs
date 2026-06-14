@@ -7,6 +7,7 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { discoverPacks, listPackFiles, namespacedId } from "./lib/packs.mjs";
 
 const contentDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../content");
 const catalogPath = path.join(contentDir, "CATALOG.md");
@@ -77,38 +78,34 @@ function inputsConsumed(sourceFile) {
   return [...names];
 }
 
-const modules = listFiles(
-  path.join(contentDir, "modules"),
-  (n) => n.endsWith(".ts") && n !== "index.ts",
-).flatMap((file) => {
+/**
+ * Extract one module's catalog row from a file. `pack` namespaces the name as
+ * "<pack>/<name>" (pack content); undefined leaves it bare (local content).
+ */
+function moduleRow(file, pack) {
   const sourceFile = parse(file);
   const meta = callArgObject(sourceFile, "defineModule");
-  if (!meta) return [];
-  return [
-    {
-      name: str(prop(meta, "name")) ?? path.basename(file, ".ts"),
-      kind: str(prop(meta, "kind")) ?? "?",
-      description: str(prop(meta, "description")) ?? "",
-      tags: strArray(prop(meta, "tags")),
-      example: str(prop(meta, "example")) ?? "",
-      // Declares chainParams → selectable as an FX-chain step (set_chain / picker).
-      chainable: prop(meta, "chainParams") != null,
-      inputs: inputsConsumed(sourceFile),
-    },
-  ];
-});
+  if (!meta) return null;
+  const bare = str(prop(meta, "name")) ?? path.basename(file, ".ts");
+  return {
+    name: pack ? namespacedId(pack, bare) : bare,
+    pack: pack ?? null,
+    kind: str(prop(meta, "kind")) ?? "?",
+    description: str(prop(meta, "description")) ?? "",
+    tags: strArray(prop(meta, "tags")),
+    example: str(prop(meta, "example")) ?? "",
+    // Declares chainParams → selectable as an FX-chain step (set_chain / picker).
+    chainable: prop(meta, "chainParams") != null,
+    inputs: inputsConsumed(sourceFile),
+  };
+}
 
-const liveTarget = /from\s+"\.\/(.+)\.scene"/.exec(
-  readFileSync(path.join(contentDir, "scenes/live.scene.ts"), "utf8"),
-)?.[1];
-
-const scenes = listFiles(
-  path.join(contentDir, "scenes"),
-  (n) => n.endsWith(".scene.ts") && n !== "live.scene.ts",
-).flatMap((file) => {
+/** Extract one scene's catalog row from a file (namespaced like moduleRow). */
+function sceneRow(file, pack, liveTarget) {
   const sourceFile = parse(file);
   const meta = callArgObject(sourceFile, "defineScene");
-  if (!meta) return [];
+  if (!meta) return null;
+  const bare = str(prop(meta, "name")) ?? path.basename(file, ".scene.ts");
   const inputs = inputsConsumed(sourceFile);
   const params = [];
   for (const node of walk(sourceFile)) {
@@ -122,17 +119,46 @@ const scenes = listFiles(
       if (name) params.push(name);
     }
   }
-  return [
-    {
-      name: str(prop(meta, "name")) ?? path.basename(file, ".scene.ts"),
-      description: str(prop(meta, "description")) ?? "",
-      tags: strArray(prop(meta, "tags")),
-      params,
-      inputs,
-      live: path.basename(file, ".scene.ts") === liveTarget,
-    },
-  ];
-});
+  return {
+    name: pack ? namespacedId(pack, bare) : bare,
+    pack: pack ?? null,
+    description: str(prop(meta, "description")) ?? "",
+    tags: strArray(prop(meta, "tags")),
+    params,
+    inputs,
+    // Only a local scene can be the boot/live target (live.scene.ts is local).
+    live: !pack && path.basename(file, ".scene.ts") === liveTarget,
+  };
+}
+
+const packs = discoverPacks();
+
+const modules = [
+  ...listFiles(path.join(contentDir, "modules"), (n) => n.endsWith(".ts") && n !== "index.ts").map(
+    (f) => moduleRow(f, undefined),
+  ),
+  ...packs.flatMap((p) =>
+    listPackFiles(p.dir, "modules", (n) => n.endsWith(".ts") && n !== "index.ts").map((f) =>
+      moduleRow(f, p.name),
+    ),
+  ),
+].filter(Boolean);
+
+const liveTarget = /from\s+"\.\/(.+)\.scene"/.exec(
+  readFileSync(path.join(contentDir, "scenes/live.scene.ts"), "utf8"),
+)?.[1];
+
+const scenes = [
+  ...listFiles(
+    path.join(contentDir, "scenes"),
+    (n) => n.endsWith(".scene.ts") && n !== "live.scene.ts",
+  ).map((f) => sceneRow(f, undefined, liveTarget)),
+  ...packs.flatMap((p) =>
+    listPackFiles(p.dir, "scenes", (n) => n.endsWith(".scene.ts") && n !== "live.scene.ts").map(
+      (f) => sceneRow(f, p.name, liveTarget),
+    ),
+  ),
+].filter(Boolean);
 
 const lines = [
   "# Content catalog",
@@ -156,6 +182,18 @@ for (const s of scenes.sort((a, b) => a.name.localeCompare(b.name))) {
   const live = s.live ? " **(live)**" : "";
   const inputs = s.inputs.length ? ` ⚡inputs: ${s.inputs.join(", ")}` : "";
   lines.push(`- **${s.name}**${live} — ${s.description} params: ${s.params.join(", ") || "none"} _[${s.tags.join(", ")}]_${inputs}`);
+}
+// Only emitted when packs are installed, so a pack-free repo's CATALOG.md is
+// byte-for-byte what it was before this feature (local-content behavior frozen).
+if (packs.length) {
+  lines.push("", "## Installed packs (`packs/` · `content/state/packs.json`)", "");
+  for (const p of packs) {
+    const ver = p.manifest?.version ? ` v${p.manifest.version}` : "";
+    const api = p.loomApi ? ` loomApi:${p.loomApi}` : "";
+    const pin = p.pin ? ` @${p.pin.slice(0, 10)}` : " (linked)";
+    const desc = p.manifest?.description ? ` — ${p.manifest.description}` : "";
+    lines.push(`- **${p.name}**${ver}${api}${pin}${desc} \`<${p.name}/…>\``);
+  }
 }
 const output = lines.join("\n") + "\n";
 

@@ -38,6 +38,10 @@ const watchContent: Plugin = {
   name: "loom:watch-content",
   configureServer(server) {
     server.watcher.add(fileURLToPath(new URL("../../content", import.meta.url)));
+    // Module packs (packs/<name>/) live outside this package root too — watch
+    // them so a pack's scene/module add/edit hot-registers through the barrels'
+    // packs/* globs (gitignored dir; absent until `pnpm pack:add`).
+    server.watcher.add(fileURLToPath(new URL("../../packs", import.meta.url)));
   },
 };
 
@@ -52,11 +56,14 @@ const buildCatalog: Plugin = {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const isCatalogSource = (file: string) => {
       const n = normalize(file);
-      return (
-        (n.includes(`${sep}content${sep}modules${sep}`) ||
-          n.includes(`${sep}content${sep}scenes${sep}`)) &&
-        n.endsWith(".ts")
-      );
+      const inContent =
+        n.includes(`${sep}content${sep}modules${sep}`) ||
+        n.includes(`${sep}content${sep}scenes${sep}`);
+      // Pack sources feed the catalog too (packs/<name>/{modules,scenes}/…).
+      const inPack =
+        n.includes(`${sep}packs${sep}`) &&
+        (n.includes(`${sep}modules${sep}`) || n.includes(`${sep}scenes${sep}`));
+      return (inContent || inPack) && n.endsWith(".ts");
     };
     const schedule = (file: string) => {
       if (!isCatalogSource(file)) return;
@@ -359,6 +366,12 @@ export default defineConfig({
     },
   },
   resolve: {
+    // A locally-linked module pack (packs/<name>/ → an out-of-tree dir via
+    // `pnpm pack:add <path>`) must resolve the host's `three`/`three/tsl` from
+    // node_modules. Keeping the symlinked path (not the real out-of-tree path)
+    // makes bare specifiers walk up to the repo's node_modules like local
+    // content. Cloned packs (in-tree) are unaffected.
+    preserveSymlinks: true,
     alias: {
       // Single source of truth for runtime resolution so content/ scenes
       // (outside any package) resolve it too.
