@@ -250,6 +250,11 @@ const TOOLS = [
       "A throwing step is rejected and the previous chain + pixels keep running (NFR-5). " +
       "Pass node:<id> (a layer node from get_manifest's nodes) to chain FX onto just that " +
       "node — its knobs then live at <node>.fx.<step>.<param>. " +
+      "An effect that declares extra input slots in availableEffects (chainInputs, e.g. " +
+      "`over`'s `overlay`) is a multi-input step: bind each slot in `inputs` to a SourceRef " +
+      "— { instance: <id> } (another live tile's pixels) or { step: <earlierId> } (an EARLIER " +
+      "step's output). A source that can't resolve (missing instance, cycle, dangling step) " +
+      "rejects the edit, keeping the previous chain + pixels (NFR-5). " +
       "Editing the LIVE chain needs agent-commit armed (sandbox instances are ungated).",
     inputSchema: {
       type: "object",
@@ -272,6 +277,13 @@ const TOOLS = [
                 description: "Initial knob values keyed by sub-path (e.g. amount, mix); omit to carry/ default.",
               },
               mix: { type: "number", description: "Wet/dry 0..1 (default 1)." },
+              inputs: {
+                type: "object",
+                description:
+                  "Multi-input chain steps: slot name → SourceRef. A SourceRef is " +
+                  '{ "instance": "<id>" } (another live tile) or { "step": "<earlierId>" } ' +
+                  "(an earlier step's output). Only for effects that declare chainInputs.",
+              },
             },
             required: ["effect"],
           },
