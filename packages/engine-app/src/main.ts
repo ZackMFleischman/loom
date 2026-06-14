@@ -13,11 +13,10 @@ import {
   Stage,
   texNode,
   TimeBus,
-  type FrameCtx,
   type InputsDef,
   type SceneDef,
 } from "@loom/runtime";
-import { DEFAULT_WS_PORT, type ScreenshotResult } from "@loom/sidecar/protocol";
+import { DEFAULT_WS_PORT } from "@loom/sidecar/protocol";
 import { texture, vec4 } from "three/tsl";
 import { RenderTarget, WebGPURenderer } from "three/webgpu";
 import inputsDef from "../../../content/inputs";
@@ -35,6 +34,7 @@ import { getEffectLibrary } from "./effects";
 import { FixtureService } from "./fixture-service";
 import { MidiRouter } from "./midi-router";
 import { PanicController } from "./panic-controller";
+import { RenderService } from "./render-service";
 import { getScenes } from "./scenes";
 import { SessionStore } from "./session";
 import { StateClient, StateKey } from "./state";
@@ -217,7 +217,6 @@ midiRouter.start();
 const PREVIEW2_W = 256;
 const PREVIEW2_H = 144;
 const PREVIEW2_FRAMES = 8; // lets stateful candidates (feedback) settle over the still source
-const pendingPreviews: Array<{ run: (f: FrameCtx) => void; done: () => void }> = [];
 
 async function previewEffect(instanceId: string, effect: string): Promise<string> {
   const e = session.require(instanceId);
@@ -236,7 +235,7 @@ async function previewEffect(instanceId: string, effect: string): Promise<string
   }
   try {
     await new Promise<void>((resolve) => {
-      pendingPreviews.push({
+      renderService.queuePreview({
         run: (f) => {
           for (let i = 0; i < PREVIEW2_FRAMES; i++) preview.renderFrame(renderer, f, outRT);
         },
@@ -407,17 +406,6 @@ void refreshAudioDevices();
 navigator.mediaDevices?.addEventListener("devicechange", () => void refreshAudioDevices());
 
 const debugOnsets = audio.onset({ band: "bass", threshold: 0.22 });
-let onsetCount = 0;
-let latestFrame: FrameCtx = { frame: 0, now: 0, dt: 0 };
-let currentMix: number | null = null;
-let lastDirectiveHold = false;
-
-// Screenshot requests for the canvas resolve inside the render loop: the
-// drawing buffer is only readable in the same task that rendered it.
-const pendingShots: Array<{
-  resolve: (s: ScreenshotResult) => void;
-  reject: (e: Error) => void;
-}> = [];
 
 // The window.__loom debug surface validators read; built + installed here,
 // refreshed each frame by debug.update() (the heavy instances array throttled).
@@ -445,7 +433,35 @@ if (savedPanicScene && savedPanicScene !== panicController.sceneName && currentS
   panicController.tryBuild(currentScenes().get(savedPanicScene)!);
 }
 
-const api = new EngineApi(
+// The render loop. Owns the frame tick + loop-local state (latest frame, mix,
+// onset count, screenshot/preview queues). Its api hooks (captureLiveMirror /
+// tickPreview) read `api`, constructed just below — closures, called only
+// in-frame. Started at the end of boot.
+const renderService = new RenderService({
+  renderer,
+  canvas,
+  clock,
+  timeBus,
+  audio,
+  inputs,
+  debugOnsets,
+  fixtures: fixtureService,
+  stage,
+  projects: projectsController,
+  session,
+  globalsModulators,
+  palettes,
+  compositor,
+  fps,
+  debug,
+  captureLiveMirror: (mode) => api.captureLiveMirror(mode),
+  tickPreview: (mode, currentFps) => api.tickPreview(mode, currentFps),
+  workerInterval,
+});
+
+// Explicitly typed to break the renderService ↔ api ↔ debug closure cycle
+// (each references the others; one anchor type lets the rest infer).
+const api: EngineApi = new EngineApi(
   {
     renderer,
     canvas,
@@ -457,19 +473,12 @@ const api = new EngineApi(
     availableEffects: () => effectsLib.describe(),
     saveEffectChain,
     previewEffect,
-    latestFrame: () => latestFrame,
-    captureCanvas: () =>
-      new Promise((resolve, reject) => {
-        if (lastDirectiveHold) {
-          reject(new Error("output is held (PANIC) — resume before taking a live screenshot"));
-          return;
-        }
-        pendingShots.push({ resolve, reject });
-      }),
+    latestFrame: () => renderService.latestFrame,
+    captureCanvas: () => renderService.captureCanvas(),
     fps: () => fps.current,
     rms: () => window.__loom?.rms ?? 0,
-    onsetCount: () => onsetCount,
-    currentMix: () => currentMix,
+    onsetCount: () => renderService.onsetCount,
+    currentMix: () => renderService.currentMix,
     panicInstanceId: () => panicController.instanceId(),
     panicScene: () => panicController.info(),
     setPanicInstance: (id) => panicController.setInstance(id),
@@ -511,106 +520,16 @@ const stopBridge = startBridge(`ws://localhost:${Number(qs.get("ws")) || DEFAULT
 // ?embedded=1 marks the Console's hidden-iframe engine (solo mode, no Output
 // window). It stands down completely if a real Output engine appears.
 const embedded = qs.get("embedded") === "1";
-let yielded = false;
 startConsoleChannel(api, {
   embedded,
   onYield: () => {
-    yielded = true;
-    renderer.setAnimationLoop(null);
-    stopHiddenClock();
+    renderService.stop();
     stopBridge();
   },
 });
 
-const frameTick = (tMs: number): void => {
-  if (yielded) return;
-  const f = clock.tick(tMs);
-  latestFrame = f;
-  timeBus.tick(f);
-  audio.update(f);
-  inputs.update(f); // every channel advances even with zero consumers (R6.4)
-  onsetCount += debugOnsets.poll(f).length;
-
-  // Fixtures: append this frame's rack values to a pending recording.
-  fixtureService.recordFrame();
-
-  const directive = stage.tick(f);
-  currentMix = directive.mode === "crossfade" ? directive.mix : null;
-  lastDirectiveHold = directive.mode === "hold";
-
-  // Projects: a commit from the loaded set has landed (live, fade done) — cull
-  // the replaced instances. Before the render, so a culled instance is never
-  // referenced by this frame's directive (it can't be: it isn't live).
-  projectsController.maybeCull();
-  // Modulators write CPU-side before any leg renders. Hold pauses them all;
-  // scene-panic pauses only the suspended live instance (FR-5/FR-10).
-  if (directive.mode === "panic-scene") session.tickModulators(f, directive.live);
-  else if (directive.mode !== "hold") session.tickModulators(f);
-  // Global palette color-channel modulators (R7.4) write the stops before any
-  // leg reads them; hold freezes their phase like instance modulators (FR-10).
-  if (directive.mode !== "hold") globalsModulators.tick(palettes.manifest, f);
-  compositor.render(renderer, f, directive, session);
-  api.captureLiveMirror(directive.mode); // same-task canvas read for the live tile
-  fps.tick();
-  // Full-res preview overlay: resize the previewed sandbox target / mirror the
-  // live canvas, and run the fps auto-reduction ladder (same task as the render).
-  api.tickPreview(directive.mode, fps.current);
-
-  if (pendingShots.length > 0) {
-    const waiting = pendingShots.splice(0);
-    if (directive.mode === "hold") {
-      const e = new Error("output is held (PANIC)");
-      for (const w of waiting) w.reject(e);
-    } else {
-      try {
-        const url = canvas.toDataURL("image/png");
-        const shot: ScreenshotResult = {
-          mime: "image/png",
-          base64: url.slice(url.indexOf(",") + 1),
-          width: canvas.width,
-          height: canvas.height,
-          frame: f.frame,
-          fps: fps.current,
-        };
-        for (const w of waiting) w.resolve(shot);
-      } catch (err) {
-        const e = err instanceof Error ? err : new Error(String(err));
-        for (const w of waiting) w.reject(e);
-      }
-    }
-  }
-
-  // One effect-picker preview per frame (bounds cost), AFTER the live screenshot
-  // read so it never disturbs the canvas: the candidate effect is folded over the
-  // instance's preview target, which the compositor just refreshed, then rendered
-  // to its own offscreen RT.
-  if (pendingPreviews.length > 0) {
-    const job = pendingPreviews.shift()!;
-    try {
-      job.run(f);
-    } catch {
-      // a bad preview render must never break the live loop
-    }
-    job.done();
-  }
-
-  debug.update(f, { onsetCount, currentMix });
-};
-
-let lastRafAt = performance.now();
-renderer.setAnimationLoop((tMs) => {
-  lastRafAt = performance.now();
-  frameTick(tMs);
-});
-
-// Browsers freeze rAF in hidden tabs (and starve it for offscreen iframes),
-// which used to freeze every Console preview whenever the Output tab wasn't
-// showing. A worker clock (exempt from background timer throttling) keeps the
-// engine ticking at ~30 fps whenever rAF isn't delivering; the moment rAF
-// resumes, the starvation guard backs off so the two never double-step.
-const stopHiddenClock = workerInterval(() => {
-  if (document.hidden || performance.now() - lastRafAt > 150) frameTick(performance.now());
-}, 33);
+// Start the frame loop (rAF + the hidden-tab worker-clock fallback).
+renderService.start();
 
 // Tap tempo on "t"; any click also unblocks a suspended AudioContext.
 window.addEventListener("keydown", (e) => {
