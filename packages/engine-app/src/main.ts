@@ -1,25 +1,18 @@
 import {
   AudioBus,
   BindingStore,
-  buildInstance,
   BuildCtx,
   ChainHost,
   Clock,
-  Events,
-  FixtureDataSchema,
-  FixturePlayer,
   InputRegistry,
   isFxPath,
   Instance,
   MidiBus,
   ModulatorHost,
   PaletteRegistry,
-  Signal,
   Stage,
   texNode,
   TimeBus,
-  type AudioBusLike,
-  type FixtureData,
   type FrameCtx,
   type InputsDef,
   type SceneDef,
@@ -38,11 +31,12 @@ import { startConsoleChannel } from "./console-channel";
 import { EngineApi } from "./engine-api";
 import { FpsMeter } from "./fps";
 import { getEffectLibrary } from "./effects";
+import { FixtureService } from "./fixture-service";
 import { MidiRouter } from "./midi-router";
 import { PanicController } from "./panic-controller";
 import { getScenes } from "./scenes";
-import { entryStatus, PREVIEW_H, PREVIEW_W, SessionStore } from "./session";
-import { fixtureKey, repoStatePath, StateClient, StateDir, StateKey } from "./state";
+import { entryStatus, SessionStore } from "./session";
+import { StateClient, StateKey } from "./state";
 import { workerInterval } from "./worker-clock";
 
 declare global {
@@ -314,147 +308,16 @@ const compositor = new Compositor(RENDER_W, RENDER_H);
 const projectsController = new ProjectsController({ session, stage, scenes: () => currentScenes() });
 
 // ---- Fixtures: deterministic input traces (content/state/fixtures/) ----
-
-/** A pending rack recording; frameTick appends one row per frame. */
-let recording: {
-  name: string;
-  channels: string[];
-  rows: number[][];
-  remaining: number;
-  resolve: (r: { saved: string; path: string; frames: number; channels: string[]; bpm: number }) => void;
-  reject: (e: Error) => void;
-} | null = null;
-
-const fixturesApi = {
-  record(name: string, frames: number) {
-    if (recording != null) throw new Error("a fixture recording is already in flight");
-    const channels = Object.keys(inputs.values());
-    if (channels.length === 0) throw new Error("the input rack has no channels to record");
-    return new Promise<{ saved: string; path: string; frames: number; channels: string[]; bpm: number }>(
-      (resolve, reject) => {
-        recording = { name, channels, rows: [], remaining: frames, resolve, reject };
-      },
-    );
-  },
-  async load(name: string): Promise<FixtureData> {
-    const res = await fetch(`/loom/state/${StateDir.fixtures}/${encodeURIComponent(name)}`);
-    if (!res.ok) throw new Error(`unknown fixture "${name}" — record one with record_fixture`);
-    const parsed = FixtureDataSchema.safeParse(await res.json());
-    if (!parsed.success) throw new Error(`fixture "${name}" is corrupt: ${parsed.error.message}`);
-    return parsed.data;
-  },
-  /**
-   * Deterministic offline pass: rebuild the entry's scene against its trace on
-   * a virtual clock (frame 0, dt 1/60, own TimeBus at the trace's BPM, silent
-   * audio), mirror its tuned values + chains + modulators, step to each
-   * requested frame and read the pixels back. Same fixture + frames →
-   * identical bytes, independent of wall time and the live loop.
-   */
-  async shots(entryId: string, frameList: number[]) {
-    const e = session.require(entryId);
-    if (e.fixture == null) throw new Error(`"${entryId}" replays no fixture`);
-    const data = e.fixture.data;
-    const player = new FixturePlayer(data, 0);
-    const vTime = new TimeBus(data.bpm);
-    const silentAudio: AudioBusLike = {
-      rms: new Signal(() => 0),
-      band: () => new Signal(() => 0),
-      onset: () => new Events(() => []),
-    };
-    // Mirror the entry's current chain knobs into the chain data, then fold the
-    // same chains into the throwaway build.
-    e.chain.captureValues(e.instance.manifest);
-    for (const h of e.nodeChains.values()) h.captureValues(e.instance.manifest);
-    const throwaway = buildInstance(
-      e.def,
-      { audio: silentAudio, time: vTime, inputs: player, palettes },
-      (ctx, tex) => e.chain.fold(ctx, tex),
-      { foldNode: (ctx, node, tex) => e.nodeChains.get(node)?.fold(ctx, tex) ?? tex },
-    );
-    const mods = new ModulatorHost({ bpm: () => vTime.bpm, audio: silentAudio });
-    try {
-      // Mirror live values (incl. chain knobs) and modulator specs.
-      for (const [path, v] of Object.entries(e.instance.manifest.values())) {
-        try {
-          throwaway.manifest.get(path)?.set(v);
-        } catch {
-          // value doesn't fit (shouldn't happen — same def) — keep default
-        }
-      }
-      for (const m of e.modulators.list()) {
-        if (m.error != null) continue;
-        try {
-          mods.attach(throwaway.manifest, m.path, m.spec);
-        } catch {
-          // spec no longer fits — skip for the offline pass
-        }
-      }
-      const want = [...new Set(frameList)].sort((a, b) => a - b);
-      const rts = new Map(want.map((i) => [i, new RenderTarget(PREVIEW_W, PREVIEW_H)]));
-      const scratch = new RenderTarget(PREVIEW_W, PREVIEW_H);
-      try {
-        const DT = 1 / 60;
-        const liveTarget = renderer.getRenderTarget();
-        for (let i = 0; i <= want[want.length - 1]!; i++) {
-          const f: FrameCtx = { frame: i, now: i * DT, dt: DT };
-          vTime.tick(f);
-          mods.tick(throwaway.manifest, f);
-          // Bind the destination BEFORE the passes run: destination-sized
-          // stateful passes (render3d, transform, layer rigs) read the current
-          // target to size their buffers — leaving the live loop's last target
-          // bound made that size (and the pixels) nondeterministic.
-          const dest = rts.get(i) ?? scratch;
-          renderer.setRenderTarget(dest);
-          throwaway.renderFrame(renderer, f, dest);
-          if (throwaway.error != null) {
-            throw new Error(`offline render froze at frame ${i}: ${String(throwaway.error)}`);
-          }
-        }
-        renderer.setRenderTarget(liveTarget);
-        const shots = [];
-        for (const i of want) {
-          const url = await readTargetToDataUrl(renderer, rts.get(i)!, PREVIEW_W, PREVIEW_H, {
-            mime: "image/png",
-          });
-          shots.push({
-            frame: i,
-            mime: "image/png" as const,
-            base64: url.slice(url.indexOf(",") + 1),
-            width: PREVIEW_W,
-            height: PREVIEW_H,
-          });
-        }
-        return shots;
-      } finally {
-        for (const rt of rts.values()) rt.dispose();
-        scratch.dispose();
-      }
-    } finally {
-      throwaway.dispose();
-    }
-  },
-};
-
-async function finishRecording(r: NonNullable<typeof recording>): Promise<void> {
-  const data: FixtureData = { name: r.name, bpm: timeBus.bpm, channels: r.channels, frames: r.rows };
-  try {
-    const res = await fetch(`/loom/state/${StateDir.fixtures}/${encodeURIComponent(r.name)}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) throw new Error(`fixture save failed (${res.status})`);
-    r.resolve({
-      saved: r.name,
-      path: repoStatePath(fixtureKey(r.name)),
-      frames: r.rows.length,
-      channels: r.channels,
-      bpm: data.bpm,
-    });
-  } catch (err) {
-    r.reject(err instanceof Error ? err : new Error(String(err)));
-  }
-}
+// FixtureService owns recording the live rack (record + the per-frame
+// recordFrame hook) and the deterministic offline pass (shots).
+const fixtureService = new FixtureService({
+  session,
+  renderer,
+  inputs,
+  palettes,
+  timeBus,
+  readTargetToDataUrl,
+});
 
 void projectsController.list();
 
@@ -674,7 +537,7 @@ const api = new EngineApi(
     midiRecent: () => midi.recent,
     persist,
     projects: projectsController,
-    fixtures: fixturesApi,
+    fixtures: fixtureService,
     // live.scene.ts hot-swaps must keep landing on the boot instance even
     // after the human renames its tile.
     onInstanceRenamed: (from, to) => {
@@ -722,15 +585,7 @@ const frameTick = (tMs: number): void => {
   onsetCount += debugOnsets.poll(f).length;
 
   // Fixtures: append this frame's rack values to a pending recording.
-  if (recording != null) {
-    const vals = inputs.values();
-    recording.rows.push(recording.channels.map((c) => vals[c] ?? 0));
-    if (--recording.remaining <= 0) {
-      const done = recording;
-      recording = null;
-      void finishRecording(done);
-    }
-  }
+  fixtureService.recordFrame();
 
   const directive = stage.tick(f);
   currentMix = directive.mode === "crossfade" ? directive.mix : null;
