@@ -132,10 +132,11 @@ function TileGridImpl({ scenes, selected, solo, order, onOrderChange, onSelect, 
 }
 
 /**
- * Memoized (FR-1): ConsoleApp re-renders ~10 Hz on the state broadcast, but the
- * grid only needs to re-render on instance add/remove/reorder (its own
+ * Memoized (FR-1): ConsoleApp re-renders on selection/order changes, not the
+ * 10 Hz state broadcast (it subscribes only to narrow selector stores). The grid
+ * only needs to re-render on instance add/remove/reorder (its own
  * `useInstanceIds`) or a selection/order change — all its props are now stable
- * (primitives + useCallback'd handlers), so the shallow comparison holds and the
- * 10 Hz parent render no longer reconciles the whole grid.
+ * (primitives + useCallback'd handlers), so the shallow comparison holds and a
+ * parent render no longer reconciles the whole grid.
  */
 export const TileGrid = memo(TileGridImpl);

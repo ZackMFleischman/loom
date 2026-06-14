@@ -3,7 +3,7 @@ import { fillRamp, PALETTE_STOPS, PaletteRegistry } from "../src/palette";
 import { Manifest } from "../src/param";
 import { PaletteCtxImpl } from "../src/palette";
 import { F } from "./helpers";
-import type { Color, DataTexture } from "three/webgpu";
+import type { Color } from "three/webgpu";
 
 describe("PaletteRegistry", () => {
   it("declares 5 color stops per palette on its manifest", () => {
@@ -103,18 +103,18 @@ describe("PaletteCtxImpl", () => {
     expect(`#${u.value.getHexString()}`).toBe(reg.stops("primary")[4]);
   });
 
-  it("ramp() re-uploads its texture only when the resolved stops change", () => {
-    const { manifest, updaters, pal } = makeCtx();
+  it("ramp() builds from the stop uniforms (no texture) and tracks the active source", () => {
+    const { manifest, updaters, pal, reg } = makeCtx();
+    // ramp() is uniform-based now: it must register all 5 stop uniforms so the
+    // resolver updater fills them (a texture sample inside an Fn() renders black).
     pal.ramp(0.5);
+    const u0 = pal.color(0) as unknown as ColorUniform;
     pal.finalize();
-    const tex = pal.rampTexture() as DataTexture;
     updaters.forEach((up) => up(F(0)));
-    const after1 = tex.version;
+    expect(`#${u0.value.getHexString()}`).toBe(reg.stops("primary")[0]);
+    manifest.get("palette.source")!.set(1); // flip to secondary — plain param write
     updaters.forEach((up) => up(F(1)));
-    expect(tex.version).toBe(after1); // unchanged stops → no re-upload
-    manifest.get("palette.source")!.set(1);
-    updaters.forEach((up) => up(F(2)));
-    expect(tex.version).toBeGreaterThan(after1);
+    expect(`#${u0.value.getHexString()}`).toBe(reg.stops("secondary")[0]);
   });
 
   it("own() validates: 5 stops, hex format, once per build", () => {

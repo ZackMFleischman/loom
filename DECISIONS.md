@@ -1600,3 +1600,68 @@ path and never-go-black are untouched, NFR-4):
   the re-render-count drop is the machine-independent proof.
 - Gates: `pnpm typecheck` green; `pnpm test` green (242 runtime + 138 engine-app +
   45 sidecar + 434 content + 16 script). Validators: see the PR (run on WebGL2).
+
+## 2026-06-14 — Simulation sources: reaction-diffusion + the `simBuffer` field family
+
+- **New source class — cellular GPU simulations.** `reactionDiffusion`
+  (Gray-Scott) shipped first; then the ping-pong/iterate/seed/reseed boilerplate
+  was extracted to **`simBuffer`** (`content/modules/_shared.ts`) — two
+  HalfFloat targets, N iterations/frame, seed-on-first-frame + reseed rising
+  edge, frame-clocked `phase`. `reactionDiffusion` was refactored onto it
+  (behaviour-preserving) and **`waveField`** (2D wave equation) + **`automata`**
+  (cyclic CA) built on it. Stateful like `feedback` (NFR-5 reset on rebuild),
+  frame-clocked (no TSL `time`), seeded → fixture-deterministic.
+- **`pickPalette`** (`content/palettes.ts`): scenes needed *both* global
+  palettes selectable at once, which the built-in `palette.source` (one active
+  at a time) can't do. A swatched int param listing primary + secondary (read
+  live from the registry) + scene presets, returning the `ctx.palette`-shaped
+  `color(i)`/`ramp(t)` surface. Reusable; used by `coral-bloom`/`ripple-pool`/
+  `cyclic-spiral`.
+- Showcase scenes: `coral-bloom`, `ripple-pool`, `cyclic-spiral`. Follow-ons in
+  `feature-requests/{gpu-field-simulations,particle-agent-systems,generative-growth-grammars,domain-warp-marble}.md`
+  (`fluid2d` wants multi-buffer `simBuffer`).
+- Gates: `pnpm typecheck` green (75 modules, 33 scenes); `pnpm test` green (449
+  content). GPU `validate:stdlib` not run (headless container, no WebGPU);
+  stills rendered via `scripts/shoot.mjs` on the WebGL2 fallback.
+
+## 2026-06-14 — More generative sources: marble + strangeAttractor
+
+- **`marble`** (source): iterated domain-warp FBM (`fbm(p+fbm(p+fbm(p)))`) →
+  agate/oil veins. Kept **grayscale** (composes with colorize/palette) rather
+  than self-colouring, so the scene (`marble-slab`) ramps it through
+  `pickPalette` — consistent with the other new scenes' palette-as-choice.
+- **`strangeAttractor`** (geo): chaotic ODEs (Lorenz/Aizawa/Thomas/Halvorsen)
+  integrated CPU-side into a vertex buffer (deterministic start, no
+  Math.random), then drawn via the existing `pointCloud` + `render3d` +
+  `orbitCam` path. Chose this geometry-first route over a GPU particle-state
+  texture: reuses proven 3D-point rendering and is verifiable headlessly.
+  Trade-off — constants bake at build (changing the system rebuilds); camera/
+  spin/size/glow are the live surface. Scene `attractor-cloud`.
+- Headless-verification reality: pure-shader (`marble`) and geometry-reusing
+  (`strangeAttractor`) techniques verify via `shoot.mjs` on WebGL2. The
+  remaining list items (`flowParticles`/`flock`/`physarum` — GPU particle
+  state; `fluid2d` — multi-buffer; growth/L-systems — a line renderer) need new
+  GPU infra best validated on a real WebGPU device.
+- Gates: `pnpm typecheck` green (77 modules, 35 scenes); `pnpm test:content`
+  green (459). Stills via `shoot.mjs` (WebGL2). Feature-request docs updated.
+
+## 2026-06-14 — marbleWarp effect + CPU agent systems (flock, flowParticles)
+
+- **`fbm2`** value-noise FBM hoisted into `content/modules/_shared.ts`; `marble`
+  refactored onto it and the new **`marbleWarp`** effect (warps an input's UVs
+  by the iterated field via `bufferPass` — the effect face of `marble`, scene
+  `marble-warp`) shares it. Distinct module name since the catalog requires it.
+- **CPU agent systems over GPU particle-state** (the "tractable-first" choice):
+  **`flock`** (boids S/A/C, oriented cones) and **`flowParticles`** (ABC
+  divergence-free flow advection, instanced octahedra) simulate on the CPU each
+  frame and draw through the existing `render3d` + `InstancedMesh` path —
+  seeded (mulberry32) + frame-clocked + `DynamicDrawUsage`, so fixture-replay
+  safe and verifiable headlessly. Chose this over GPU position-textures because
+  it reuses proven rendering and renders correctly on the WebGL2 fallback.
+  Scenes `flock-swarm`, `flow-field`.
+- Still OPEN from the new-viz list (need GPU infra best validated on a real
+  device): `physarum` (agents + diffusing trail field), `fluid2d` (multi-buffer
+  simBuffer), differential-growth / L-systems (a line/ribbon renderer), and a
+  true GPU `particleState` + additive accumulation for million-point silk.
+- Gates: `pnpm typecheck` green (80 modules, 38 scenes); `pnpm test` +
+  `pnpm test:content` green (476 content). Stills via `shoot.mjs` (WebGL2).

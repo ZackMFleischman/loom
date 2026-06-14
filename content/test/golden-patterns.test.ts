@@ -53,4 +53,47 @@ describe("golden patterns", () => {
       .map(([file]) => file);
     expect(offenders).toEqual([]);
   });
+
+  // A texture() sample built inside a TSL Fn() function-scope is NOT collected
+  // into the material's sampler bindings by three's node backend — the sampler
+  // reads unbound, so the shader silently renders BLACK (build ok, instanceError
+  // null). Sample textures at the TOP LEVEL of build() and pass the value in.
+  // (uniform() nodes cross the Fn boundary fine; this is why ctx.palette.ramp()
+  // is now built from the stop UNIFORMS and is safe inside an Fn — see
+  // mandelbulb. Only RAW texture() samples remain hazardous.)
+  // Heuristic: flag a `texture(` call lexically inside a block-bodied Fn().
+  function rawTextureInsideFn(src: string): boolean {
+    for (const m of src.matchAll(/\bFn\s*\(/g)) {
+      const open = src.indexOf("{", m.index);
+      if (open === -1) continue;
+      let depth = 0;
+      let end = open;
+      for (; end < src.length; end++) {
+        if (src[end] === "{") depth++;
+        else if (src[end] === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            end++;
+            break;
+          }
+        }
+      }
+      if (/\btexture\s*\(/.test(src.slice(open, end))) return true;
+    }
+    return false;
+  }
+
+  it("no module samples a raw texture() inside an Fn() (unbound sampler → black; sample at top level)", () => {
+    const offenders = Object.entries(rawModuleSources())
+      .filter(([, src]) => rawTextureInsideFn(src))
+      .map(([file]) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  it("no scene samples a raw texture() inside an Fn() (unbound sampler → black; sample at top level)", () => {
+    const offenders = Object.entries(rawSceneSources())
+      .filter(([, src]) => rawTextureInsideFn(src))
+      .map(([file]) => file);
+    expect(offenders).toEqual([]);
+  });
 });
