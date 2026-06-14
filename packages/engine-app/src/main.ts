@@ -39,6 +39,7 @@ import { EngineApi } from "./engine-api";
 import { FpsMeter } from "./fps";
 import { getEffectLibrary } from "./effects";
 import { MidiRouter } from "./midi-router";
+import { PanicController } from "./panic-controller";
 import { getScenes } from "./scenes";
 import { entryStatus, PREVIEW_H, PREVIEW_W, SessionStore } from "./session";
 import { fixtureKey, projectKey, repoStatePath, StateClient, StateDir, StateKey } from "./state";
@@ -225,7 +226,7 @@ const persist = {
     state.save(StateKey.sceneColorSpaces(sceneName), () => tunedColorSpaces.get(sceneName) ?? {});
   },
   bindings: () => state.save(StateKey.bindings, () => bindings.toJSON()),
-  panicScene: () => state.save(StateKey.panic, () => ({ scene: panicSceneName })),
+  panicScene: () => state.save(StateKey.panic, () => ({ scene: panicController.sceneName })),
 };
 
 // MIDI routing lives in MidiRouter (writeParam / setModEnabled / onCc) —
@@ -510,13 +511,6 @@ let currentScenes = getScenes;
 let bootId = "boot";
 
 /**
- * The always-warm Panic Scene instance (FR-3). Built at boot next to the boot
- * instance, rebuilt through HMR when panic.scene.ts changes, never disposed —
- * PANIC must never wait on (or risk) a build. Its id is "panic".
- */
-const PANIC_ID = "panic";
-
-/**
  * NFR-5 for the boot instance: build the new one first; a failed
  * build/rebuild keeps whatever is running — never go black.
  */
@@ -532,71 +526,14 @@ function trySwapLive(def: SceneDef): boolean {
   }
 }
 
-// Panic Scene build health (FR-7): the last build error, surfaced even when a
-// previous good instance still runs. Null once a usable instance exists.
-let panicSceneName = panicScene?.name ?? "panic";
-let panicBuildError: string | null = "panic instance not built yet";
-
-/**
- * Build (or HMR-rebuild) the warm panic instance, same NFR-5 semantics as the
- * boot instance: a failed rebuild keeps the previous one running and only
- * flags health. FR-7's hold-fallback triggers only if there has *never* been a
- * healthy build (no instance exists).
- */
-function tryBuildPanic(def: SceneDef): boolean {
-  panicSceneName = def?.name ?? panicSceneName;
-  if (session.get(PANIC_ID)) {
-    const ok = session.rebuild(PANIC_ID, def);
-    panicBuildError = ok ? null : `panic scene "${def?.name ?? "?"}" update rejected (see console)`;
-    return ok;
-  }
-  try {
-    const e = session.create(def, PANIC_ID);
-    e.pinned = "panic";
-    panicBuildError = null;
-    return true;
-  } catch (err) {
-    panicBuildError = `panic scene "${def?.name ?? "?"}" failed to build: ${String(err)}`;
-    console.error(`[loom] ${panicBuildError}; PANIC will hold`, err);
-    return false;
-  }
-}
-
-/** The instance currently bearing the SAFE designation, if any. */
-function pinnedPanicEntry() {
-  for (const e of session.entries.values()) if (e.pinned === "panic") return e;
-  return undefined;
-}
-
-/** A usable safe-target instance exists → scene-panic is available (FR-7). */
-function panicInstanceId(): string | null {
-  return pinnedPanicEntry()?.id ?? (session.get(PANIC_ID) ? PANIC_ID : null);
-}
-function panicSceneInfo(): { name: string; status: "ok" | "error"; error: string | null } {
-  const e = pinnedPanicEntry();
-  return {
-    name: e?.sceneName ?? panicSceneName,
-    status: e ? "ok" : "error",
-    error: e ? null : panicBuildError,
-  };
-}
-
-/**
- * Designate an existing, already-warm instance as the SAFE SCENE target (the
- * Console picker). The ⛑ SAFE marker — and what scene-panic cuts to — moves to
- * the chosen instance; no build, no gap. The boot default ("panic", from
- * panic.scene.ts) is just the initial designation. Persists the target's scene
- * so the default reflects it across a restart (instance ids are ephemeral).
- */
-function setPanicInstance(id: string): void {
-  const target = session.require(id);
-  if (target.pinned === "panic") return;
-  for (const e of session.entries.values()) if (e.pinned === "panic") delete e.pinned;
-  target.pinned = "panic";
-  panicSceneName = target.sceneName;
-  panicBuildError = null;
-  persist.panicScene();
-}
+// The always-warm Panic Scene instance (FR-3/FR-7): built at boot next to the
+// boot instance, rebuilt through HMR, never disposed. PanicController owns the
+// warm-instance lifecycle, the SAFE designation, and build-health reporting.
+const panicController = new PanicController({
+  session,
+  persistPanicScene: () => persist.panicScene(),
+  initialSceneName: panicScene?.name ?? "panic",
+});
 
 async function startAudio(): Promise<void> {
   if (qs.get("audio") === "test") {
@@ -722,7 +659,7 @@ window.__loom = {
   panicked: false,
   panicMode: "hold",
   panicActive: null,
-  panicScene: { name: panicSceneName, status: "error", error: panicBuildError },
+  panicScene: panicController.info(),
   agentCommitArmed: false,
   instances: [],
   inputs: {},
@@ -734,10 +671,10 @@ window.__loom = {
 trySwapLive(liveScene);
 // Build the warm panic instance alongside boot. A throw here leaves it in
 // hold-fallback (FR-7) rather than failing the engine.
-tryBuildPanic(panicScene);
+panicController.tryBuild(panicScene);
 // A persisted runtime pick overrides the panic.scene.ts boot default.
-if (savedPanicScene && savedPanicScene !== panicSceneName && currentScenes().has(savedPanicScene)) {
-  tryBuildPanic(currentScenes().get(savedPanicScene)!);
+if (savedPanicScene && savedPanicScene !== panicController.sceneName && currentScenes().has(savedPanicScene)) {
+  panicController.tryBuild(currentScenes().get(savedPanicScene)!);
 }
 
 const api = new EngineApi(
@@ -765,9 +702,9 @@ const api = new EngineApi(
     rms: () => window.__loom?.rms ?? 0,
     onsetCount: () => onsetCount,
     currentMix: () => currentMix,
-    panicInstanceId,
-    panicScene: panicSceneInfo,
-    setPanicInstance,
+    panicInstanceId: () => panicController.instanceId(),
+    panicScene: () => panicController.info(),
+    setPanicInstance: (id) => panicController.setInstance(id),
     audioDevices: () => audioDevices,
     refreshAudioDevices: () => void refreshAudioDevices(),
     inputs,
@@ -925,7 +862,7 @@ const frameTick = (tMs: number): void => {
   dbg.panicked = stage.panicked;
   dbg.panicMode = api.armedPanicMode;
   dbg.panicActive = stage.panicActive;
-  dbg.panicScene = panicSceneInfo();
+  dbg.panicScene = panicController.info();
   dbg.agentCommitArmed = api.agentCommitArmed;
   dbg.inputs = inputs.values();
   dbg.palettes = palettes.manifest.values();
@@ -1014,9 +951,7 @@ if (import.meta.hot) {
         session.destroy(entry.id);
       } else if (def !== entry.def) {
         const ok = session.rebuild(entry.id, def);
-        if (entry.pinned === "panic") {
-          panicBuildError = ok ? null : `safe scene "${def.name}" update rejected (see console)`;
-        }
+        if (entry.pinned === "panic") panicController.noteSafeRebuild(ok, def);
         console.info(
           ok
             ? `[loom] instance "${entry.id}" rebuilt (${def.name})`
