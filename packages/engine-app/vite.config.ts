@@ -350,7 +350,7 @@ const effectsApi: Plugin = {
   },
 };
 
-export default defineConfig(({ command }) => ({
+export default defineConfig({
   plugins: [loopGuard, watchContent, buildCatalog, stateApi, stateListApi, mediaApi, effectsApi],
   // Multi-page production build for the static preview deploy (Cloudflare Pages):
   // the Output window (/), the Console cockpit (/console.html), and the staged
@@ -368,17 +368,19 @@ export default defineConfig(({ command }) => ({
   resolve: {
     // A locally-linked module pack (packs/<name>/ → an out-of-tree dir via
     // `pnpm pack:add <path>`) must resolve the host's `three`/`three/tsl` from
-    // node_modules. Keeping the symlinked path (not the real out-of-tree path)
-    // makes bare specifiers walk up to the repo's node_modules like local
-    // content. Cloned packs (in-tree) are unaffected.
+    // node_modules — without this a pack file resolves `three` against its own
+    // out-of-tree location and either fails or double-loads three (TSL breaks on
+    // two copies). `dedupe` forces every `three`/`three/tsl` import (including a
+    // linked pack's) to the single copy under the app's node_modules. Cloned
+    // (in-tree) packs are unaffected.
     //
-    // Dev-server ONLY: linked packs are a `pnpm pack:add <path>` dev workflow and
-    // never exist in the production preview build (packs/ is gitignored, absent in
-    // CI). Enabling preserveSymlinks in the `build` pass breaks MUI's subpath
-    // resolution (rolldown can't follow `@mui/material/esm` → `@mui/utils/*`
-    // through the pnpm store), failing the Console bundle. Scoping it to `serve`
-    // keeps the pack-link feature intact and the production build green.
-    preserveSymlinks: command === "serve",
+    // NOTE: this replaces an earlier `preserveSymlinks: true`. That flag fixed
+    // pack `three` resolution but globally broke MUI's pnpm-symlinked subpath
+    // imports (`@mui/material/esm` → `@mui/utils/*` / `@mui/system`) in BOTH the
+    // dev server (Console fails to boot — validate:panic) and the production
+    // build (Console bundle fails). `dedupe` solves the pack case narrowly and
+    // leaves MUI resolution intact.
+    dedupe: ["three", "three/tsl"],
     alias: {
       // Single source of truth for runtime resolution so content/ scenes
       // (outside any package) resolve it too.
@@ -394,4 +396,4 @@ export default defineConfig(({ command }) => ({
       allow: [fileURLToPath(new URL("../..", import.meta.url))],
     },
   },
-}));
+});
