@@ -9,10 +9,12 @@ import {
   GetDiagnosticsArgs,
   GetDiagnosticsResult,
   GetSidecarDiagnosticsResult,
+  HelloMsg,
   InstanceArgs,
   MidiTargetArgs,
   PerfSnapshot,
   ModulateParamArgs,
+  PROTOCOL_VERSION,
   RequestMsg,
   ResponseMsg,
   SaveChainArgs,
@@ -303,5 +305,38 @@ describe("Diagnostics schemas (app-instrumentation)", () => {
       tools: [{ tool: "set_param", count: 3, ok: 2, error: 1, timeout: 0, p50: 10, p95: 30, max: 30, lastError: "x" }],
     });
     expect(sidecar.tools[0]!.tool).toBe("set_param");
+  });
+
+  it("defaults the sidecar diagnostics protocolVersion to the current generation", () => {
+    const sidecar = GetSidecarDiagnosticsResult.parse({
+      scope: "sidecar",
+      engineConnected: false,
+      tools: [],
+    });
+    expect(sidecar.protocolVersion).toBe(PROTOCOL_VERSION);
+  });
+});
+
+describe("HelloMsg (protocol version hint, NFR-1)", () => {
+  it("parses a sidecar hello and an engine hello", () => {
+    expect(HelloMsg.parse({ kind: "hello", role: "sidecar", protocol: "1" })).toEqual({
+      kind: "hello",
+      role: "sidecar",
+      protocol: "1",
+    });
+    expect(HelloMsg.parse({ kind: "hello", role: "engine", protocol: "2" }).role).toBe("engine");
+  });
+
+  it("rejects a response/request envelope (so peers can peek-then-fallthrough)", () => {
+    expect(HelloMsg.safeParse({ id: "r1", kind: "res", ok: true, result: 1 }).success).toBe(false);
+    expect(HelloMsg.safeParse({ id: "r1", kind: "req", type: "get_session", args: {} }).success).toBe(
+      false,
+    );
+    expect(HelloMsg.safeParse({ kind: "hello", role: "nope", protocol: "1" }).success).toBe(false);
+  });
+
+  it("exposes a non-empty PROTOCOL_VERSION", () => {
+    expect(typeof PROTOCOL_VERSION).toBe("string");
+    expect(PROTOCOL_VERSION.length).toBeGreaterThan(0);
   });
 });

@@ -14,6 +14,8 @@ import {
   CreateInstanceArgs,
   DEFAULT_WS_PORT,
   GetDiagnosticsArgs,
+  HelloMsg,
+  PROTOCOL_VERSION,
   InstanceArgs,
   LoadProjectArgs,
   ModulateParamArgs,
@@ -49,7 +51,32 @@ wss.on("connection", (ws) => {
   engineSocket = ws;
   broker.attach({ send: (data) => ws.send(data) });
   log("engine connected");
-  ws.on("message", (data) => broker.handleMessage(data.toString()));
+  // Advertise our protocol generation (NFR-1). An older engine that predates
+  // the hello envelope simply can't parse it and ignores it — backward-safe.
+  try {
+    ws.send(JSON.stringify({ kind: "hello", role: "sidecar", protocol: PROTOCOL_VERSION }));
+  } catch {
+    // a send failure here is non-fatal; the engine connection drives recovery
+  }
+  ws.on("message", (data) => {
+    const raw = data.toString();
+    // Peek for the engine's hello before handing the message to the broker
+    // (the broker only understands res envelopes and drops everything else).
+    const hello = parseHello(raw);
+    if (hello) {
+      if (hello.protocol !== PROTOCOL_VERSION) {
+        log(
+          `PROTOCOL MISMATCH: this sidecar speaks v${PROTOCOL_VERSION}, the connected engine ` +
+            `speaks v${hello.protocol}. Tools may fail in confusing ways — update the side that is ` +
+            `behind (the LOOM engine and the loom-use plugin must share a protocol generation).`,
+        );
+      } else {
+        log(`engine protocol v${hello.protocol} — matches`);
+      }
+      return;
+    }
+    broker.handleMessage(raw);
+  });
   ws.on("close", () => {
     if (engineSocket === ws) {
       engineSocket = null;
@@ -63,7 +90,9 @@ wss.on("error", (err) => {
   log(`WebSocket server failed on port ${port}:`, err.message);
   process.exit(1);
 });
-wss.on("listening", () => log(`listening for the engine on ws://localhost:${port}`));
+wss.on("listening", () =>
+  log(`listening for the engine on ws://localhost:${port} (protocol v${PROTOCOL_VERSION})`),
+);
 
 // ---- MCP server ----
 
@@ -722,6 +751,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           return textResult({
             scope: "sidecar",
             engineConnected: broker.connected,
+            protocolVersion: PROTOCOL_VERSION,
             tools: metrics.latencyTable(),
           });
         }
@@ -748,6 +778,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
 function textResult(result: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+}
+
+/** Parse a raw WS message as a {@link HelloMsg}, or null if it isn't one. */
+function parseHello(raw: string): HelloMsg | null {
+  try {
+    return HelloMsg.parse(JSON.parse(raw));
+  } catch {
+    return null;
+  }
 }
 
 /** Per-tool WS budget (ms), mirroring the single-dispatch timeouts above, so a
