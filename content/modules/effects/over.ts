@@ -22,6 +22,16 @@ export const over = defineModule(
     description: "Alpha-composites an overlay TexNode on top of an input (logo/still overlays).",
     tags: ["composite", "overlay", "blend", "alpha"],
     example: 'over(ctx, { input: chain, overlay: imagePlate(ctx, { url: logoUrl }), opacity: 1 })',
+    // Multi-input chain step: `over` is the reference case for a SECOND input
+    // slot. The piped `input` is the background; `overlay` is bound per-step to
+    // a SourceRef (another live instance, or an earlier step's output) and the
+    // fold resolves it to a TexNode. `opacity` is the wet/dry of the overlay.
+    chainParams: [
+      { name: "opacity", default: 1, min: 0, max: 1, step: 0.01, description: "overlay opacity" },
+    ],
+    chainInputs: [
+      { name: "overlay", kind: "tex", description: "foreground composited over the input" },
+    ],
   },
   (ctx: BuildCtx, opts: OverOpts): TexNode => {
     const opacity = ctx.uniformOf(opts.opacity ?? 1);

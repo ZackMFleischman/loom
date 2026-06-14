@@ -48,9 +48,21 @@ const boom: PrimitiveEffectEntry = {
     throw new Error("kaboom");
   }),
 };
+// A multi-input chain step (declares an "overlay" TexNode slot) — the `over`
+// reference case. Its factory just needs the slot bound to build.
+const over: PrimitiveEffectEntry = {
+  name: "over",
+  kind: "primitive",
+  chainParams: [],
+  chainInputs: [{ name: "overlay", kind: "tex" }],
+  factory: defineModule(
+    { name: "over", kind: "effect", description: "x", chainInputs: [{ name: "overlay", kind: "tex" }] },
+    (_c: BuildCtx, opts: { input: TexNode; overlay?: TexNode }) => opts.overlay ?? opts.input,
+  ),
+};
 const registry: EffectRegistry = {
-  get: (n) => (n === "glitch" ? glitch : n === "boom" ? boom : undefined),
-  names: () => ["glitch", "boom"],
+  get: (n) => (n === "glitch" ? glitch : n === "boom" ? boom : n === "over" ? over : undefined),
+  names: () => ["glitch", "boom", "over"],
 };
 
 const scene = defineScene({
@@ -202,6 +214,46 @@ describe("EngineApi audience-safety gates", () => {
     expect(e.instance).toBe(instanceBefore); // old pixels keep running
     expect(e.chain.list().map((s) => s.id)).toEqual(stepsBefore);
     expect(e.builds).toBe(2); // create + the one good chain edit, not the bad one
+  });
+
+  it("a multi-input step whose {instance} source is missing is rejected — previous chain kept (NFR-5)", async () => {
+    const { api, session } = world();
+    const e = session.create(scene, "sandbox");
+    // A good single-input chain first, so there's a previous chain to preserve.
+    await api.handleRequest(req("set_chain", { instance: "sandbox", steps: [{ effect: "glitch" }] }), "agent");
+    const instanceBefore = e.instance;
+    const stepsBefore = e.chain.list().map((s) => s.id);
+    const buildsBefore = e.builds;
+    // Bind `over.overlay` to an instance that does not exist → the resolver
+    // returns null → the fold throws → the edit is rejected, chain + pixels kept.
+    await expect(
+      api.handleRequest(
+        req("set_chain", {
+          instance: "sandbox",
+          steps: [{ effect: "glitch" }, { effect: "over", inputs: { overlay: { instance: "ghost" } } }],
+        }),
+        "agent",
+      ),
+    ).rejects.toThrow(/rejected|cannot resolve instance/);
+    expect(e.instance).toBe(instanceBefore); // never went black
+    expect(e.chain.list().map((s) => s.id)).toEqual(stepsBefore); // overlay step NOT added
+    expect(e.builds).toBe(buildsBefore); // the bad edit did not rebuild
+  });
+
+  it("a multi-input step resolving a real {instance} source builds and is added", async () => {
+    const { api, session } = world();
+    session.create(scene, "src"); // the instance we'll tap as an overlay source
+    const e = session.create(scene, "sandbox");
+    await api.handleRequest(
+      req("set_chain", {
+        instance: "sandbox",
+        steps: [{ effect: "glitch" }, { effect: "over", inputs: { overlay: { instance: "src" } } }],
+      }),
+      "agent",
+    );
+    const list = e.chain.list();
+    expect(list.map((s) => s.effect)).toEqual(["glitch", "over"]);
+    expect(list[1]!.inputs).toEqual({ overlay: { instance: "src" } });
   });
 
   it("rename refuses reserved names and protects the live instance alias", async () => {
