@@ -116,24 +116,15 @@ export const mandelbulb = defineModule(
     const lightAmt = ctx.uniformOf(opts.light ?? 1);
     const fogAmt = ctx.uniformOf(opts.fog ?? 1);
 
-    // Palette stops captured as uniforms OUT here — referencing them inside the
-    // shade Fn is fine, but ctx.palette.ramp() (a DataTexture sample) does NOT
-    // bind inside an Fn closure, so the surface ramp is built by hand from these.
+    // Palette stops as uniforms — used both directly (lighting/bg/halo) and as
+    // the orbit-trap skin via ctx.palette.ramp(). Both work inside the shade Fn:
+    // color(i) is a uniform and ramp() is now uniform-built (no texture sample,
+    // which wouldn't bind in an Fn scope).
     const c0 = ctx.palette.color(0);
     const c1 = ctx.palette.color(1);
     const c2 = ctx.palette.color(2);
     const c3 = ctx.palette.color(3);
     const c4 = ctx.palette.color(4);
-    // Per-pixel piecewise-linear 5-stop ramp (sequential mixes self-mask by clamp).
-    const ramp5 = (tn: Node<"float">) => {
-      const s = tn.clamp(0, 1).mul(4);
-      let c: Node<"vec3"> = c0;
-      c = mix(c, c1, s.clamp(0, 1));
-      c = mix(c, c2, s.sub(1).clamp(0, 1));
-      c = mix(c, c3, s.sub(2).clamp(0, 1));
-      c = mix(c, c4, s.sub(3).clamp(0, 1));
-      return c;
-    };
 
     // Distance estimator for the Mandelbulb: iterate z = z^power + c in spherical
     // coordinates, tracking the running derivative dr for the analytic DE and an
@@ -245,7 +236,7 @@ export const mandelbulb = defineModule(
       // Albedo (NOT lighting): the orbit trap picks a copper→gold tone, held off
       // both extremes (no bg-black, no pure cream) so the body stays metal.
       const albedoT = clamp(trap.sub(0.12).mul(1.2), float(0), float(1));
-      const albedo = ramp5(albedoT.mul(0.5).add(0.28)); // stops ~1.1 .. 3.1
+      const albedo = ctx.palette.ramp(albedoT.mul(0.5).add(0.28)).rgb; // stops ~1.1 .. 3.1
 
       // Lambert: cool fill + warm key over the albedo, AO darkening the creases;
       // glossy cream spec and a self-coloured fresnel rim ride on top.

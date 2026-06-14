@@ -1,9 +1,10 @@
 # Fn-safe palette ramp — make `ctx.palette.ramp()` work inside a TSL `Fn()`
 
-**Status:** PROPOSED (runtime change — `packages/runtime/`, human-reviewed).
-Surfaced while building the `mandelbulb` raymarcher (PR #20). A content-side
-guard (golden-pattern source scan) + skill note already ship; this doc proposes
-removing the footgun at the source.
+**Status:** SHIPPED (Option A). `ctx.palette.ramp()` is now built from the stop
+uniforms via an in-shader 5-stop `mix` (no LUT texture), so it works inside a
+TSL `Fn()`. `mandelbulb` uses it directly inside its raymarch loop; the
+golden-pattern scan now guards only raw `texture()` samples inside an `Fn()`
+(the general hazard that remains). Surfaced while building `mandelbulb` (#20).
 
 ## The problem
 
