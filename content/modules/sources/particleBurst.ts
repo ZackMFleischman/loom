@@ -26,10 +26,17 @@ export interface ParticleBurstOpts {
   hueSpread?: number;
   /** Overall brightness. */
   brightness?: SignalLike;
-  /** Confine bursts to a centered box (height units): x half-extent. Default fills the frame. */
+  /** Confine bursts to a centered box (height units): x half-extent. Default fills the frame. (autonomous mode) */
   spanX?: number;
-  /** Confine bursts to a centered box (height units): y half-extent. Default fills the frame. */
+  /** Confine bursts to a centered box (height units): y half-extent. Default fills the frame. (autonomous mode) */
   spanY?: number;
+  /**
+   * Scene-driven detonations (uv 0..1) instead of the autonomous scatter — one
+   * explosion per site, each triggered by its own `fire` envelope (1 = fresh
+   * detonation, decays to 0). Wire bullet-hit positions here so blasts land
+   * exactly where the action is.
+   */
+  sites?: { x: SignalLike; y: SignalLike; fire?: SignalLike }[];
 }
 
 /** Deterministic per-burst / per-shard pseudo-random in [0,1) — stable across rebuilds. */
@@ -78,27 +85,44 @@ export const particleBurst = defineModule(
 
     let acc: Node<"vec3"> = vec3(0);
     let alpha: Node<"float"> = float(0);
-    for (let b = 0; b < bursts; b++) {
-      const cb = vec2((rand(b, 1) - 0.5) * 2 * spanX, (rand(b, 2) - 0.5) * 2 * spanY);
-      const bphase = now.mul(rate).mul(0.7 + rand(b, 3) * 0.7).add(rand(b, 4)).fract();
-      const fade = bphase.oneMinus().pow(decay); // bright at birth → 0
+
+    // One explosion: a white flash at `bphase`≈0 and shards flying out as it
+    // grows to 1, all scaled by `gain` (the per-burst brightness envelope).
+    const drawBurst = (center: Node<"vec2">, bphase: Node<"float">, b: number, gain: Node<"float">) => {
+      const fade = bphase.oneMinus().pow(decay).mul(gain); // bright at birth → 0
       const reach = bphase.pow(0.55).mul(spread); // ease-out expansion
-
-      // Central flash at detonation.
-      const flash = glowDot(length(p.sub(cb)), size.mul(2.4), vec3(1));
+      const flash = glowDot(length(p.sub(center)), size.mul(2.4), vec3(1));
       acc = acc.add(flash.rgb.mul(bphase.oneMinus().pow(6).mul(fade)));
-
       for (let j = 0; j < shards; j++) {
         const a = (j / shards) * TAU + rand(b, 10 + j) * 0.6;
         const jr = reach.mul(0.55 + rand(b, 40 + j) * 0.9);
-        const pos = cb.add(vec2(Math.cos(a), Math.sin(a)).mul(jr));
+        const pos = center.add(vec2(Math.cos(a), Math.sin(a)).mul(jr));
         const col = mix(ctx.palette.color(colorStop), vec3(1), 0.25 + rand(b, 70 + j) * hueSpread);
         const dot = glowDot(length(p.sub(pos)), size.mul(0.6 + rand(b, 90 + j) * 0.7), col);
         acc = acc.add(dot.rgb.mul(fade));
         alpha = max(alpha, dot.a.mul(fade));
       }
+    };
+
+    const sites = opts.sites;
+    if (sites && sites.length) {
+      // Scene-driven mode: detonate where the scene says (e.g. each bullet hit),
+      // with the `fire` envelope per site (1 = fresh detonation, decays to 0).
+      for (let b = 0; b < sites.length; b++) {
+        const s = sites[b]!;
+        const center = vec2(ctx.uniformOf(s.x).sub(0.5).mul(asp), ctx.uniformOf(s.y).sub(0.5));
+        const fire = ctx.uniformOf(s.fire ?? 1).clamp(0, 1);
+        drawBurst(center, fire.oneMinus(), b, fire.mul(bright));
+      }
+    } else {
+      // Autonomous mode: scattered sites each re-detonate on their own clock.
+      for (let b = 0; b < bursts; b++) {
+        const cb = vec2((rand(b, 1) - 0.5) * 2 * spanX, (rand(b, 2) - 0.5) * 2 * spanY);
+        const bphase = now.mul(rate).mul(0.7 + rand(b, 3) * 0.7).add(rand(b, 4)).fract();
+        drawBurst(cb, bphase, b, drive.mul(bright));
+      }
     }
 
-    return texNode(vec4(acc.mul(drive).mul(bright), alpha.mul(drive).clamp(0, 1)));
+    return texNode(vec4(acc, alpha.clamp(0, 1)));
   },
 );

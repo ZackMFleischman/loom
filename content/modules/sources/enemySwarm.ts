@@ -8,8 +8,15 @@ const TAU = Math.PI * 2;
 export interface EnemySwarmOpts {
   /** Hard ceiling on enemies baked into the shader (compile-time constant). Default 24. */
   maxCount?: number;
-  /** How many enemies are actually visible (SignalLike, clamped to maxCount). */
+  /** How many enemies are actually visible (SignalLike, clamped to maxCount). Autonomous mode only. */
   count?: SignalLike;
+  /**
+   * Drive enemies from scene-supplied positions (uv 0..1) instead of the internal
+   * spawn spiral — one source of truth for an external sim/AI (so the protagonist
+   * can avoid and shoot the very same enemies). Array length sets the count;
+   * `phase` 0..1 fades a spawning/dying enemy (default 1 = full).
+   */
+  positions?: { x: SignalLike; y: SignalLike; phase?: SignalLike }[];
   /** Enemy silhouette: regular polygon ("poly"), spiky "star", or "ring". */
   shape?: "poly" | "star" | "ring";
   /** Polygon side count (poly): 3 = dart, 4 = diamond, 6 = hex-mine. */
@@ -95,18 +102,9 @@ export const enemySwarm = defineModule(
 
     let acc: Node<"vec3"> = vec3(0);
     let alpha: Node<"float"> = float(0);
-    for (let i = 0; i < maxCount; i++) {
-      const ang0 = rand(i, 1) * TAU;
-      const rate = 0.5 + rand(i, 2) * 0.8;
-      const off = rand(i, 3);
-      const dir = rand(i, 4) < 0.5 ? -1 : 1;
 
-      const ph = march.mul(rate).add(off).fract(); // 0 at rim → 1 at target
-      const ang = float(ang0).add(swirl.mul(ph).mul(dir));
-      const radius = rim.mul(ph.oneMinus()); // shrink toward the target
-      const pos = target.add(vec2(cos(ang), sin(ang)).mul(radius));
-
-      // Per-enemy local space, self-spun.
+    // Draw one self-spinning enemy at `pos` (centered aspect space), faded by `life`.
+    const drawEnemy = (pos: Node<"vec2">, life: Node<"float">, i: number, dir: number) => {
       const local = center.sub(pos);
       const rotI = now.mul(spin).mul(0.6 + rand(i, 5) * 0.9).mul(dir).add(rand(i, 6) * TAU);
       const cr = cos(rotI);
@@ -121,12 +119,40 @@ export const enemySwarm = defineModule(
 
       const col = mix(ctx.palette.color(colorStop), ctx.palette.color(4), rand(i, 8) * hueSpread);
       const stroke = neonStroke(sdf, thickness, col);
+      acc = acc.add(stroke.rgb.mul(life));
+      alpha = max(alpha, stroke.a.mul(life));
+    };
 
-      // Fade in at spawn, flare-and-die at the target.
-      const life = smoothstep(float(0), float(0.07), ph).mul(smoothstep(float(1), float(0.74), ph));
-      const vis = select(float(i).lessThan(countU), life, float(0));
-      acc = acc.add(stroke.rgb.mul(vis));
-      alpha = max(alpha, stroke.a.mul(vis));
+    const positions = opts.positions;
+    if (positions && positions.length) {
+      // Scene-driven mode: render an enemy at each supplied position — one source
+      // of truth shared with an external sim / AI (which also fires at them).
+      for (let i = 0; i < positions.length; i++) {
+        const ps = positions[i]!;
+        const px = ctx.uniformOf(ps.x);
+        const py = ctx.uniformOf(ps.y);
+        const pos = vec2(px.sub(0.5).mul(asp), py.sub(0.5));
+        const life = ctx.uniformOf(ps.phase ?? 1).clamp(0, 1);
+        drawEnemy(pos, life, i, rand(i, 4) < 0.5 ? -1 : 1);
+      }
+    } else {
+      // Autonomous mode: enemies spawn at the rim and spiral inward to the target.
+      for (let i = 0; i < maxCount; i++) {
+        const ang0 = rand(i, 1) * TAU;
+        const rate = 0.5 + rand(i, 2) * 0.8;
+        const off = rand(i, 3);
+        const dir = rand(i, 4) < 0.5 ? -1 : 1;
+
+        const ph = march.mul(rate).add(off).fract(); // 0 at rim → 1 at target
+        const ang = float(ang0).add(swirl.mul(ph).mul(dir));
+        const radius = rim.mul(ph.oneMinus());
+        const pos = target.add(vec2(cos(ang), sin(ang)).mul(radius));
+
+        // Fade in at spawn, flare-and-die at the target; gate by the live count.
+        const fade = smoothstep(float(0), float(0.07), ph).mul(smoothstep(float(1), float(0.74), ph));
+        const vis = select(float(i).lessThan(countU), fade, float(0));
+        drawEnemy(pos, vis, i, dir);
+      }
     }
 
     return texNode(vec4(acc.mul(bright), alpha.clamp(0, 1)));

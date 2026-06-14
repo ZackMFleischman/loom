@@ -5,6 +5,33 @@ import { surfaceAspect } from "../_shared";
 
 const TAU = Math.PI * 2;
 
+/**
+ * One point of influence another visualization pushes into the grid. Position is
+ * the only required field; the rest are the physical attributes of a force on a
+ * field — feed whatever your visualization knows about an entity:
+ *  - `mass`   radial pull (>0 sucks the lattice in, <0 bulges it out)
+ *  - `radius` how broad the dent is (surface-height units)
+ *  - `swirl`  tangential curl / angular momentum (rotates the lattice around it)
+ *  - `vx/vy`  linear velocity — drags the lattice along the entity's motion
+ * A sprinkle, an enemy, the protagonist, a bomb — anything with a position can
+ * emit one (or a list), and the grid sums them analytically. For MANY points
+ * (a whole particle system), use `field` instead.
+ */
+export interface GridInfluence {
+  /** Center in uv (0..1). */
+  x: SignalLike;
+  y: SignalLike;
+  /** Radial pull strength ("mass"). >0 attracts the lattice, <0 repels. Default 1. */
+  mass?: SignalLike;
+  /** Influence radius in surface-height units — broader = gentler, wider dent. Default 0.25. */
+  radius?: SignalLike;
+  /** Tangential swirl (curl / angular momentum) — rotates the lattice around the point. Default 0. */
+  swirl?: SignalLike;
+  /** Linear velocity (uv/sec-ish) — drags the lattice along the entity's motion. Default 0. */
+  vx?: SignalLike;
+  vy?: SignalLike;
+}
+
 export interface WarpGridOpts {
   /** Grid density — cells across the frame height. */
   cells?: SignalLike;
@@ -13,13 +40,24 @@ export interface WarpGridOpts {
   /** Autonomous gravity wells that roam on their own (compile-time count). 0 = none. */
   wells?: number;
   /**
-   * Wells PINNED to scene-driven points (uv 0..1) — this is how another module
-   * reaches into the grid: pass the protagonist's position so the lattice dimples
-   * around it and follows it, and pulse `strength` with a kick so detonations
-   * punch a shock through the grid. The array length is fixed at build.
+   * Scene-driven point influences — THE hook for other visualizations to bend
+   * the grid. Pass a position (and optional mass/radius/swirl/velocity) per
+   * entity and the lattice reacts: the ship dimples it, a bomb shocks it, an
+   * enemy curls it. Array length is fixed at build (it's an unrolled sum, so
+   * keep it to a handful of discrete entities — use `field` for crowds).
    */
-  anchors?: { x: SignalLike; y: SignalLike; strength?: SignalLike }[];
-  /** Well pull strength — how hard the grid bows toward each well. */
+  influences?: GridInfluence[];
+  /**
+   * A displacement FIELD for arbitrary / many-point visualizations: a TexNode
+   * whose RG channels are a signed warp vector (0.5 = neutral) and whose B is an
+   * optional glow contribution, sampled at each grid pixel. Render a particle
+   * system's force/velocity/curl into this (cheaply — wrap it in `ctx.layer` so
+   * it's one buffered sample) and the whole crowd warps the grid at once.
+   */
+  field?: TexNode;
+  /** Scale on the `field` displacement + glow. Default 0.12. */
+  fieldAmount?: SignalLike;
+  /** Influence/well strength multiplier — how hard the grid bows. */
   warp?: SignalLike;
   /** Well wander speed — the wells drift, so the warp breathes. */
   drift?: SignalLike;
@@ -89,21 +127,36 @@ export const warpGrid = defineModule(
       wellGlow = wellGlow.add(float(0.006).div(dist2));
     }
 
-    // Anchor wells the scene pins to live points (e.g. the ship) — same physics,
-    // but the position and strength come from outside, so the grid reacts to
-    // whatever the scene wires in (protagonist position, bomb shockwave, …).
-    const anchors = opts.anchors ?? [];
-    for (let i = 0; i < anchors.length; i++) {
-      const an = anchors[i]!;
-      const ax = ctx.uniformOf(an.x);
-      const ay = ctx.uniformOf(an.y);
-      const aStr = ctx.uniformOf(an.strength ?? 1);
-      const w = vec2(ax.sub(0.5).mul(asp), ay.sub(0.5)); // uv → centered aspect space
-      const toW = w.sub(p);
-      const dist2 = toW.dot(toW).add(0.02);
-      const pull = warp.mul(aStr).div(dist2.mul(4).add(0.5));
-      disp = disp.add(toW.mul(pull));
-      wellGlow = wellGlow.add(float(0.01).div(dist2).mul(aStr));
+    // Scene-driven influences — the hook other visualizations push through.
+    // Each adds a radial dent (mass), a tangential swirl (curl), and a drag
+    // along its velocity, all falling off within its radius.
+    const influences = opts.influences ?? [];
+    for (let i = 0; i < influences.length; i++) {
+      const inf = influences[i]!;
+      const mass = ctx.uniformOf(inf.mass ?? 1);
+      const radius = ctx.uniformOf(inf.radius ?? 0.25);
+      const swirl = ctx.uniformOf(inf.swirl ?? 0);
+      const vx = ctx.uniformOf(inf.vx ?? 0);
+      const vy = ctx.uniformOf(inf.vy ?? 0);
+      const w = vec2(ctx.uniformOf(inf.x).sub(0.5).mul(asp), ctx.uniformOf(inf.y).sub(0.5));
+      const toW = w.sub(p); // points from the pixel toward the entity
+      const r2 = radius.mul(radius).add(1e-4);
+      const fall = r2.div(toW.dot(toW).add(r2)); // 1 at the center → 0 past the radius
+      const k = fall.mul(warp);
+      disp = disp.add(toW.mul(mass.mul(k).mul(2.4))); // radial pinch toward the entity
+      disp = disp.add(vec2(toW.y.negate(), toW.x).mul(swirl.mul(k))); // curl around it
+      disp = disp.add(vec2(vx, vy).mul(k)); // drag along its motion
+      wellGlow = wellGlow.add(fall.mul(mass).mul(0.05));
+    }
+
+    // Displacement FIELD: RG = signed warp vector, B = glow. The escape hatch for
+    // crowds — a whole particle system baked into one sampled texture.
+    let fieldPasses = opts.field?.passes ?? [];
+    if (opts.field) {
+      const fAmt = ctx.uniformOf(opts.fieldAmount ?? 0.12);
+      const fc = opts.field.color;
+      disp = disp.add(fc.rg.sub(0.5).mul(2).mul(fAmt));
+      wellGlow = wellGlow.add(fc.b.mul(fAmt));
     }
 
     // Lattice on the warped coordinate; distance to the nearest gridline per axis.
