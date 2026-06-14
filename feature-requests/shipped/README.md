@@ -18,3 +18,4 @@ when its PR merges.
 | validator-test-consolidation | #32 | `aa3dc38` |
 | loom-user-plugin | #35 | bdce009 |
 | multi-input-chain-steps | #36 | b139efb | partial — asset-source deferred to M10 |
+| content-sharing-marketplace | #37 | 24f1e70 | Phase 1 (Phase 2 hosted store/Console deferred) |
