@@ -16,15 +16,10 @@
 // level as editing content/ yourself. We DON'T sandbox (documented in
 // DECISIONS.md); typecheck is the real gate, loomApi is the fast hint.
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
-import {
-  PACK_NAME_RE,
-  packsDir,
-  readPackManifest,
-  readRegistry,
-  writeRegistry,
-} from "./lib/packs.mjs";
+import { installHint, loadIndex, rankEntries } from "./lib/marketplace.mjs";
+import { PACK_NAME_RE, packsDir, readPackManifest, readRegistry, repoRoot, writeRegistry } from "./lib/packs.mjs";
 
 const HOST_API = "1"; // the runtime API generation this host implements.
 
@@ -76,9 +71,7 @@ function deriveName(flagName, manifest, source) {
 
 function checkApi(manifest, name) {
   if (!manifest) {
-    console.warn(
-      `pack: ${name} has no loom-pack.json — installing anyway (typecheck is the real gate).`,
-    );
+    console.warn(`pack: ${name} has no loom-pack.json — installing anyway (typecheck is the real gate).`);
     return;
   }
   if (manifest.loomApi && !satisfiesApi(manifest.loomApi, HOST_API)) {
@@ -215,7 +208,129 @@ function update(argv) {
   console.log("pack: registry updated. Run `pnpm typecheck` to verify.");
 }
 
+// ---- marketplace discovery (content-sharing-marketplace, Phase 1) ----
+
+/**
+ * pnpm pack:search <query> [--tag t]  (FR-3)
+ *
+ * Search the SHAREABLE marketplace index (the discovery layer), printing ranked
+ * entries to the terminal with the exact `pack:add` invocation to install each.
+ * Reads the same index the agent's `search_content` tool reads (one schema, one
+ * ranker — scripts/lib/marketplace.mjs). NFR-2: a missing/unreachable index is a
+ * clean error here — it never blocks already-installed packs.
+ *
+ * NFR-4 reflex: this searches the WIDER world. Check the local catalog
+ * (content/CATALOG.md) first — pulling a result runs arbitrary code (NFR-3) and
+ * is a separate, human-gated `pack:add` step.
+ */
+async function search(argv) {
+  const { positionals, flags } = parseArgs(argv);
+  const query = positionals.join(" ");
+  const tags = flags.tag ? [flags.tag] : [];
+  if (!query && tags.length === 0) {
+    fail("usage: pnpm pack:search <query> [--tag <tag>]");
+  }
+
+  let index;
+  try {
+    index = await loadIndex();
+  } catch (err) {
+    // Clean, single-line failure — discovery is strictly additive (NFR-2).
+    fail(err instanceof Error ? err.message : String(err));
+  }
+
+  const hits = rankEntries(index.packs, query, tags);
+  if (hits.length === 0) {
+    console.log(
+      `pack: no marketplace entries match ${query ? `"${query}"` : ""}${
+        tags.length ? ` [tag: ${tags.join(", ")}]` : ""
+      }.`,
+    );
+    return;
+  }
+
+  console.log(
+    `pack: ${hits.length} result${hits.length === 1 ? "" : "s"} ` +
+      `(searching the SHAREABLE index — check content/CATALOG.md for local content first):\n`,
+  );
+  for (const e of hits) {
+    const rating = e.rating !== undefined ? `  ★${e.rating}` : "";
+    console.log(`  ${e.name}  [${(e.tags ?? []).join(", ")}]  by ${e.author}${rating}`);
+    console.log(`    ${e.description}`);
+    console.log(`    install: ${installHint(e)}`);
+    console.log("");
+  }
+  console.log(
+    "pack: installing runs arbitrary code at content-edit trust (NFR-3) — a rating is popularity, not a security audit.",
+  );
+}
+
+/**
+ * pnpm pack:fork <name>  (FR-6)
+ *
+ * Copy an INSTALLED pack into an editable, un-pinned tree (forks/<name>/, a
+ * committed dir — packs/ is gitignored scratch) and re-point its registry entry
+ * at that local path with pin: null, so its files become yours to edit. This is
+ * the whole-pack override path; to override a SINGLE module without forking,
+ * author a bare-name local content/modules/.../<name>.ts — LOCAL-WINS precedence
+ * (module-packs) shadows the pack's same-named item.
+ */
+function fork(argv) {
+  const { positionals } = parseArgs(argv);
+  const name = positionals[0];
+  if (!name) fail("usage: pnpm pack:fork <installed-pack-name>");
+
+  const reg = readRegistry();
+  const entry = reg.packs.find((p) => p.name === name);
+  if (!entry) {
+    fail(`no registered pack "${name}" — run \`pnpm pack:search\` to find one and \`pnpm pack:add\` to install it.`);
+  }
+
+  const checkout = path.join(packsDir, name);
+  if (!existsSync(checkout)) {
+    fail(`pack "${name}" is registered but not checked out — run \`pnpm pack:add\` first.`);
+  }
+
+  const forksDir = path.join(repoRoot, "forks");
+  const dest = path.join(forksDir, name);
+  if (existsSync(dest)) {
+    fail(`forks/${name} already exists — remove it first or edit it in place (it's already your editable fork).`);
+  }
+
+  // Already a local symlink (a prior fork or a `pack:add <path>`)? It's already
+  // editable and un-pinned — nothing to copy.
+  if (lstatSync(checkout).isSymbolicLink() && entry.pin == null) {
+    console.log(`pack: "${name}" is already a linked (editable, un-pinned) pack — edit it in place.`);
+    return;
+  }
+
+  mkdirSync(forksDir, { recursive: true });
+  console.log(`pack: forking ${name} → forks/${name} (editable, un-pinned)`);
+  // Copy the resolved files (dereference if `checkout` is a symlink), excluding
+  // the pack's own .git so the fork is plain editable files, not a clone.
+  cpSync(checkout, dest, {
+    recursive: true,
+    dereference: true,
+    filter: (src) => path.basename(src) !== ".git",
+  });
+
+  // Swap the scratch checkout to track the fork (junction works without admin
+  // on Windows), and re-point the registry entry at the local fork, un-pinned.
+  rmSync(checkout, { recursive: true, force: true });
+  symlinkSync(dest, checkout, "junction");
+  entry.source = dest;
+  entry.pin = null;
+  delete entry.branch;
+  writeRegistry(reg);
+  console.log(
+    `pack: "${name}" is now your fork at forks/${name} (pin detached). ` +
+      `Edit the files there; \`pnpm pack:update\` leaves it alone (it's linked). Run \`pnpm typecheck\` to verify.`,
+  );
+}
+
 const [cmd, ...rest] = process.argv.slice(2);
 if (cmd === "add") add(rest);
 else if (cmd === "update") update(rest);
-else fail(`unknown command "${cmd ?? ""}" — expected "add" or "update".`);
+else if (cmd === "search") await search(rest);
+else if (cmd === "fork") fork(rest);
+else fail(`unknown command "${cmd ?? ""}" — expected "add", "update", "search", or "fork".`);
