@@ -24,6 +24,7 @@ import { rgbSplit } from "../modules/effects/rgbSplit";
 import { threshold } from "../modules/effects/threshold";
 import { tile } from "../modules/effects/tile";
 import { vignette } from "../modules/effects/vignette";
+import { automata } from "../modules/sources/automata";
 import { checker } from "../modules/sources/checker";
 import { gradient } from "../modules/sources/gradient";
 import { plasma } from "../modules/sources/plasma";
@@ -58,6 +59,7 @@ import { noodles } from "../modules/sources/noodles";
 import { osc } from "../modules/sources/osc";
 import { pulseRings } from "../modules/sources/pulseRings";
 import { reactionDiffusion } from "../modules/sources/reactionDiffusion";
+import { waveField } from "../modules/sources/waveField";
 import { ripples } from "../modules/sources/ripples";
 import { softServe } from "../modules/sources/softServe";
 import { sprinkles } from "../modules/sources/sprinkles";
@@ -110,6 +112,8 @@ export const CASES: Record<string, ModuleCase> = {
   osc: (ctx) => osc(ctx, {}),
   pulseRings: (ctx) => pulseRings(ctx, { energy: ctx.input("kick") }),
   reactionDiffusion: (ctx) => reactionDiffusion(ctx, { inject: ctx.input("kick"), reseed: ctx.input("kick") }),
+  waveField: (ctx) => waveField(ctx, { impact: ctx.input("kick"), reseed: ctx.input("kick") }),
+  automata: (ctx) => automata(ctx, { reseed: ctx.input("kick") }),
   ripples: (ctx) => ripples(ctx, { energy: ctx.input("kick") }),
   softServe: (ctx) => softServe(ctx, { energy: ctx.input("bass") }),
   sprinkles: (ctx) => sprinkles(ctx, { count: 12, burst: ctx.input("kick") }),

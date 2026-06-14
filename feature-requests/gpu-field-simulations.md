@@ -1,7 +1,9 @@
 # GPU field simulations — fluid, waves, cellular automata (post-v1 candidates)
 
-**Status:** ideas, not scheduled. Spawned from the `reactionDiffusion` work
-(PR #18) — it proved the pattern; these reuse it.
+**Status:** PARTIALLY SHIPPED. The `simBuffer` primitive, **`waveField`** (wave
+equation) and **`automata`** (cyclic CA) shipped — `reactionDiffusion` was
+refactored onto `simBuffer` to prove it. **`fluid2d` remains** the open item.
+Spawned from the `reactionDiffusion` work (PR #18) — it proved the pattern.
 
 ## The opportunity
 
@@ -14,9 +16,9 @@ classic generative looks LOOM doesn't have yet. Building them one-off would
 copy ~100 lines of buffer plumbing each time; extracting the plumbing once
 makes each new sim a small module.
 
-## Shared primitive first: `simBuffer` (the high-leverage refactor)
+## Shared primitive first: `simBuffer` (SHIPPED)
 
-A helper in `content/modules/_shared.ts` (outside the swept module folders, so
+Lives in `content/modules/_shared.ts` (outside the swept module folders, so
 discovery ignores it — same as `bufferPass`):
 
 ```ts
@@ -50,7 +52,7 @@ expose iteration count as a param. Needs `simBuffer` to host multiple coupled
 fields (velocity + dye + pressure scratch), the main reason to design the
 helper around *named* buffers rather than a single RG pair.
 
-### `waveField` — wave-equation ripple tank (cheap, hypnotic)
+### `waveField` — wave-equation ripple tank (SHIPPED, cheap, hypnotic)
 Height `h` + previous height in one buffer. Step: `a = c²·∇²h`,
 `v += a·dt·damp`, `h += v`. Drop impulses on kicks → **real interference**
 and reflections (a true simulation where today's `ripples` is procedural
@@ -58,7 +60,7 @@ rings). Output: height → palette ramp, or finite-difference normal → shaded
 caustics. `wrap:"clamp"` gives reflecting walls; an absorbing border ring kills
 edge ringing.
 
-### `automata` — Conway / cyclic cellular automata (nearly free)
+### `automata` — cyclic cellular automata (SHIPPED, nearly free)
 Discrete CA on the grid: Life (survive 2–3, born 3), Brian's Brain, or a
 **cyclic** rule (a cell at state `s` advances if a neighbour is `(s+1)%n`) that
 self-organises into rotating spiral fronts. One integration step per frame (or
@@ -66,15 +68,17 @@ sub-step on the beat for a rhythmic march); reseed a region on the kick. State
 quantised into a channel; colour via the palette ramp. The cheapest entry and a
 great palette-cleanser.
 
-## Why later / scope
+## Why later / scope — what's left
 
-`simBuffer` + `waveField` + `automata` are a small, self-contained first slice
-(both sims are a dozen lines of step math once the helper exists). `fluid2d` is
-the prize but also the most work — the pressure solve, multiple coupled
-buffers, and perf tuning at 60 fps — so it lands after the helper has carried
-the two cheap sims. All three slot in with no engine changes: they're sources
-returning a `TexNode` with their pass appended, coloured through `ctx.palette`
-/ `pickPalette`, audio-driven through `ctx.input(...)` channels.
+`simBuffer` + `waveField` + `automata` shipped as the first slice (each sim is
+a dozen lines of step math on the helper; showcase scenes `ripple-pool` and
+`cyclic-spiral`). **`fluid2d` is the remaining prize** and the most work — the
+Jacobi pressure solve, multiple coupled buffers (velocity + dye + pressure
+scratch), and perf tuning at 60 fps. `simBuffer` today owns a single ping-pong
+pair; fluid wants *named* coupled buffers, so the first fluid step is extending
+the helper (or a `simBufferMulti`) to host them. Still no engine changes — a
+source returning a `TexNode`, coloured through `pickPalette`, dye/force injected
+from `ctx.input(...)`.
 
 See also `particle-agent-systems.md` — **physarum** uses this field buffer for
 its trail map, bridging the two families.

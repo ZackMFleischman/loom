@@ -1553,3 +1553,26 @@ surfaces lacked (what build/swap/freeze/perf event led to a number).
   **24/24 green** on the WebGL2 fallback (forced bad save → `scene.rejected`
   surfaced @frame 558 on "boot", live pixels unchanged, `since` paging, sidecar
   latency table, `?diag=0` vs `?diag=1` both 60 fps).
+
+## 2026-06-14 — Simulation sources: reaction-diffusion + the `simBuffer` field family
+
+- **New source class — cellular GPU simulations.** `reactionDiffusion`
+  (Gray-Scott) shipped first; then the ping-pong/iterate/seed/reseed boilerplate
+  was extracted to **`simBuffer`** (`content/modules/_shared.ts`) — two
+  HalfFloat targets, N iterations/frame, seed-on-first-frame + reseed rising
+  edge, frame-clocked `phase`. `reactionDiffusion` was refactored onto it
+  (behaviour-preserving) and **`waveField`** (2D wave equation) + **`automata`**
+  (cyclic CA) built on it. Stateful like `feedback` (NFR-5 reset on rebuild),
+  frame-clocked (no TSL `time`), seeded → fixture-deterministic.
+- **`pickPalette`** (`content/palettes.ts`): scenes needed *both* global
+  palettes selectable at once, which the built-in `palette.source` (one active
+  at a time) can't do. A swatched int param listing primary + secondary (read
+  live from the registry) + scene presets, returning the `ctx.palette`-shaped
+  `color(i)`/`ramp(t)` surface. Reusable; used by `coral-bloom`/`ripple-pool`/
+  `cyclic-spiral`.
+- Showcase scenes: `coral-bloom`, `ripple-pool`, `cyclic-spiral`. Follow-ons in
+  `feature-requests/{gpu-field-simulations,particle-agent-systems,generative-growth-grammars,domain-warp-marble}.md`
+  (`fluid2d` wants multi-buffer `simBuffer`).
+- Gates: `pnpm typecheck` green (75 modules, 33 scenes); `pnpm test` green (449
+  content). GPU `validate:stdlib` not run (headless container, no WebGPU);
+  stills rendered via `scripts/shoot.mjs` on the WebGL2 fallback.
