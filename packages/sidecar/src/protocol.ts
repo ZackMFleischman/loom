@@ -563,6 +563,13 @@ export const EffectInfo = z.object({
   name: z.string(),
   kind: z.enum(["primitive", "composite"]),
   description: z.string().optional(),
+  /**
+   * Extra input slots beyond the piped `input` (multi-input chain steps); the
+   * Console grows a source-picker row per slot. Absent/[] = classic single-input.
+   */
+  chainInputs: z
+    .array(z.object({ name: z.string(), kind: z.literal("tex"), description: z.string().optional() }))
+    .optional(),
 });
 export type EffectInfo = z.infer<typeof EffectInfo>;
 

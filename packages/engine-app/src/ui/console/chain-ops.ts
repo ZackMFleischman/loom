@@ -1,20 +1,27 @@
-import type { ChainStepInfo } from "@loom/sidecar/protocol";
+import type { ChainStepInfo, SourceRefSchema } from "@loom/sidecar/protocol";
 import type { ParamDesc } from "../engine-link";
 
 /** A step in a full-list set_chain payload: `id` kept so a surviving step keeps its knobs. */
 export interface BareStep {
   id?: string;
   effect: string;
+  /** Extra input-slot bindings (multi-input chain steps); carried across edits. */
+  inputs?: Record<string, SourceRefSchema>;
 }
 
 /**
  * The bare step list to send for a structural edit. Every structural edit is a
  * full-list set_chain; keeping ids lets the engine carry knob/mix values forward
- * (params/mix omitted). All four ops are pure — the component wraps the result
- * in one set_chain.
+ * (params/mix omitted). Input-slot bindings ARE carried explicitly (they aren't
+ * knobs the engine reapplies — they're structure), so a reorder/insert/remove
+ * never drops a step's overlay source. All ops are pure.
  */
 export function chainSteps(chain: ChainStepInfo[]): BareStep[] {
-  return chain.map((s) => ({ id: s.id, effect: s.effect }));
+  return chain.map((s) => ({
+    id: s.id,
+    effect: s.effect,
+    ...(s.inputs != null && Object.keys(s.inputs).length > 0 ? { inputs: { ...s.inputs } } : {}),
+  }));
 }
 
 /** Insert a new (id-less) step at `index`. */
@@ -22,6 +29,28 @@ export function insertStep(steps: BareStep[], effect: string, index: number): Ba
   const next = steps.slice();
   next.splice(index, 0, { effect });
   return next;
+}
+
+/**
+ * Set one input-slot binding on the step with `id` (multi-input chain steps).
+ * A null `ref` clears the slot. Pure — returns a new list the caller sends as a
+ * full-list set_chain.
+ */
+export function setStepInput(
+  steps: BareStep[],
+  id: string,
+  slot: string,
+  ref: SourceRefSchema | null,
+): BareStep[] {
+  return steps.map((s) => {
+    if (s.id !== id) return s;
+    const inputs = { ...(s.inputs ?? {}) };
+    if (ref == null) delete inputs[slot];
+    else inputs[slot] = ref;
+    const hasAny = Object.keys(inputs).length > 0;
+    const { inputs: _drop, ...rest } = s;
+    return hasAny ? { ...rest, inputs } : rest;
+  });
 }
 
 /** Drop the step with the given id. */
