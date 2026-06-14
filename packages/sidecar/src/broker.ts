@@ -57,7 +57,11 @@ export class Broker {
   request(type: RequestType, args: Record<string, unknown>, timeoutMs = 5000): Promise<unknown> {
     if (this.socket === null) {
       return Promise.reject(
-        new Error("engine not connected — is the Output window running (`pnpm dev`)?"),
+        new Error(
+          "engine not connected — start LOOM (the Output window) so it dials this sidecar. " +
+            "In a LOOM checkout that's `pnpm dev`; for a standalone install, launch your LOOM " +
+            "engine and confirm it points at the same WS port (LOOM_WS_PORT, default 7341).",
+        ),
       );
     }
     const id = `r${++this.seq}`;

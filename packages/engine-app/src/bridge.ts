@@ -1,4 +1,4 @@
-import { RequestMsg } from "@loom/sidecar/protocol";
+import { PROTOCOL_VERSION, RequestMsg } from "@loom/sidecar/protocol";
 import type { EngineApi, Source } from "./engine-api";
 
 /**
@@ -15,7 +15,17 @@ export function startBridge(url: string, api: EngineApi): () => void {
   function connect(): void {
     if (stopped) return;
     ws = new WebSocket(url);
-    ws.onopen = () => console.info(`[loom] sidecar connected (${url})`);
+    ws.onopen = () => {
+      console.info(`[loom] sidecar connected (${url})`);
+      // Advertise our protocol generation so a standalone plugin sidecar can
+      // warn on a version skew (NFR-1). Backward-safe: an older sidecar drops
+      // any message it can't parse as a response envelope.
+      try {
+        ws?.send(JSON.stringify({ kind: "hello", role: "engine", protocol: PROTOCOL_VERSION }));
+      } catch {
+        // non-fatal — the connection itself drives recovery
+      }
+    };
     ws.onmessage = (ev) => {
       void respond(api, String(ev.data), "agent").then((res) => {
         if (res !== null && ws?.readyState === WebSocket.OPEN) ws.send(res);

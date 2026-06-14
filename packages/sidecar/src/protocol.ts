@@ -10,6 +10,33 @@ import { z } from "zod";
 export const DEFAULT_WS_PORT = 7341;
 
 /**
+ * The sidecar↔engine wire-protocol generation (NFR-1, mirrors module-packs'
+ * `loomApi` hint). The standalone plugin sidecar and the user's engine are
+ * shipped separately, so a mismatch is possible; both sides advertise this
+ * value on connect (the optional `hello` envelope below) and the sidecar logs
+ * a loud warning when they disagree, so a version skew fails loudly rather than
+ * weirdly. Bump it whenever the request/response wire contract changes
+ * incompatibly. In-repo dev shares this source, so dev never mismatches.
+ */
+export const PROTOCOL_VERSION = "1";
+
+/**
+ * Optional, unsolicited handshake either side may send on connect to advertise
+ * its {@link PROTOCOL_VERSION}. It is NOT a request/response pair — a peer that
+ * predates it simply can't parse it and drops it (the engine's `respond` and
+ * the sidecar's broker both ignore anything that isn't a known envelope), so
+ * adding it is fully backward-compatible.
+ */
+export const HelloMsg = z.object({
+  kind: z.literal("hello"),
+  /** "engine" or "sidecar" — who is announcing itself. */
+  role: z.enum(["engine", "sidecar"]),
+  /** The sender's PROTOCOL_VERSION. */
+  protocol: z.string().min(1),
+});
+export type HelloMsg = z.infer<typeof HelloMsg>;
+
+/**
  * The full engine command vocabulary. The MCP sidecar exposes the agent
  * subset; panic/resume/set_transport/arm_agent_commit are human-only and
  * reachable only from the Console (BroadcastChannel uses these same
@@ -881,6 +908,8 @@ export const GetSidecarDiagnosticsResult = z.object({
   scope: z.literal("sidecar"),
   /** Whether the engine WS bridge is currently attached. */
   engineConnected: z.boolean(),
+  /** The sidecar's wire-protocol generation (NFR-1) — compare against the engine. */
+  protocolVersion: z.string().default(PROTOCOL_VERSION),
   tools: z.array(SidecarToolStat),
 });
 export type GetSidecarDiagnosticsResult = z.infer<typeof GetSidecarDiagnosticsResult>;
