@@ -80,7 +80,7 @@ A design pass on "how the instrument is actually used" produced requirements R6�
 
 ## 2026-06-10 — post-v1 candidate: PANIC modes (safe scene)
 
-- **PANIC armed modes: HOLD (default, today's freeze) or SAFE SCENE** — cut to a pre-built, always-warm panic instance designated by a `panic.scene.ts` pointer (the `live.scene.ts` twin). Output override, not a commit: LIVE pointer unmoved, RESUME cuts back; broken safe scene degrades PANIC to hold, never worse than today. Full requirements + phased plan in `feature-requests/panic-scene.md`.
+- **PANIC armed modes: HOLD (default, today's freeze) or SAFE SCENE** — cut to a pre-built, always-warm panic instance designated by a `panic.scene.ts` pointer (the `live.scene.ts` twin). Output override, not a commit: LIVE pointer unmoved, RESUME cuts back; broken safe scene degrades PANIC to hold, never worse than today. Full requirements + phased plan in `feature-requests/panic-safe-scene-redesign.md`.
 
 ## 2026-06-10 — post-v1 candidate: console screenshot tool
 
@@ -479,7 +479,7 @@ docs/history/superpowers/specs/2026-06-11-midi-button-bindings-design.md (archiv
 
 ## 2026-06-12 — Better panic button (PANIC modes: hold | safe scene)
 
-Implements `feature-requests/panic-scene.md`. PANIC gains an armed mode: **hold**
+Implements `feature-requests/panic-safe-scene-redesign.md`. PANIC gains an armed mode: **hold**
 (freeze the last frame, unchanged default) or **scene** (hard-cut to a warm,
 always-rendering safe scene). Gates run: `pnpm typecheck`, unit tests (runtime
 144, sidecar 24, engine-app 7), `validate:panic`.
@@ -722,7 +722,7 @@ modulators, root chain, per-node chains}` in tile order + which one was live,
 
 ## Stdlib burndown complete — 33 TD-inspired modules + 8 showcase scenes (2026-06-12)
 
-- **The whole docs/stdlib-burndown.md list shipped in one pass** (M11's §6
+- **The whole docs/history/stdlib-burndown.md list shipped in one pass** (M11's §6
   coverage worklist): 6 controls (envelope/remap/spring/sampleHold/gate/
   counter), 8 sources (solid/gradient/shape/checker/voronoi/plasma/text/
   webcam), 15 effects (blur/threshold/bloom/mixer/displace/hsv/mirror/tile/
