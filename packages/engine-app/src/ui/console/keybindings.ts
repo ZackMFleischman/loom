@@ -172,7 +172,8 @@ export const KEYBINDINGS: readonly Binding[] = [
     group: "Safety",
     label: "PANIC / RESUME",
     hint: ". / ⇧P",
-    command: true,
+    // NOT `command` — PANIC must fire during everything, including while a
+    // MIDI-learn is armed (the emergency hatch is never suspendable).
     run: (c) => c.req(c.panicked ? "resume" : "panic", {}),
   },
   {
