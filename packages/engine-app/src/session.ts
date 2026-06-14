@@ -138,6 +138,9 @@ export class SessionStore {
       fixture,
       builds: 1,
     };
+    // The kernel built the instance knowing only the scene name; stamp the entry
+    // id so a render-time freeze / loop-guard event carries the instance id.
+    instance.instanceId = finalId;
     this.entries.set(finalId, entry);
     return entry;
   }
@@ -202,6 +205,7 @@ export class SessionStore {
         { foldNode: (ctx, node, tex) => e.nodeChains.get(node)?.fold(ctx, tex) ?? tex },
       );
       this.reapplyValues(next, def.name, e.chain, e.nodeChains);
+      next.instanceId = e.id; // carry the id onto the rebuilt instance (freeze-id)
       e.instance.dispose();
       e.instance = next;
       e.sceneName = def.name;
@@ -276,6 +280,7 @@ export class SessionStore {
     const e = this.require(id);
     if (this.entries.has(to)) throw new Error(`instance "${to}" already exists`);
     const renamed: Entry = { ...e, id: to };
+    renamed.instance.instanceId = to; // keep freeze-id events pointing at the new id
     this.entries.delete(id);
     this.entries.set(to, renamed);
     return renamed;

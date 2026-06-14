@@ -1,14 +1,40 @@
 # Particle & agent systems — flow, flocking, attractors, slime mold (post-v1 candidates)
 
-**Status:** MOSTLY SHIPPED — via a simpler route than this doc's GPU
-`particleState`: agents simulated **CPU-side** each frame, drawn through the
-existing `render3d` + `InstancedMesh` path (seeded + frame-clocked, no GPU
-particle-state texture, no accumulation buffer). Shipped: **`strangeAttractor`**
-(scene `attractor-cloud`), **`flock`** (boids, scene `flock-swarm`),
-**`flowParticles`** (ABC-flow advection, scene `flow-field`). **`physarum`**
-(agents writing a diffusing trail field — genuinely wants the GPU route) remains
-open, as does a real `particleState`/additive-accumulation primitive for the
-million-point "silk" looks. Sibling family to `gpu-field-simulations.md`.
+**Status:** SHIPPED. CPU-side agent systems (drawn through `render3d` +
+`InstancedMesh`, seeded + frame-clocked): **`strangeAttractor`** (scene
+`attractor-cloud`), **`flock`** (boids, scene `flock-swarm`), **`flowParticles`**
+(ABC-flow advection, scene `flow-field`). **`physarum` ✅ SHIPPED** the GPU route
+(2026-06-14): agents in a ping-ponged position texture, additive deposit via
+instanced points reading that texture, diffuse+decay in a second ping-pong —
+the diffusing trail field. Scene `slime-veins`. **`particleState` +
+`additiveDeposit` + `silk` ✅ SHIPPED** (2026-06-14): the reusable GPU
+particle-pool primitive + the million-point "silk" payoff. Scene `silk-flow`.
+Sibling family to `gpu-field-simulations.md`.
+
+## DECISIONS SHIPPED (2026-06-14) — family 4: GPU particles "silk"
+- `_shared.ts`: `particleState(ctx, {count, spawn, update, respawn, reseed, seed})`
+  — pos/vel in a ping-ponged HalfFloat √count² texture (NearestFilter), seeded
+  in-shader (no Math.random), frame-clocked; `load(idx)` reads a particle via
+  `textureLoad(vertexIndex)`. `additiveDeposit(ctx, {particles, positionUv,
+  color, exposure, persistence, ...})` — instanced `Points` additive splat into a
+  HalfFloat accum buffer (+ optional trail bleed) → soft `1-exp(-d)` tone-map.
+  Generalizes physarum's inline machinery incl. the WebGL2/WebGPU RT Y-flip.
+- `silk` source: curl-of-fbm flow OR de Jong attractor field; bass surges force,
+  kick breathes curl scale (scene `silk-flow`). Params expose count, field,
+  force, curlScale, evolve, churn, persistence, exposure, glow (per-splat
+  brightness), size, reseed, seed. Existing `_shared` consumers
+  (reactionDiffusion/waveField/automata/physarum/fluid2d) untouched + still green.
+- Fixes finishing the inherited draft: (1) the per-particle seed hash blew past
+  WebGL2/ANGLE `sin` precision (uv*side*salt → 10^5), collapsing the pool onto a
+  sparse grid (lum 0.13) — reworked to bounded integer-texel ids + a
+  pre-`fract`-reduced hash; (2) advection step was ~0.0002/frame (particles never
+  spread) and per-splat deposit ~0.02 with low persistence (density never built)
+  — retuned to a proper finite-difference curl velocity, ~1px/frame step, glowing
+  splat + 0.82 trail persistence. Result: dense flowing silk (lum 82).
+- Gates: typecheck + `pnpm test` (513 content + 442 pkg) green; `validate:stdlib`
+  88/88 WebGL2-verified non-black (silk lum 82). Real-WebGPU (float-tex additive
+  blend + `textureLoad` position-tex) needs a human eyeball — `navigator.gpu`
+  undefined on this host.
 
 ## The opportunity
 
@@ -66,13 +92,21 @@ the system rebuilds), where a `particleState` version could morph them live and
 do the additive-density "silk" look. A future `attractorField` could add that
 once `particleState` exists.
 
-### `physarum` — slime-mold agents on a trail field (the crossover)
-Thousands of agents (a `particleState` texture) **deposit** into a trail map,
-**sense** three points ahead, and steer up the gradient; the trail field
-diffuses + decays each frame. Grows living vein / neuron / leaf-venation
-networks. This is the technique that uses BOTH families: agents from here, and
-the diffusing trail field is exactly a `simBuffer` from
-`gpu-field-simulations.md`. Beat drives sensor angle / deposit strength.
+### `physarum` — slime-mold agents on a trail field ✅ SHIPPED (GPU)
+Agents live in a ping-ponged HalfFloat **position texture** (rgba = posX, posY,
+heading); a full-screen update quad has each agent **sense** the trail at three
+points ahead (left/center/right of heading), steer toward the strongest, and
+advance. The trail field is a second ping-pong: **diffuse** (3×3 box) + **decay**
+each frame, then the freshly-moved agents are **deposited** additively via an
+instanced `Points` pass whose `positionNode` does `textureLoad(agentTex, idx)` —
+no vertex-texture-fetch guesswork, just `vertexIndex → texel`. Grows living vein
+/ neuron / leaf-venation networks. Beat drives sensor splay (the colony flares
+open + re-knits on the kick) and the deposit flash; bass breathes the agent
+speed. Frame-clocked + deterministically seeded (in-shader hash, no
+Math.random) → fixture-replay-safe. Scene `slime-veins`. NOTE: did NOT reuse
+`simBuffer` — its per-pixel `step` can't read agent positions for the deposit,
+so physarum owns its four passes inline (~231 lines — over the ~150 soft budget,
+mostly backend-gotcha comments + per-opt JSDoc).
 
 ## Why later / scope
 

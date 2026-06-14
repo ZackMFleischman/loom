@@ -4,6 +4,7 @@ import {
 import type { SessionSnapshot } from "@loom/sidecar/protocol";
 import { useEngine } from "../hooks";
 import { fail } from "../util";
+import { hintFor } from "./keybindings";
 import { TopBar } from "./primitives";
 
 type Props = { session: SessionSnapshot };
@@ -49,13 +50,19 @@ export function StageStrip({ session: s }: Props) {
         }
         label={<Typography variant="caption" color="text.secondary">agent commit</Typography>}
       />
-      <Button id="unstage" disabled={s.staged == null} onClick={() => void link.req("unstage").catch(fail)}>
+      <Button
+        id="unstage"
+        title={`clear the staged candidate ${hintFor("unstage")}`}
+        disabled={s.staged == null}
+        onClick={() => void link.req("unstage").catch(fail)}
+      >
         unstage
       </Button>
       <Button
         id="commit"
         variant="primary"
         disabled={s.staged == null || s.panicked}
+        title={`crossfade staged → LIVE ${hintFor("commit")}`}
         onClick={() => void link.req("commit", {}).catch(fail)}
         sx={{ fontSize: 14 }}
       >
@@ -84,7 +91,7 @@ function StageNav({
     <Stack direction="row" spacing={0} alignItems="center">
       <Button
         disabled={s.panicked}
-        title={`${label} — step LIVE to the ${dir < 0 ? "previous" : "next"} healthy tile`}
+        title={`${label} — step LIVE to the ${dir < 0 ? "previous" : "next"} healthy tile ${hintFor(dir < 0 ? "live-prev" : "live-next")}`}
         onClick={() => void link.req("live_step", { dir }).catch(fail)}
         sx={{
           minWidth: 0,

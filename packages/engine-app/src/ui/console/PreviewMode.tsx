@@ -1,7 +1,6 @@
 import { Box, Button, NativeSelect, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import type { SessionSnapshot } from "@loom/sidecar/protocol";
-import type { ParamDesc } from "../engine-link";
 import { tileFps } from "../fps-meter";
 import { useEngine, usePreviewFrame, useThumb } from "../hooks";
 import { fail } from "../util";
@@ -10,7 +9,6 @@ import { StatusPill, TopBar } from "./primitives";
 
 type Props = {
   instance: string | null;
-  manifest: Record<string, ParamDesc> | undefined;
   session: SessionSnapshot;
   onExit: () => void;
 };
@@ -47,7 +45,7 @@ const loadMax = (): number => {
  * them. DOM contract: #preview-mode, #preview-image, #preview-name,
  * #preview-res, #preview-resselect, #preview-exit.
  */
-export function PreviewMode({ instance, manifest, session: s, onExit }: Props) {
+export function PreviewMode({ instance, session: s, onExit }: Props) {
   const link = useEngine();
   const [maxHeight, setMaxHeight] = useState<number>(loadMax);
   const thumb = useThumb(instance);
@@ -195,7 +193,7 @@ export function PreviewMode({ instance, manifest, session: s, onExit }: Props) {
             {stageable ? "waiting for preview…" : "select an instance tile to preview"}
           </Typography>
         </Box>
-        <ParamPanel instance={instance} manifest={manifest} session={s} />
+        <ParamPanel instance={instance} />
       </Box>
     </Box>
   );

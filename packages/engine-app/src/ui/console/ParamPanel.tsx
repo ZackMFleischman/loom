@@ -1,11 +1,8 @@
-import {
-  Accordion, AccordionDetails, AccordionSummary, Box, Button, Stack, Typography,
-} from "@mui/material";
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import type { SessionSnapshot } from "@loom/sidecar/protocol";
-import type { ParamDesc } from "../engine-link";
-import { useEngine } from "../hooks";
-import { fail } from "../util";
+import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Stack, Typography } from "@mui/material";
+import { memo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEngine, useInstance, useManifest, useStagePointers } from "../hooks";
+import { countRender, fail } from "../util";
+import { toggleAdvanced as toggleAdvancedStore, useAdvanced } from "./advanced-store";
 import { gatherChannels } from "./ColorChannels";
 import { FxChain } from "./FxChain";
 import { groupParams, splitRig } from "./param-groups";
@@ -36,7 +33,6 @@ const sectionGrid = {
 const GROUP_OPEN_KEY = "loom.pgroups.open";
 const PANEL_W_KEY = "loom.panelw";
 const PANEL_COLLAPSED_KEY = "loom.panelcollapsed";
-const SHOW_ADVANCED_KEY = "loom.params.advanced";
 
 function loadOpen(): Record<string, boolean> {
   try {
@@ -48,30 +44,27 @@ function loadOpen(): Record<string, boolean> {
 
 type Props = {
   instance: string | null;
-  manifest: Record<string, ParamDesc> | undefined;
-  session: SessionSnapshot | null;
 };
 
 /**
  * Dotted param paths form collapsible groups: "logo.tiltX" lands in a "logo"
  * accordion labeled "tiltX"; dotless params stay flat on top. Open state
  * persists per group name (collapsed until the human opens it).
+ *
+ * Reads its data via narrow selector stores (FR-1): the selected instance's
+ * manifest + slice + the stage pointers — so it re-renders on its own data, not
+ * on every 10 Hz state broadcast. Memoized on `instance` (the only prop).
  */
-export function ParamPanel({ instance, manifest, session }: Props) {
+function ParamPanelImpl({ instance }: Props) {
+  countRender("ParamPanel");
   const link = useEngine();
+  const manifest = useManifest(instance);
+  const inst = useInstance(instance ?? "");
+  const pointers = useStagePointers();
   const [open, setOpen] = useState<Record<string, boolean>>(loadOpen);
-  const [showAdvanced, setShowAdvanced] = useState(() => localStorage.getItem(SHOW_ADVANCED_KEY) === "1");
-  const toggleAdvanced = () => {
-    setShowAdvanced((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem(SHOW_ADVANCED_KEY, next ? "1" : "0");
-      } catch {
-        // advanced visibility just won't persist across reloads
-      }
-      return next;
-    });
-  };
+  // Shared with the `a` hotkey (keyboard-shortcuts FR-4) via the advanced-store.
+  const showAdvanced = useAdvanced();
+  const toggleAdvanced = toggleAdvancedStore;
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(PANEL_COLLAPSED_KEY) === "1");
   const setCollapsedPersist = (next: boolean) => {
     setCollapsed(next);
@@ -122,11 +115,11 @@ export function ParamPanel({ instance, manifest, session }: Props) {
   // Layer nodes (Layers): each gets a node-marked group with its own FX chain;
   // its chain knobs (<node>.fx.*) render inside that chain, not as widgets. The
   // bucketing is pure (param-groups.ts); this component owns only the rendering.
-  const nodes = session?.instances.find((i) => i.id === instance)?.nodes ?? [];
+  const nodes = inst?.nodes ?? [];
   const { flat, groups, nodeIds, parentOf, hiddenCount } = groupParams(manifest, nodes, showAdvanced);
   const ready = instance != null && manifest != null;
-  const isLive = ready && session?.live === instance;
-  const isStaged = ready && session?.staged === instance;
+  const isLive = ready && pointers.live === instance;
+  const isStaged = ready && pointers.staged === instance;
 
   // Collapsed: a thin tap target (one-handed on mobile) that reveals the
   // drawer. Keeps #panel mounted so layout/contract holds; widgets unmount.
@@ -190,189 +183,194 @@ export function ParamPanel({ instance, manifest, session }: Props) {
           overflowY: "auto",
         }}
       >
-      <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mb: 1 }}>
-        <Typography id="paneltitle" variant="subtitle2" noWrap sx={{ minWidth: 0 }}>
-          {ready ? instance : "no instance selected"}
-        </Typography>
-        {ready && (
-          <Typography variant="caption" color="text.secondary" noWrap sx={{ minWidth: 0 }}>
-            {session?.instances.find((i) => i.id === instance)?.scene ?? ""}
+        <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mb: 1 }}>
+          <Typography id="paneltitle" variant="subtitle2" noWrap sx={{ minWidth: 0 }}>
+            {ready ? instance : "no instance selected"}
           </Typography>
-        )}
-        <Box sx={{ flex: 1 }} />
-        {isLive && <StatusPill kind="live" />}
-        {isStaged && <StatusPill kind="staged" />}
-        <Button
-          variant="ghost"
-          onClick={() => setCollapsedPersist(true)}
-          title="hide params"
-          sx={{ px: 0.5, py: 0, fontSize: 16, lineHeight: 1 }}
-        >
-          ›
-        </Button>
-      </Stack>
-      {/* Stage actions for the selected scene — no hunting for the tile's tiny
-          buttons. GO LIVE stages + crossfades in one tap (human-sourced, ungated). */}
-      {instance != null && instance !== "globals" && (
-        <Stack direction="row" spacing={0.75} sx={{ mb: 1.5 }}>
+          {ready && (
+            <Typography variant="caption" color="text.secondary" noWrap sx={{ minWidth: 0 }}>
+              {inst?.scene ?? ""}
+            </Typography>
+          )}
+          <Box sx={{ flex: 1 }} />
+          {isLive && <StatusPill kind="live" />}
+          {isStaged && <StatusPill kind="staged" />}
           <Button
-            id="panel-stage"
-            variant="outlined"
-            fullWidth
-            disabled={isLive}
-            onClick={() =>
-              void link.req(isStaged ? "unstage" : "stage", isStaged ? {} : { instance }).catch(fail)
-            }
-            sx={{ py: 0.25 }}
+            variant="ghost"
+            onClick={() => setCollapsedPersist(true)}
+            title="hide params"
+            sx={{ px: 0.5, py: 0, fontSize: 16, lineHeight: 1 }}
           >
-            {isStaged ? "unstage" : "stage"}
-          </Button>
-          <Button
-            id="panel-golive"
-            // GO LIVE is a commit-path verb → primary taxonomy (FR-2).
-            variant="primary"
-            fullWidth
-            disabled={isLive || session?.panicked}
-            title="stage this scene and crossfade it LIVE now"
-            onClick={() =>
-              void link.req("stage", { instance }).then(() => link.req("commit", {})).catch(fail)
-            }
-            sx={{ py: 0.25 }}
-          >
-            {isLive ? "LIVE" : "GO LIVE"}
+            ›
           </Button>
         </Stack>
-      )}
-      <Box id="widgets">
-        {ready && (
-          <>
-            {flat.length > 0 && (
-              <Box sx={sectionGrid}>
-                {flat.map(([path, p]) => (
-                  <ParamWidget
-                    key={path}
-                    instance={instance}
-                    path={path}
-                    p={p}
-                    grid
-                    colorChannels={p.type === "color" ? gatherChannels(manifest, path) : []}
-                  />
-                ))}
-              </Box>
-            )}
-            {[...groups.entries()].map(([group, entries]) => {
-              const isNode = nodeIds.has(group);
-              const parent = parentOf.get(group);
-              // A node's rig params (<node>.layer.x/y/scale/rotate/opacity) fold
-              // into a nested "transform" sub-group so the section stays scannable.
-              const { rig, rest } = splitRig(entries, group);
-              return (
-                <Accordion
-                  key={group}
-                  data-node={isNode ? group : undefined}
-                  variant="outlined"
-                  disableGutters
-                  expanded={open[group] ?? false}
-                  onChange={(_, x) => toggle(group, x)}
-                  sx={{ mb: 1.5, bgcolor: "transparent" }}
-                >
-                  <AccordionSummary
-                    sx={{
-                      minHeight: 36,
-                      fontSize: 12,
-                      letterSpacing: "0.08em",
-                      textTransform: "uppercase",
-                      color: "text.secondary",
-                    }}
-                  >
-                    {isNode ? "⬚ " : ""}
-                    {group}
-                    {isNode && parent != null && (
-                      <Typography component="span" variant="caption" sx={{ ml: 0.5, opacity: 0.6 }}>
-                        ⊂ {parent}
-                      </Typography>
-                    )}
-                  </AccordionSummary>
-                  <AccordionDetails>
-                    {rest.length > 0 && (
-                      <Box sx={sectionGrid}>
-                        {rest.map(([path, p]) => (
-                          <ParamWidget
-                            key={path}
-                            instance={instance}
-                            path={path}
-                            p={p}
-                            grid
-                            label={path.slice(group.length + 1)}
-                            colorChannels={p.type === "color" ? gatherChannels(manifest, path) : []}
-                          />
-                        ))}
-                      </Box>
-                    )}
-                    {rig.length > 0 && (
-                      <Accordion
-                        variant="outlined"
-                        disableGutters
-                        expanded={open[`${group}.layer`] ?? false}
-                        onChange={(_, x) => toggle(`${group}.layer`, x)}
-                        sx={{ mb: 1, bgcolor: "transparent" }}
-                      >
-                        <AccordionSummary
-                          data-transform={group}
-                          sx={{
-                            minHeight: 30,
-                            fontSize: 11,
-                            letterSpacing: "0.08em",
-                            textTransform: "uppercase",
-                            color: "text.secondary",
-                          }}
-                        >
-                          ⤡ transform
-                        </AccordionSummary>
-                        <AccordionDetails>
-                          <Box sx={sectionGrid}>
-                            {rig.map(([path, p]) => (
-                              <ParamWidget
-                                key={path}
-                                instance={instance}
-                                path={path}
-                                p={p}
-                                grid
-                                label={path.slice(group.length + 1 + "layer.".length)}
-                              />
-                            ))}
-                          </Box>
-                        </AccordionDetails>
-                      </Accordion>
-                    )}
-                    {isNode && instance !== "globals" && (
-                      <FxChain instance={instance} manifest={manifest} node={group} />
-                    )}
-                  </AccordionDetails>
-                </Accordion>
-              );
-            })}
-            {instance !== "globals" && <FxChain instance={instance} manifest={manifest} />}
-            {hiddenCount > 0 && (
-              <Button
-                id="panel-advanced"
-                variant="ghost"
-                onClick={toggleAdvanced}
-                title={showAdvanced ? "hide advanced params" : "show advanced params (input trims)"}
-                sx={{
-                  mt: 1,
-                  fontSize: 11,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                }}
-              >
-                {showAdvanced ? "▾ hide advanced" : `▸ advanced (${hiddenCount})`}
-              </Button>
-            )}
-          </>
+        {/* Stage actions for the selected scene — no hunting for the tile's tiny
+          buttons. GO LIVE stages + crossfades in one tap (human-sourced, ungated). */}
+        {instance != null && instance !== "globals" && (
+          <Stack direction="row" spacing={0.75} sx={{ mb: 1.5 }}>
+            <Button
+              id="panel-stage"
+              variant="outlined"
+              fullWidth
+              disabled={isLive}
+              onClick={() => void link.req(isStaged ? "unstage" : "stage", isStaged ? {} : { instance }).catch(fail)}
+              sx={{ py: 0.25 }}
+            >
+              {isStaged ? "unstage" : "stage"}
+            </Button>
+            <Button
+              id="panel-golive"
+              // GO LIVE is a commit-path verb → primary taxonomy (FR-2).
+              variant="primary"
+              fullWidth
+              disabled={isLive || pointers.panicked}
+              title="stage this scene and crossfade it LIVE now"
+              onClick={() =>
+                void link
+                  .req("stage", { instance })
+                  .then(() => link.req("commit", {}))
+                  .catch(fail)
+              }
+              sx={{ py: 0.25 }}
+            >
+              {isLive ? "LIVE" : "GO LIVE"}
+            </Button>
+          </Stack>
         )}
-      </Box>
+        <Box id="widgets">
+          {ready && (
+            <>
+              {flat.length > 0 && (
+                <Box sx={sectionGrid}>
+                  {flat.map(([path, p]) => (
+                    <ParamWidget
+                      key={path}
+                      instance={instance}
+                      path={path}
+                      p={p}
+                      grid
+                      colorChannels={p.type === "color" ? gatherChannels(manifest, path) : []}
+                    />
+                  ))}
+                </Box>
+              )}
+              {[...groups.entries()].map(([group, entries]) => {
+                const isNode = nodeIds.has(group);
+                const parent = parentOf.get(group);
+                // A node's rig params (<node>.layer.x/y/scale/rotate/opacity) fold
+                // into a nested "transform" sub-group so the section stays scannable.
+                const { rig, rest } = splitRig(entries, group);
+                return (
+                  <Accordion
+                    key={group}
+                    data-node={isNode ? group : undefined}
+                    variant="outlined"
+                    disableGutters
+                    expanded={open[group] ?? false}
+                    onChange={(_, x) => toggle(group, x)}
+                    sx={{ mb: 1.5, bgcolor: "transparent" }}
+                  >
+                    <AccordionSummary
+                      sx={{
+                        minHeight: 36,
+                        fontSize: 12,
+                        letterSpacing: "0.08em",
+                        textTransform: "uppercase",
+                        color: "text.secondary",
+                      }}
+                    >
+                      {isNode ? "⬚ " : ""}
+                      {group}
+                      {isNode && parent != null && (
+                        <Typography component="span" variant="caption" sx={{ ml: 0.5, opacity: 0.6 }}>
+                          ⊂ {parent}
+                        </Typography>
+                      )}
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      {rest.length > 0 && (
+                        <Box sx={sectionGrid}>
+                          {rest.map(([path, p]) => (
+                            <ParamWidget
+                              key={path}
+                              instance={instance}
+                              path={path}
+                              p={p}
+                              grid
+                              label={path.slice(group.length + 1)}
+                              colorChannels={p.type === "color" ? gatherChannels(manifest, path) : []}
+                            />
+                          ))}
+                        </Box>
+                      )}
+                      {rig.length > 0 && (
+                        <Accordion
+                          variant="outlined"
+                          disableGutters
+                          expanded={open[`${group}.layer`] ?? false}
+                          onChange={(_, x) => toggle(`${group}.layer`, x)}
+                          sx={{ mb: 1, bgcolor: "transparent" }}
+                        >
+                          <AccordionSummary
+                            data-transform={group}
+                            sx={{
+                              minHeight: 30,
+                              fontSize: 11,
+                              letterSpacing: "0.08em",
+                              textTransform: "uppercase",
+                              color: "text.secondary",
+                            }}
+                          >
+                            ⤡ transform
+                          </AccordionSummary>
+                          <AccordionDetails>
+                            <Box sx={sectionGrid}>
+                              {rig.map(([path, p]) => (
+                                <ParamWidget
+                                  key={path}
+                                  instance={instance}
+                                  path={path}
+                                  p={p}
+                                  grid
+                                  label={path.slice(group.length + 1 + "layer.".length)}
+                                />
+                              ))}
+                            </Box>
+                          </AccordionDetails>
+                        </Accordion>
+                      )}
+                      {isNode && instance !== "globals" && (
+                        <FxChain instance={instance} manifest={manifest} node={group} />
+                      )}
+                    </AccordionDetails>
+                  </Accordion>
+                );
+              })}
+              {instance !== "globals" && <FxChain instance={instance} manifest={manifest} />}
+              {hiddenCount > 0 && (
+                <Button
+                  id="panel-advanced"
+                  variant="ghost"
+                  onClick={toggleAdvanced}
+                  title={showAdvanced ? "hide advanced params" : "show advanced params (input trims)"}
+                  sx={{
+                    mt: 1,
+                    fontSize: 11,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  {showAdvanced ? "▾ hide advanced" : `▸ advanced (${hiddenCount})`}
+                </Button>
+              )}
+            </>
+          )}
+        </Box>
       </Box>
     </Stack>
   );
 }
+
+/** Memoized: re-renders only when the selected instance id changes; its manifest/
+ *  slice/pointers arrive via selector stores (FR-1). */
+export const ParamPanel = memo(ParamPanelImpl);

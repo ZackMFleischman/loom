@@ -1554,6 +1554,53 @@ surfaces lacked (what build/swap/freeze/perf event led to a number).
   surfaced @frame 558 on "boot", live pixels unchanged, `since` paging, sidecar
   latency table, `?diag=0` vs `?diag=1` both 60 fps).
 
+## 2026-06-14 — Console performance & stability (SHIPPED)
+
+The cockpit was janky/occasionally "Aw, snap" under a busy session. Root cause +
+fixes (all in the Console React app + OFF-LOOP producers; the in-frame `tick()`
+path and never-go-black are untouched, NFR-4):
+
+- **The re-render storm (FR-1) was the dominant cost — but memoization alone
+  didn't fix it.** `EngineLink` emitted a new snapshot identity every 10 Hz state
+  tick; nothing was memoized. The durable fix is narrow **selector stores** in
+  `EngineLink` (per-tile display slice / full instance slice / session-meta /
+  stage-pointers / rounded fps / instance-id list / scene catalog / per-id thumb /
+  connected / sticky has-session), each keeping a STABLE reference while its slice
+  is unchanged, + `React.memo` on Tile/TileGrid/ParamPanel. **The non-obvious
+  trap:** ConsoleApp hosts the dnd-kit `DndContext`; its 10 Hz re-render churned
+  the context value, re-rendering every `useSortable` tile *through context*
+  (bypassing memo entirely). Fix: ConsoleApp subscribes only to rarely-changing
+  narrow stores (never the full snapshot) with a useCallback'd drag handler over
+  refs, and the live-session chrome (Header/StageStrip/Rack/Preview) reads state
+  in isolated SIBLING subcomponents. Live telemetry (frameMs/slowSignals) is
+  quantized to display precision so a sub-threshold wiggle can't churn identity.
+- **Thumbnail back-pressure (FR-2) + memory (FR-4).** `thumbnails()` caps
+  non-priority readbacks per pass (`THUMB_READBACK_CAP=4`) and round-robins the
+  rest, always reading live+staged+panic-pinned (PANIC stays visible).
+  `readback.ts` reuses two scratch canvases (was 2 createElement/pass — canvas
+  churn). `scene-thumbs.ts` got LRU + entry/byte budget (was unbounded). The
+  in-memory thumbsMap prunes destroyed instances; per-id thumb subscription stops
+  the all-tiles decode burst.
+- **Crash (FR-5): residual risk documented.** STATUS_BREAKPOINT is a GPU/driver
+  renderer abort with no WebGPU adapter headless — not reproducible in CI.
+  Mitigations landed: memory eviction, single-canvas readback, and a
+  single-renderer guard (`console-channel.ts` logs a one-shot `engine.duplicate`
+  if two non-embedded engines broadcast on one origin — the two-WebGPU-device
+  scenario). A real-browser soak on the reference machine is the open follow-up.
+- **PerfOverlay (FR-6).** `src/ui/console/PerfOverlay.tsx` (PERF button + `d`
+  hotkey) — read-only, reads the same `PerfSnapshot` on `session.perf` the agent
+  gets via `get_diagnostics.perf` (one pipeline, two readers). No new dependency.
+- **Freeze-id fix (separate commit).** `instance.frozen`/`loopguard.tripped` now
+  carry the INSTANCE id (was scene name) — `Instance.instanceId` stamped by the
+  session on create/rebuild/rename; scene name kept in `data.scene`.
+- Evidence (10-instance headless WebGL2 harness, `scripts/perf-console.mjs`, 6 s
+  window): per-tile re-renders 860 → 48–360 (ConsoleApp 60 → 0); `#uifps` mean
+  50 → 60 (min 40 → 59); scene-picker p95 386 ms → ~175 ms. Headless renders the
+  heavy scenes cheap so the absolute fps win understates the reference machine;
+  the re-render-count drop is the machine-independent proof.
+- Gates: `pnpm typecheck` green; `pnpm test` green (242 runtime + 138 engine-app +
+  45 sidecar + 434 content + 16 script). Validators: see the PR (run on WebGL2).
+
 ## 2026-06-14 — Simulation sources: reaction-diffusion + the `simBuffer` field family
 
 - **New source class — cellular GPU simulations.** `reactionDiffusion`
@@ -1618,3 +1665,105 @@ surfaces lacked (what build/swap/freeze/perf event led to a number).
   true GPU `particleState` + additive accumulation for million-point silk.
 - Gates: `pnpm typecheck` green (80 modules, 38 scenes); `pnpm test` +
   `pnpm test:content` green (476 content). Stills via `shoot.mjs` (WebGL2).
+
+## 2026-06-14 — physarum: GPU slime-mold agents on a diffusing trail field (SHIPPED)
+
+- **`physarum`** (source): the first FULLY-GPU agent system — agents in a
+  ping-ponged HalfFloat position texture (rgba = posX, posY, heading), a
+  full-screen update quad senses the trail at L/C/R and steers, the trail field
+  is a second ping-pong (gentle 3×3 diffuse + decay), and moved agents are
+  deposited additively via an instanced `Points` pass whose `positionNode` does
+  `textureLoad(agentTex, vertexIndex→texel)`. No vertex-texture-fetch guesswork,
+  no shared `particleState` primitive (deferred — `simBuffer`'s per-pixel step
+  can't read agent positions for the deposit, so physarum owns its 4 passes
+  inline — ~231 lines, over the ~150 soft budget, mostly backend-gotcha comments
+  + per-opt JSDoc). Seeded in-shader (hash, no Math.random) + frame-clocked → fixture-safe.
+- **Real-WebGPU verification caught two backend bugs the WebGL2 fallback hid:**
+  (1) the deposit pass camera was a bare `Camera` — WebGPU's `_renderScene` calls
+  `updateProjectionMatrix` which only exists on `OrthographicCamera` (froze via
+  NFR-2 on WebGPU, rendered fine on WebGL2); (2) RT Y-orientation differs
+  (WebGL2 bottom-up, WebGPU top-down) so agents deposited Y-mirrored from where
+  they sensed and the network collapsed to horizontal bands — fixed with a
+  per-frame `depFlipY` uniform keyed off `renderer.backend.isWebGLBackend`.
+- **Tuning:** a full 1/9 box diffuse + high deposit over-reinforces into a few
+  fat channels; center-weighted diffuse (40% toward box avg) + low deposit (0.12)
+  + 768×432 grid yields the fine leaf-venation/neuron lattice. Scene `slime-veins`
+  (kick flares sensor splay + flashes deposit, bass breathes speed, `pickPalette`).
+- Gates: `pnpm typecheck` green (81 modules, 39 scenes); `pnpm test` +
+  `pnpm test:content` green (481 content). Verified on REAL WebGPU (headed system
+  Chrome, hardware adapter) — non-black, clean console, no NFR-2 freeze; stills
+  also via `shoot.mjs` (WebGL2). validate:stdlib runs WebGL2-only headless.
+
+## 2026-06-14 — fluid2d: Stam stable-fluids smoke on a multi-buffer simBuffer (SHIPPED)
+
+- **`simBufferMulti`** added to `content/modules/_shared.ts` (the single-field
+  `simBuffer` left byte-for-byte unchanged): N *named* coupled HalfFloat
+  ping-pong fields (each its own grid/wrap/seed) driven by an ORDERED pass
+  pipeline — each pass writes one field, may `sample` any field (integer
+  neighbour taps) or `sampleUv` it at an arbitrary uv (advection backtrace), and
+  may `repeat` N sub-iterations (the Jacobi loop). Passes run sequentially,
+  swapping their target's pair the instant they write, so a later pass sees
+  earlier results (advect → divergence → pressure → project → advect dye). Same
+  statefulness as `simBuffer`/`feedback`: frame-clocked phase, seeded, NFR-5
+  reset. Existing `simBuffer` consumers (reactionDiffusion/waveField/automata/
+  physarum) all still pass typecheck + test:content + validate:stdlib unchanged.
+- **`fluid2d`** (source): velocity+divergence+pressure+dye on `simBufferMulti`;
+  two counter-rotating orbiting jets inject a vortex force + coloured puffs on
+  the kick (`inject`), bass eases `dissipation` for longer smoke; `pressureIters`
+  exposes the Jacobi count. Output = dye luminance (.x, ramp it) + speed (.y).
+  Scene `smoke-signals` colorizes through `pickPalette`. Tuning lesson: under
+  constant test-audio kicks the dye saturates into a white blob — tight splat
+  (SPOT_R2 0.0016), low dye injection, fast-sweeping jets and a vortex (not
+  linear) force are what break it into curling wisps; the visible warm-gray was
+  bloom amplifying near-black thin dye, fixed by scaling density into the ramp.
+- Verified on REAL WebGPU (headed system Chrome, NVIDIA Turing adapter):
+  non-black, instanceError null, no NFR-2 freeze, ~56 fps — AND on the WebGL2
+  fallback via shoot.mjs. Both backends render the smoke correctly (no Y-flip /
+  projection bug — the multi-buffer trap physarum hit). Grid 256×144.
+- Gates: `pnpm typecheck` green (83 modules, 41 scenes); `pnpm test` +
+  `pnpm test:content` green (493 content); `pnpm validate:stdlib` 84/84 (WebGL2).
+
+## 2026-06-14 — family 3: lineRibbon + differentialGrowth + lsystem (SHIPPED)
+
+- **`lineRibbon`** (geo) — the shared thin-stroke renderer both growth modules
+  build on. Polylines → glowing instanced segment-quad strokes (one thin oriented
+  box per edge, joined end-to-end), rebuilt every frame from a `paths()` provider
+  so a *growing* vertex set re-uploads each frame (`DynamicDrawUsage` — the
+  particleEmitter lesson). Returns a GeoNode; feeds `render3d`+`orbitCam`. Chose
+  the GeoNode route over a 2D-stroke source to reuse the existing geo path.
+- **`differentialGrowth`** (geo) — a closed polyline that repels locally
+  (spatial-hash grid, O(n)), Laplacian-smooths along the chain, and inserts a
+  node where an edge overstretches → coral meanders. Solver lesson: force×dt was
+  a self-crossing tangle; rewrote to a Jacobi relax with per-iteration
+  displacement CAPPED to ~0.45·radius + z damped near-planar + 8 iters/frame, so
+  the curve stays relaxed (non-crossing) as it grows. Seeded (mulberry32),
+  node-capped. Audio: bass→repulsion, kick→split rate.
+- **`lsystem`** (geo) — axiom rewritten k gens (length-capped), turtle-drawn
+  (F/G draw, +/- yaw, &/^ pitch, [/] branch) into disjoint 2-pt ribbon paths
+  (branch jumps never connect); `reveal` draws a growing fraction → unfurl;
+  `angle` re-tessellates only on change. Presets plant/koch/dragon/sierpinski/
+  bush. Scenes: `coral-growth`, `grammar-garden` (bloom+vignette, palette-able).
+- Verified WebGL2 only (headless + shoot.mjs) — no real-WebGPU adapter available
+  this session. validate:stdlib 87/87 non-black; new modules lum≈18.
+- Gates: `pnpm typecheck` (86 modules, 43 scenes), `pnpm test`,
+  `pnpm test:content` (508), `pnpm validate:stdlib` (87/87) all green.
+
+## 2026-06-14 — SHIPPED: family 4 — GPU particle "silk"
+- **`particleState` + `additiveDeposit`** (`content/modules/_shared.ts`, append-only) —
+  the reusable GPU particle-pool primitive that generalizes physarum's inline
+  machinery: pos/vel in a ping-ponged HalfFloat √count² texture (NearestFilter),
+  in-shader seeded (no Math.random), frame-clocked `phase`; `load(idx)` reads a
+  particle via `textureLoad(vertexIndex)`. `additiveDeposit` splats instanced
+  `Points` additively into a HalfFloat accum buffer (+ optional trail bleed) →
+  soft `1-exp(-d)` tone-map. Carries the WebGL2/WebGPU RT Y-flip.
+- **`silk`** source + **`silk-flow`** scene — curl-of-fbm flow OR de Jong
+  attractor; bass surges force, kick breathes curl scale, palette-ramped + bloom.
+- Finishing an inherited half-done draft: fixed (1) a seed-hash that exceeded
+  WebGL2/ANGLE `sin` precision → sparse-grid collapse (lum 0.13), now bounded
+  integer-texel ids + pre-`fract` hash; (2) too-small advection step + too-faint
+  splats → dense flowing silk (lum 82). Reverted an out-of-scope `live.scene.ts`
+  edit the prior agent left.
+- Verified WebGL2 only (headless + shoot.mjs); real-WebGPU (float-tex additive
+  blend + position `textureLoad`) needs a human eyeball — `navigator.gpu` undefined.
+- Gates: `pnpm typecheck` (87 modules, 44 scenes), `pnpm test`, `pnpm test:content`
+  (513), `pnpm validate:stdlib` (88/88 non-black, silk lum 82) all green.

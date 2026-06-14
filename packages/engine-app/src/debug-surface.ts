@@ -15,6 +15,8 @@ export interface LoomDebug {
   fps: number;
   /** Which clock drove the last frame: rAF (visible) or the worker fallback (hidden tab). */
   clockSource?: "raf" | "worker";
+  /** Wall-time (ms) of the most recent OFF-LOOP thumbnail pass (perf harness/overlay). */
+  thumbMs?: number;
   live: string | null;
   staged: string | null;
   mix: number | null;
@@ -66,6 +68,8 @@ export interface DebugSurfaceDeps {
   panicInfo: () => PanicSceneInfo;
   /** Armed flags from the EngineApi, which is constructed after this surface. */
   armed: () => { panicMode: "hold" | "scene"; agentCommitArmed: boolean };
+  /** Most-recent off-loop thumbnail pass time (ms) from the EngineApi (perf). */
+  thumbPassMs?: () => number;
 }
 
 /**
@@ -134,6 +138,7 @@ export class DebugSurface {
     dbg.panicActive = stage.panicActive;
     dbg.panicScene = this.d.panicInfo();
     dbg.agentCommitArmed = armed.agentCommitArmed;
+    if (this.d.thumbPassMs != null) dbg.thumbMs = this.d.thumbPassMs();
     dbg.inputs = this.d.inputs.values();
     dbg.palettes = this.d.palettes.manifest.values();
     // Throttle the allocation-heavy instances rebuild (frame 0, then every Nth).

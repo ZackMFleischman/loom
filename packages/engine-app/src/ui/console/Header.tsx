@@ -12,7 +12,6 @@ import {
   MenuItem,
   NativeSelect,
   Radio,
-  Stack,
   TextField,
   Typography,
 } from "@mui/material";
@@ -21,7 +20,8 @@ import type { PanicMode, SessionSnapshot } from "@loom/sidecar/protocol";
 import { useRenderFps } from "../fps-meter";
 import { useEngine } from "../hooks";
 import { mono } from "../theme";
-import { fail, primeMidiPermission } from "../util";
+import { countRender, fail, primeMidiPermission } from "../util";
+import { hintFor } from "./keybindings";
 import { MidiMonitorDialog } from "./MidiMonitorDialog";
 import { TopBar } from "./primitives";
 
@@ -35,9 +35,12 @@ type Props = {
   onToggleRack: () => void;
   previewing: boolean;
   onTogglePreview: () => void;
+  perfOpen: boolean;
+  onTogglePerf: () => void;
 };
 
-export function Header({ session: s, onToggleRack, previewing, onTogglePreview }: Props) {
+export function Header({ session: s, onToggleRack, previewing, onTogglePreview, perfOpen, onTogglePerf }: Props) {
+  countRender("Header");
   const link = useEngine();
   // The Console's own paint rate — independent of the engine's output fps below.
   const uiFps = useRenderFps();
@@ -59,7 +62,7 @@ export function Header({ session: s, onToggleRack, previewing, onTogglePreview }
       </Typography>
       <Button
         id="tap"
-        title="tap tempo — click on the beat"
+        title={`tap tempo — click on the beat ${hintFor("tap")}`}
         onClick={() => void link.req("set_transport", { tap: true }).catch(fail)}
         sx={{ fontFamily: mono, px: 1 }}
       >
@@ -94,7 +97,7 @@ export function Header({ session: s, onToggleRack, previewing, onTogglePreview }
       <GroupSep />
 
       {/* ── Nav / views ────────────────────────────────────────── */}
-      <Button onClick={onToggleRack} title="input rack (i)">
+      <Button onClick={onToggleRack} title={`input rack ${hintFor("rack")}`}>
         RACK
       </Button>
       <Button
@@ -105,7 +108,7 @@ export function Header({ session: s, onToggleRack, previewing, onTogglePreview }
         variant={previewing ? "contained" : "outlined"}
         color={previewing ? "primary" : "inherit"}
         onClick={onTogglePreview}
-        title="preview the selected instance full-screen (p)"
+        title={`preview the selected instance full-screen ${hintFor("preview")}`}
         sx={{ fontWeight: 700 }}
       >
         PREVIEW
@@ -143,6 +146,16 @@ export function Header({ session: s, onToggleRack, previewing, onTogglePreview }
           {` out · f${s.frame}`}
         </Box>
       </Typography>
+      <Button
+        id="perfbtn"
+        variant={perfOpen ? "contained" : "outlined"}
+        color={perfOpen ? "primary" : "inherit"}
+        onClick={onTogglePerf}
+        title={`perf diagnostics overlay ${hintFor("perf")}`}
+        sx={{ fontWeight: 700, minWidth: "unset", px: 1 }}
+      >
+        PERF
+      </Button>
       <Button
         variant="ghost"
         component="a"
@@ -331,7 +344,7 @@ function PanicControls({ session: s }: { session: SessionSnapshot }) {
         // hit padding (this is the emergency hatch) stays local.
         variant={s.panicked ? "contained" : "danger"}
         onClick={() => void link.req(s.panicked ? "resume" : "panic", s.panicked ? {} : { mode }).catch(fail)}
-        title={
+        title={`${
           s.panicked
             ? "RESUME — return to the live output"
             : mode === "scene"
@@ -339,7 +352,7 @@ function PanicControls({ session: s }: { session: SessionSnapshot }) {
                 ? `PANIC → cut to safe scene "${s.panicScene.name}"`
                 : "PANIC → will hold (no usable SAFE target)"
               : "PANIC → freeze the last frame (hold)"
-        }
+        } ${hintFor("panic")}`}
         sx={{ fontSize: 15, px: 2.5 }}
       >
         {s.panicked ? "RESUME" : "PANIC"}

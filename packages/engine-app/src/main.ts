@@ -474,6 +474,7 @@ const debug = new DebugSurface({
   midi,
   panicInfo: () => panicController.info(),
   armed: () => ({ panicMode: api.armedPanicMode, agentCommitArmed: api.agentCommitArmed }),
+  thumbPassMs: () => api.thumbPassMs(),
 });
 
 trySwapLive(liveScene);

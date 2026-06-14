@@ -59,6 +59,9 @@ import { noiseField } from "../modules/sources/noiseField";
 import { noodles } from "../modules/sources/noodles";
 import { osc } from "../modules/sources/osc";
 import { pulseRings } from "../modules/sources/pulseRings";
+import { physarum } from "../modules/sources/physarum";
+import { silk } from "../modules/sources/silk";
+import { fluid2d } from "../modules/sources/fluid2d";
 import { reactionDiffusion } from "../modules/sources/reactionDiffusion";
 import { waveField } from "../modules/sources/waveField";
 import { ripples } from "../modules/sources/ripples";
@@ -86,6 +89,10 @@ import { sphere } from "../modules/geo/sphere";
 import { strangeAttractor } from "../modules/geo/strangeAttractor";
 import { torus } from "../modules/geo/torus";
 import { render3d } from "../modules/sources/render3d";
+import { lineRibbon } from "../modules/geo/lineRibbon";
+import { differentialGrowth } from "../modules/geo/differentialGrowth";
+import { lsystem } from "../modules/geo/lsystem";
+import { Vector3 } from "three/webgpu";
 import { blackInput, makeCtx, markerInput, type DiscoveredModule, type Harness } from "./harness";
 
 /**
@@ -124,6 +131,9 @@ export const CASES: Record<string, ModuleCase> = {
   noodles: (ctx) => noodles(ctx, { energy: ctx.input("kick") }),
   osc: (ctx) => osc(ctx, {}),
   pulseRings: (ctx) => pulseRings(ctx, { energy: ctx.input("kick") }),
+  physarum: (ctx) => physarum(ctx, { count: 4096, sensorAngle: ctx.input("kick"), reseed: ctx.input("kick") }),
+  silk: (ctx) => silk(ctx, { count: 4096, field: "curl", force: ctx.input("bass"), curlScale: ctx.input("kick"), reseed: ctx.input("kick") }),
+  fluid2d: (ctx) => fluid2d(ctx, { inject: ctx.input("kick"), pressureIters: 8, reseed: ctx.input("kick") }),
   reactionDiffusion: (ctx) => reactionDiffusion(ctx, { inject: ctx.input("kick"), reseed: ctx.input("kick") }),
   waveField: (ctx) => waveField(ctx, { impact: ctx.input("kick"), reseed: ctx.input("kick") }),
   automata: (ctx) => automata(ctx, { reseed: ctx.input("kick") }),
@@ -164,6 +174,15 @@ export const CASES: Record<string, ModuleCase> = {
   flock: (ctx) => flock(ctx, { count: 40 }),
   flowParticles: (ctx) => flowParticles(ctx, { count: 200 }),
   displaceGeo: (ctx) => displaceGeo(ctx, { input: plane(ctx, { segments: 12 }), amount: ctx.input("bass") }),
+  // geo — family 3: ribbon / growth / grammars (append-only)
+  lineRibbon: (ctx) =>
+    lineRibbon(ctx, {
+      paths: () => [[new Vector3(-0.5, 0, 0), new Vector3(0, 0.5, 0), new Vector3(0.5, 0, 0)]],
+      width: ctx.input("bass"),
+    }),
+  differentialGrowth: (ctx) =>
+    differentialGrowth(ctx, { startNodes: 16, maxNodes: 200, repel: ctx.input("bass"), growth: ctx.input("kick") }),
+  lsystem: (ctx) => lsystem(ctx, { preset: "plant", iterations: 3, angle: ctx.input("bass"), reveal: ctx.input("kick") }),
   // effects
   colorize: (ctx, input) => colorize(ctx, { input }),
   feedback: (ctx, input) => feedback(ctx, { input }),
