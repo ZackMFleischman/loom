@@ -1,0 +1,16 @@
+{
+  "name": "@loom/runtime",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "three": "0.184.0",
+    "zod": "^4.4.3"
+  }
+}

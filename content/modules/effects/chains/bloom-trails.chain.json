@@ -1,0 +1,8 @@
+{
+  "name": "bloomTrails",
+  "description": "Soft feedback trails with a gentle level lift — a saved chain.",
+  "steps": [
+    { "id": "feedback-1", "effect": "feedback", "params": { "amount": 0.88, "zoom": 1.008 }, "mix": 1 },
+    { "id": "levels-1", "effect": "levels", "params": { "gain": 1.15, "gamma": 1.1, "bias": 0.02 }, "mix": 1 }
+  ]
+}

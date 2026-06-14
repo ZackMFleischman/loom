@@ -1,0 +1,126 @@
+name: LOOM CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: loom-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write # the preview job upserts a sticky comment
+
+jobs:
+  # ── Required gate: what a merge is judged on. Fast and deterministic. ─────────
+  # typecheck + unit tests + production build. The screenshot acceptance
+  # validators (validate:m*) are deliberately NOT run in CI — they're built for a
+  # real GPU + manual WebGPU verification (DECISIONS.md) and are flaky on headless
+  # software GL. Run them locally on real hardware: `pnpm validate:m0` … `:m6`.
+  checks:
+    name: typecheck · unit · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: typecheck (regenerates CATALOG.md, then tsc --noEmit)
+        run: pnpm typecheck
+      - name: lint (Biome — errors fail, warnings are advisory)
+        run: pnpm lint
+      - name: unit tests
+        run: pnpm test
+      - name: production build (the static preview bundle)
+        run: pnpm --filter @loom/engine-app exec vite build
+
+  # ── Static preview on Cloudflare Pages + inline screenshots in the PR. ────────
+  # Runs in parallel with checks so a phone-friendly link lands fast. The build
+  # itself always runs (validates the static bundle); deploy/comment steps are
+  # skipped gracefully until the two Cloudflare secrets are present.
+  preview:
+    name: cloudflare preview
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      # The token is a credential → Secrets only. The account id isn't sensitive,
+      # so accept it from a Secret or a repo Variable, whichever you set.
+      CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so affected-shots.mjs can diff HEAD against the PR base.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: build static app (Output + Console + Staged)
+        run: pnpm --filter @loom/engine-app exec vite build
+      - name: pick contextual screenshots from the diff
+        id: shots
+        # Maps the PR's changed files to scenes (directly-changed + modules they
+        # fan out to) and a --console flag; empty = boot-scene fallback.
+        run: |
+          args="$(node scripts/affected-shots.mjs || true)"
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+          echo "shoot args: ${args:-<boot fallback>}"
+      - name: render screenshots into the deploy
+        # Best-effort: a failed/slow shot must not block the preview link itself.
+        continue-on-error: true
+        timeout-minutes: 6
+        env:
+          LOOM_RES: 640x360 # software WebGL2 on CI needs the lighter render
+        run: SHOOT_OUT="$PWD/packages/engine-app/dist/shots" node scripts/shoot.mjs ${{ steps.shots.outputs.args }}
+      # Deploy with a globally-installed wrangler (npm -g, isolated from the repo's
+      # pnpm workspace so workerd's install script isn't blocked — running pnpm
+      # blocks that build, and npm inside the workspace chokes on pnpm's
+      # node_modules layout). The global install just uploads the prebuilt dist.
+      - name: deploy to Cloudflare Pages
+        id: deploy
+        if: env.CF_API_TOKEN != '' && env.CF_ACCOUNT_ID != ''
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ env.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ env.CF_ACCOUNT_ID }}
+        run: |
+          npm install -g wrangler@3
+          # Self-provision the Pages project (ignored if it already exists).
+          wrangler pages project create loom --production-branch main || true
+          set +e
+          out=$(wrangler pages deploy packages/engine-app/dist \
+            --project-name=loom --branch="$GITHUB_HEAD_REF" 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$out"
+          [ "$status" -eq 0 ] || exit "$status"
+          url=$(printf '%s\n' "$out" | grep -oiE 'https://[a-z0-9.-]+\.pages\.dev' | tail -1)
+          echo "deployment-url=$url" >> "$GITHUB_OUTPUT"
+      - name: build preview comment
+        if: steps.deploy.outcome == 'success'
+        # head.sha (not GITHUB_SHA, which is the synthetic merge commit) so the
+        # comment names the commit the author actually pushed.
+        run: node scripts/preview-comment.mjs "${{ steps.deploy.outputs.deployment-url }}" packages/engine-app/dist/shots "${{ github.event.pull_request.head.sha }}" > preview-comment.md
+      - name: upsert preview comment
+        if: steps.deploy.outcome == 'success'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: loom-preview
+          path: preview-comment.md
+      - name: notice when Cloudflare secrets are missing
+        if: env.CF_API_TOKEN == '' || env.CF_ACCOUNT_ID == ''
+        run: echo "::notice::Cloudflare secrets not set — built the static bundle but skipped deploy. See docs/ci-and-preview.md."
