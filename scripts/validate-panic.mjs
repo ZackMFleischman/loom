@@ -1,14 +1,20 @@
-// PANIC-modes acceptance check (better panic button): the two-mode emergency
-// hatch. A human (driven by Playwright) arms HOLD vs SAFE SCENE and hits PANIC;
-// an MCP client observes everything but can never trigger, re-arm, or destroy
-// the panic path. Covers: scene-panic cuts to the safe scene within a frame and
-// leaves the LIVE pointer unmoved; RESUME hard-cuts back; the engine keeps
-// ticking under scene-panic (it's alive, not a freeze); hold→scene escalation;
-// and a broken panic.scene.ts degrades PANIC to hold (never worse than today).
+// PANIC-modes acceptance check (panic-safe-scene-redesign): the opt-in emergency
+// hatch. There is NO boot-default safe scene — PANIC boots armed HOLD and
+// scene-panic is unavailable until the human designates a SAFE target. A human
+// (driven by Playwright) drives the PANIC split button (`#panic` primary +
+// `#panicmenu` ▾ → `#panic-arm-hold` / `#panic-arm-scene` / `[data-panictarget]`);
+// an MCP client observes everything but can never trigger, re-arm, designate, or
+// destroy the panic path. Covers: no SAFE target at boot (status "none"); the
+// scene arm is disabled until a target is designated; designating any instance
+// lights up scene-panic with no rebuild; scene-panic cuts to the designated
+// instance within a frame and leaves the LIVE pointer unmoved; RESUME hard-cuts
+// back; the engine keeps ticking under scene-panic; hold→scene escalation; the
+// designated target is destroy-protected; and a designated target whose scene
+// throws on rebuild degrades PANIC to hold (never worse than today).
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { execSync, spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -18,7 +24,9 @@ import { PNG } from "pngjs";
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const ARTIFACTS = join(ROOT, "artifacts");
 const LIVE = join(ROOT, "content", "scenes", "live.scene.ts");
-const PANIC = join(ROOT, "content", "scenes", "panic.scene.ts");
+// A throwaway scene we designate as the SAFE target, then break on rebuild to
+// exercise the broken-target → hold fallback (FR-7). Restored in `finally`.
+const SAFE = join(ROOT, "content", "scenes", "panic-canary.scene.ts");
 const PORT = 5200;
 const WS_PORT = 7343;
 const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off${resQuery}`;
@@ -83,6 +91,30 @@ async function clickUntil(page, selector, pred, label, timeoutMs = 10_000) {
   throw new Error(`timed out clicking ${selector} for ${label}`);
 }
 
+/**
+ * Open the PANIC ▾ menu and click a menu item until the engine reflects it.
+ * The menu closes on each item click, so we re-open it every attempt. A menu
+ * item only exists in the DOM while the menu is open, so this both opens and
+ * acts. No-op once the predicate already holds.
+ */
+async function menuClickUntil(page, itemSelector, pred, label, timeoutMs = 12_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await page.click("#panicmenu").catch(() => {});
+    await page.waitForSelector(itemSelector, { state: "visible", timeout: 1500 }).catch(() => {});
+    await page.click(itemSelector).catch(() => {});
+    for (let i = 0; i < 8; i++) {
+      if (await pred()) {
+        // Close the menu if it's still open (Escape is a no-op when closed).
+        await page.keyboard.press("Escape").catch(() => {});
+        return;
+      }
+      await sleep(120);
+    }
+  }
+  throw new Error(`timed out clicking ${itemSelector} for ${label}`);
+}
+
 /** Average RGB of a center crop of a page screenshot. */
 async function centerStats(page, savePath) {
   const buf = await page.screenshot(savePath ? { path: savePath } : {});
@@ -111,10 +143,25 @@ async function waitForFps(page) {
 
 mkdirSync(ARTIFACTS, { recursive: true });
 const originalLive = readFileSync(LIVE, "utf8");
-const originalPanic = readFileSync(PANIC, "utf8");
-// Pin a light, deterministic live scene (heavy feedback scenes starve software
-// GL); panic stays pointed at the shipped safe scene.
+// Pin a light, deterministic live scene (heavy feedback scenes starve software GL).
 writeFileSync(LIVE, `export { default } from "./pulse.scene";\n`);
+// A known-good SAFE-target candidate (a calm gradient). Written fresh so the run
+// is hermetic; deleted in `finally`.
+const SAFE_OK = `import { defineScene, texNode } from "@loom/runtime";
+import { mix, uv, vec2, vec3, vec4 } from "three/tsl";
+
+export default defineScene({
+  name: "panic-canary",
+  description: "validator-only calm gradient designated as a SAFE target.",
+  tags: ["panic", "test"],
+  build() {
+    const d = uv().sub(vec2(0.5)).length().mul(1.6).clamp(0, 1);
+    const grad = mix(vec3(0.16, 0.22, 0.42), vec3(0.02, 0.03, 0.07), d);
+    return texNode(vec4(grad.mul(0.7), 1));
+  },
+});
+`;
+writeFileSync(SAFE, SAFE_OK);
 
 const vite = spawn("pnpm", ["exec", "vite", "--port", String(PORT), "--strictPort"], {
   cwd: join(ROOT, "packages", "engine-app"),
@@ -163,54 +210,94 @@ try {
   const consolePage = await context.newPage();
   await consolePage.goto(CONSOLE_URL);
 
-  // 1. Session reports the panic surface, warm and healthy (FR-3/FR-10).
+  // 1. No boot-default safe scene (FR-1/FR-3): armed hold, calm, scene-panic
+  //    reports "none" (not chosen — distinct from "error"), nothing pinned.
   const s0 = await waitFor(async () => {
     const res = await client.callTool({ name: "get_session", arguments: {} });
     return res.isError ? null : toolJson(res);
   }, 15_000, "engine to connect to sidecar");
   check(
-    "get_session reports panic state (armed hold, calm, scene ok)",
-    s0.panicMode === "hold" && s0.panicActive === null && s0.panicScene.status === "ok",
+    "get_session reports panic state (armed hold, calm, scene-panic 'none')",
+    s0.panicMode === "hold" && s0.panicActive === null && s0.panicScene.status === "none",
     `mode=${s0.panicMode} active=${s0.panicActive} scene=${JSON.stringify(s0.panicScene)}`,
   );
   check(
-    "warm panic instance is pinned and present (FR-3/FR-11)",
-    s0.instances.some((i) => i.id === "panic" && i.pinned === "panic" && i.scene === "safe"),
+    "no SAFE target is designated at boot (FR-1)",
+    !s0.instances.some((i) => i.pinned === "panic") && s0.panicScene.name === "",
     s0.instances.map((i) => `${i.id}:${i.pinned ?? "-"}`).join(", "),
   );
-  check("default safe scene ships and is named", s0.panicScene.name === "safe", s0.panicScene.name);
 
-  // 2. The Console pins the panic tile with its badge (FR-11).
-  await consolePage.waitForSelector('.tile[data-id="panic"] .safe-badge', { timeout: 10_000 });
-  check("console shows the default SAFE tile with ⛑ badge", true);
+  // 2. No ⛑ SAFE tile until the human opts in (FR-1/FR-4).
+  await consolePage.waitForSelector('.tile[data-id="boot"]', { timeout: 10_000 });
+  const badgeAtBoot = await consolePage.$(".tile .safe-badge");
+  check("console shows NO ⛑ SAFE tile at boot (scene-panic is opt-in)", badgeAtBoot === null);
 
-  // 3. The agent can observe but never touch the panic path (FR-10).
+  // 3. The agent can observe but never touch the panic path (human-only).
   const toolNames = (await client.listTools()).tools.map((t) => t.name);
   check(
-    "MCP exposes no panic/arm tools (human-only)",
-    !toolNames.includes("panic") && !toolNames.includes("resume") && !toolNames.includes("arm_panic_mode"),
+    "MCP exposes no panic/arm/designate tools (human-only)",
+    !toolNames.includes("panic") &&
+      !toolNames.includes("resume") &&
+      !toolNames.includes("arm_panic_mode") &&
+      !toolNames.includes("set_panic_instance"),
     toolNames.join(", "),
   );
-  const destroyPanic = await client.callTool({ name: "destroy_instance", arguments: { instance: "panic" } });
-  check(
-    "destroying the pinned panic instance is refused",
-    destroyPanic.isError === true && /panic/i.test(destroyPanic.content[0].text),
-    destroyPanic.content?.[0]?.text,
+
+  // 4. The scene arm is DISABLED until a SAFE target is designated (FR-4/Q4).
+  await consolePage.click("#panicmenu");
+  await consolePage.waitForSelector("#panic-arm-scene", { state: "visible", timeout: 5_000 });
+  const sceneArmDisabledAtBoot = await consolePage.$eval(
+    "#panic-arm-scene",
+    (el) => el.getAttribute("aria-disabled") === "true" || el.classList.contains("Mui-disabled"),
   );
+  check("the SAFE SCENE arm is disabled with no target designated (FR-4)", sceneArmDisabledAtBoot === true);
+  await consolePage.keyboard.press("Escape");
 
   // Baseline pixels before any panic.
   const livePixels = await centerStats(output, join(ARTIFACTS, "panic-0-live.png"));
 
-  // 4. SCENE panic: hard-cut to the safe scene, LIVE pointer unmoved, engine
-  //    keeps ticking (it's alive, not a freeze) — FR-1/FR-2/FR-4/FR-5.
-  await clickUntil(consolePage, "#panicmode-scene", async () => (await loomState(output)).panicMode === "scene", "arm scene");
+  // 5. Designate a SAFE target: spawn a candidate (agent may build sandboxes),
+  //    then the human picks it from the ▾ menu. The ⛑ marker + routing move to
+  //    it with no rebuild; choosing the target also arms scene (one gesture).
+  const cand = toolJson(await callOk(client, "create_instance", { scene: "panic-canary" }));
+  const candId = cand.instance;
+  await consolePage.waitForSelector(`.tile[data-id="${candId}"]`, { timeout: 10_000 });
+  const buildsBefore = (await loomState(output)).instances.find((i) => i.id === candId)?.builds ?? -1;
+  await menuClickUntil(
+    consolePage,
+    `[data-panictarget="${candId}"]`,
+    async () => {
+      const st = await loomState(output);
+      return st.instances.find((i) => i.pinned === "panic")?.id === candId && st.panicMode === "scene";
+    },
+    "designate candidate + arm scene",
+  );
+  const desig = await waitFor(async () => {
+    const res = await client.callTool({ name: "get_session", arguments: {} });
+    if (res.isError) return null;
+    const s = toolJson(res);
+    const pinned = s.instances.filter((i) => i.pinned === "panic");
+    return pinned.length === 1 && pinned[0].id === candId ? s : null;
+  }, 10_000, "SAFE designation to land");
+  const candAfter = desig.instances.find((i) => i.id === candId);
+  check(
+    "menu picker designates any instance as the SAFE target (moves, exactly one, no rebuild)",
+    candAfter?.builds === buildsBefore && desig.panicScene.status === "ok" && desig.panicScene.name === "panic-canary",
+    `builds ${buildsBefore}→${candAfter?.builds} status=${desig.panicScene.status}`,
+  );
+  // The Console now shows the ⛑ SAFE badge on the designated tile.
+  await consolePage.waitForSelector(`.tile[data-id="${candId}"] .safe-badge`, { timeout: 10_000 });
+  check("console shows the ⛑ SAFE badge on the designated tile", true);
+
+  // 6. SCENE panic: hard-cut to the designated instance, LIVE pointer unmoved,
+  //    engine keeps ticking (it's alive, not a freeze) — FR-4/FR-6.
   await clickUntil(consolePage, "#panic", async () => (await loomState(output)).panicActive === "scene", "scene-panic");
   await sleep(250);
   const st1 = await loomState(output);
   check("scene-panic leaves the LIVE pointer unmoved (FR-4)", st1.live === "boot", `live=${st1.live}`);
   const safeA = await centerStats(output, join(ARTIFACTS, "panic-1-safescene.png"));
   check(
-    "scene-panic cuts to safe-scene pixels (FR-1/FR-2)",
+    "scene-panic cuts to the designated instance's pixels (FR-4)",
     rgbDelta(safeA, livePixels) > 8 && safeA.lum > 1,
     `delta=${rgbDelta(safeA, livePixels).toFixed(1)} lum=${safeA.lum.toFixed(1)}`,
   );
@@ -218,15 +305,20 @@ try {
   await sleep(500);
   const safeB = await centerStats(output);
   const frameB = (await loomState(output)).frame;
-  check("engine keeps ticking under scene-panic (FR-5)", frameB > frameA + 10, `frames ${frameA}→${frameB}`);
+  check("engine keeps ticking under scene-panic (FR-6)", frameB > frameA + 10, `frames ${frameA}→${frameB}`);
   check("safe scene renders live, not a freeze-frame", safeB.lum > 1, `lum ${safeB.lum.toFixed(1)}`);
 
-  // 5. RESUME hard-cuts back to the prior live pixels (FR-4).
-  await clickUntil(consolePage, "#panic", async () => !(await loomState(output)).panicActive, "resume"); // reads RESUME while panicked
+  // 7. The designated SAFE target is destroy-protected (FR-6).
+  const destroySafe = await client.callTool({ name: "destroy_instance", arguments: { instance: candId } });
+  check(
+    "the designated SAFE target is destroy-protected",
+    destroySafe.isError === true && /SAFE/i.test(destroySafe.content[0].text),
+    destroySafe.content?.[0]?.text,
+  );
+
+  // 8. RESUME hard-cuts back to the prior live output (FR-4).
+  await clickUntil(consolePage, "#panic", async () => !(await loomState(output)).panicActive, "resume");
   await sleep(300);
-  // The pinned live scene (pulse) flashes with the test audio, so comparing
-  // against the pre-panic snapshot is kick-phase luck. The observable FR-4
-  // cares about: we LEFT the safe pixels and the live pointer never moved.
   const resumed = await centerStats(output, join(ARTIFACTS, "panic-2-resumed.png"));
   const stResumed = await loomState(output);
   check(
@@ -235,55 +327,11 @@ try {
     `delta to safe=${rgbDelta(resumed, safeA).toFixed(1)} live=${stResumed.live}`,
   );
 
-  // 5b. The SAFE target is any instance, chosen from the Console: spawn a
-  //     candidate, designate it, and the ⛑ SAFE marker + routing move to it.
-  const safeCand = toolJson(await callOk(client, "create_instance", { scene: "gradient" }));
-  const candId = safeCand.instance;
-  await consolePage.waitForSelector(`.tile[data-id="${candId}"]`, { timeout: 10_000 });
-  await consolePage.selectOption("#panicscene", candId);
-  const repointed = await waitFor(async () => {
-    const res = await client.callTool({ name: "get_session", arguments: {} });
-    if (res.isError) return null;
-    const s = toolJson(res);
-    const pinned = s.instances.find((i) => i.pinned === "panic");
-    return pinned?.id === candId ? s : null;
-  }, 10_000, "SAFE designation to move");
-  const pinnedNow = repointed.instances.filter((i) => i.pinned === "panic");
-  check(
-    "picker designates any instance as the SAFE target (moves, exactly one)",
-    pinnedNow.length === 1 && pinnedNow[0].id === candId && repointed.panicScene.status === "ok",
-    pinnedNow.map((i) => i.id).join(", "),
-  );
-  // Scene-panic now cuts to the newly designated instance.
-  await consolePage.click("#panicmode-scene");
-  await consolePage.click("#panic");
-  await waitFor(async () => ((await loomState(output)).panicActive === "scene" ? true : null), 5_000, "scene-panic to candidate");
-  await sleep(250);
-  const gradPixels = await centerStats(output, join(ARTIFACTS, "panic-3-designated.png"));
-  check(
-    "scene-panic cuts to the designated instance",
-    rgbDelta(gradPixels, livePixels) > 8 && gradPixels.lum > 1,
-    `delta=${rgbDelta(gradPixels, livePixels).toFixed(1)} lum=${gradPixels.lum.toFixed(1)}`,
-  );
-  // The designated SAFE target is protected from destroy.
-  const destroySafe = await client.callTool({ name: "destroy_instance", arguments: { instance: candId } });
-  check("the designated SAFE target is destroy-protected", destroySafe.isError === true && /SAFE/i.test(destroySafe.content[0].text));
-  await consolePage.click("#panic"); // RESUME
-  await waitFor(async () => (!(await loomState(output)).panicActive ? true : null), 5_000, "resume after re-point");
-  // Restore the boot-default SAFE instance for the remaining checks.
-  await consolePage.selectOption("#panicscene", "panic");
-  await waitFor(async () => {
-    const pinned = (await loomState(output)).instances.find((i) => i.pinned === "panic");
-    return pinned?.id === "panic" ? true : null;
-  }, 10_000, "restore default SAFE");
-
-  // 6. Escalation: HOLD froze garbage → flip arm to SAFE SCENE → cut to safety
+  // 9. Escalation: HOLD froze garbage → flip arm to SAFE SCENE → cut to safety
   //    (FR-6). Arm hold, panic (frame freezes), then flip the arm live.
-  await clickUntil(consolePage, "#panicmode-hold", async () => (await loomState(output)).panicMode === "hold", "arm hold");
+  await menuClickUntil(consolePage, "#panic-arm-hold", async () => (await loomState(output)).panicMode === "hold", "arm hold");
   await clickUntil(consolePage, "#panic", async () => (await loomState(output)).panicActive === "hold", "hold-panic");
-  // The engine CLOCK keeps ticking under hold by design (worker clock, Console
-  // previews) — what freezes is the presented output. Pulse flashes constantly,
-  // so static pixels over 600 ms prove the hold.
+  // Pulse flashes constantly, so static pixels over 600 ms prove the hold.
   const heldA = await centerStats(output);
   await sleep(600);
   const heldB = await centerStats(output);
@@ -292,51 +340,59 @@ try {
     rgbDelta(heldA, heldB) < 3,
     `pixel delta over 600ms=${rgbDelta(heldA, heldB).toFixed(1)}`,
   );
-  // flip arm while panicked → escalate
-  await clickUntil(consolePage, "#panicmode-scene", async () => (await loomState(output)).panicActive === "scene", "escalate to scene");
+  // flip arm while panicked → escalate (the target is still designated).
+  await menuClickUntil(consolePage, "#panic-arm-scene", async () => (await loomState(output)).panicActive === "scene", "escalate to scene");
   const escFrame = (await loomState(output)).frame;
   await sleep(400);
   check("escalation hold→scene resumes ticking (FR-6)", (await loomState(output)).frame > escFrame + 10);
-  await clickUntil(consolePage, "#panic", async () => !(await loomState(output)).panicActive, "resume after escalation"); // RESUME
+  await clickUntil(consolePage, "#panic", async () => !(await loomState(output)).panicActive, "resume after escalation");
   check("RESUME after escalation releases the hatch", true);
 
-  // 7. Broken panic.scene.ts → PANIC degrades to hold; never worse than today
-  //    (FR-7). A build-throwing pointer fails the boot build, so no warm
-  //    instance exists and scene-panic falls back to hold.
+  // 10. Broken designated target → PANIC degrades to hold; never worse than today
+  //     (FR-7). Edit the SAFE scene to throw at RENDER time: the scene-barrel HMR
+  //     rebuilds the designated instance (build succeeds), then its first frame
+  //     throws and the instance freezes (NFR-2). A frozen designated target makes
+  //     scene-panic unavailable (instanceId null) → PANIC falls back to hold.
   writeFileSync(
-    PANIC,
-    `import { defineScene } from "@loom/runtime";\n` +
+    SAFE,
+    `import { defineScene, Signal, texNode } from "@loom/runtime";\n` +
+      `import { vec4 } from "three/tsl";\n` +
       `export default defineScene({\n` +
-      `  name: "safe",\n` +
-      `  description: "intentionally broken panic scene (validation)",\n` +
-      `  build() {\n    throw new Error("panic build boom");\n  },\n` +
+      `  name: "panic-canary",\n` +
+      `  description: "SAFE target that throws at render (validation)",\n` +
+      `  build(ctx) {\n` +
+      `    // builds fine, but the per-frame updater throws → NFR-2 freeze\n` +
+      `    ctx.uniformOf(new Signal(() => { throw new Error("panic render boom"); }));\n` +
+      `    return texNode(vec4(0, 0, 0, 1));\n` +
+      `  },\n` +
       `});\n`,
   );
-  await output.goto(OUTPUT_URL); // fresh boot picks up the broken pointer
-  await waitForFps(output);
+  // The scene-barrel HMR rebuilds the designated instance; its first frame
+  // throws → it freezes, so panicScene health flips to "error".
   const broken = await waitFor(async () => {
     const res = await client.callTool({ name: "get_session", arguments: {} });
     if (res.isError) return null;
     const s = toolJson(res);
     return s.panicScene.status === "error" ? s : null;
-  }, 15_000, "engine to reboot with a broken panic scene");
+  }, 20_000, "designated SAFE target to freeze on render");
   check(
-    "broken panic scene reports build-fallback (FR-7)",
+    "broken designated target reports error health (FR-7)",
     broken.panicScene.status === "error" && /boom/i.test(broken.panicScene.error ?? ""),
     broken.panicScene.error,
   );
-  check("no warm panic instance exists when the build fails", !broken.instances.some((i) => i.pinned === "panic"));
-  // Arm scene and PANIC: Stage falls back to hold.
-  await clickUntil(consolePage, "#panicmode-scene", async () => (await loomState(output)).panicMode === "scene", "arm scene (broken)");
+  // The scene arm goes disabled (status error → unavailable, FR-7), so we arm
+  // via localStorage carry-over from earlier is gone — the engine already holds
+  // scene as the armed mode from step 9's escalation. PANIC must hold either way
+  // because the designated target is unusable.
   await clickUntil(consolePage, "#panic", async () => (await loomState(output)).panicActive != null, "panic under broken safe scene");
   const fellBack = (await loomState(output)).panicActive;
-  check("PANIC with a broken safe scene degrades to hold (FR-7)", fellBack === "hold", `active=${fellBack}`);
+  check("PANIC with a broken safe target degrades to hold (FR-7)", fellBack === "hold", `active=${fellBack}`);
   await consolePage.click("#panic"); // resume
 } catch (err) {
   check("validation run completed", false, String(err));
 } finally {
   writeFileSync(LIVE, originalLive);
-  writeFileSync(PANIC, originalPanic);
+  try { rmSync(SAFE, { force: true }); } catch {}
   if (client) await client.close().catch(() => {});
   if (browser) await browser.close();
   if (process.platform === "win32") {

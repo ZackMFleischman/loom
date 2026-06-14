@@ -1403,3 +1403,116 @@ PRs concurrently edit Header + FxChain):**
 - Gates: `pnpm typecheck`, `pnpm lint` (no new diagnostics), `pnpm test` green
   (engine-api preview tests rewritten to assert the fixed-res route + no target
   resize). GPU acceptance validators (m3/m4 preview paths) not run here.
+
+## 2026-06-13 — Module packs (v1)
+
+Third-party repos of modules/scenes import into a project; the library stops
+being monorepo-only. Foundational infra for the later marketplace + plugin work,
+so the on-disk schema is deliberately small and stable. (Spec:
+`feature-requests/module-packs.md`.)
+
+- **`loom-pack.json` schema** (pack-side manifest): `{ name, version, loomApi,
+  description }`. `loomApi` is a caret-major HINT (`"^1"`), NOT a gate.
+- **`content/state/packs.json` schema** (host-side registry, committed; mirrors
+  `media-roots.json` — the checkout is scratch, the JSON travels in git):
+  `{ "packs": [ { name, source, pin, branch?, loomApi? } ] }`. `source` is a git
+  URL or an absolute local path; `pin` is the cloned commit SHA, or `null` for a
+  linked local path; `branch` (git packs only) is the tracked ref so `pack:update`
+  fetches/resets it explicitly (shallow-clone `origin/HEAD` is unreliable). The
+  `packs/` checkout dir is **gitignored**.
+- **Canonical pack name = the manifest's `name`** (the namespace authors publish
+  under, the marketplace keys on). `pack:add` resolves it as
+  `--name > loom-pack.json name > source basename` — for a git URL it clones to a
+  temp dir, reads the manifest, then moves into `packs/<name>`, so the namespace
+  matches what the author declared, not the folder/URL they cloned from.
+- **Namespacing + precedence (LOAD-BEARING — the marketplace depends on it):**
+  local content keeps its BARE name; pack content surfaces as `<pack>/<name>` in
+  CATALOG, `availableScenes`, and `availableEffects`. Precedence is
+  **local-wins**: a bare lookup always resolves local; a pack's same-named item
+  is reachable ONLY via its namespaced id. Pack ids are always prefixed and local
+  ids never are, so the merged maps can't actually collide — `mergeNamespaced`
+  (`engine-app/src/packs.ts`) and `namespacedId` (`scripts/lib/packs.mjs`) just
+  make the rule explicit and order-independent. Two helpers, one rule, kept in
+  sync between the browser (barrels) and Node (catalog) sides.
+- **Discovery is static globs, not dynamic imports:** the barrels
+  (`scenes.ts`/`effects.ts`), the test harness, and the catalog generator all add
+  `packs/*/…` globs alongside the `content/…` ones. A static pattern is the Vite
+  requirement and matches any installed pack automatically; the dir is absent
+  until `pnpm pack:add`, so a pack-free repo is byte-for-byte unchanged
+  (CATALOG.md included — the "Installed packs" section only emits when ≥1 pack is
+  present).
+- **`preserveSymlinks: true`** in both Vite/vitest resolve configs: a locally
+  *linked* pack (`pack:add <path>` → junction under `packs/`) points out-of-tree;
+  without this Vite resolves a pack file to its real path and can't find the
+  host's `three`/`three/tsl` in node_modules. Keeping the symlinked path lets bare
+  specifiers walk up to the repo's node_modules like local content. Cloned
+  (in-tree) packs are unaffected.
+- **typecheck is the real compatibility gate, `loomApi` is the fast hint** (per
+  the spec's open question — both, not either). `packs/` is added to the root
+  `tsconfig.json` include so pack content is typechecked exactly like `content/`.
+  A pack's `test/cases.ts` (keyed by bare module name) merges into the
+  completeness sweep — a pack module without a case fails tier-1 like a local one.
+- **Trust: document, don't sandbox (v1).** A pack is arbitrary TypeScript run in
+  the engine — the SAME trust level as editing `content/` yourself. We do not
+  sandbox; `pack:add` prints the trust note and the loomApi hint. Sandboxing is a
+  post-v1 question if/when packs come from untrusted marketplace authors.
+- **`pack:remove` not shipped (v1):** uninstall is `rm -rf packs/<name>` + drop
+  the registry entry. Add it if reviewers want symmetry.
+- Gates: `pnpm typecheck` green, `pnpm test` green (+5 engine-app namespacing/
+  precedence units, +4 scripts pack-discovery units), `pnpm test:content` green;
+  with a linked sample pack the sweep grew to 441 (glow swept tiers 1–2) and
+  CATALOG showed `samplePack/aurora|pulse|glow` namespaced while local bare
+  `pulse` still won. `pnpm validate:m11` 11/11 (WebGL2 fallback; headless has no
+  WebGPU). Full `pnpm validate` not run here (GPU suites).
+
+## 2026-06-13 — PANIC + safe-scene redesign (no default hatch; opt-in scene-panic; split button)
+
+Implements `feature-requests/panic-safe-scene-redesign.md`. Removes the
+boot-default warm "panic" instance and the boring `safe.scene`; PANIC now boots
+armed **hold** and **scene-panic is opt-in** — available only once the human
+designates an existing instance as the SAFE target. The Console's `HOLD | SAFE
+SCENE` button-group + loose `<select>` collapse into a single **PANIC split
+button** (`#panic` + a `▾` `#panicmenu`). The engine's panic *machinery* is
+unchanged (output-override scene-panic, hold-fallback, hold→scene escalation,
+destroy/rename protection, human-only trust tier).
+
+- **No engine logic change for "default hold" (resolved-decision #1).** The
+  engine already booted hold and already degraded a target-less scene-arm to
+  hold; the feature is achieved by *removing* the boot build, not adding logic.
+  `main.ts` drops the unconditional `panicController.tryBuild(panicScene)`, the
+  persisted-pick re-point, the `panic.scene` import, and `initialSceneName`.
+- **PanicController is now designation-only.** `PANIC_ID`/`tryBuild`/the warm
+  hatch lifecycle are gone; it owns only the runtime ⛑ designation
+  (`setInstance`) over existing instances and a health surface derived from the
+  designated instance's live `instance.error`. `instanceId()` returns null until
+  designated (or when the designated target has frozen), so the engine falls
+  back to hold (FR-7) exactly as before.
+- **Clean "none" status (Q + Phase 2).** `PanicSceneInfo.status` gains `"none"`
+  (no target designated) distinct from `"error"` (designated but broken). The
+  Console reads `"none"` as "pick a SAFE target" and `"error"` as the ⚠; an
+  agent reads either as "scene-panic can't fire → PANIC holds." Snapshot +
+  `window.__loom` carry it unchanged in shape otherwise.
+- **Designation is NOT persisted (NFR-2 — changes the 2026-06-12 decision).** A
+  runtime designation over an ephemeral instance id can't auto-rebuild without
+  the pointer-scene concept, so a fresh session boots to hold and the human
+  re-designates per session. `StateKey.panic` and its load/save are removed.
+- **Deleted `content/scenes/safe.scene.ts` AND `panic.scene.ts` (Q1).** The
+  `live.scene.ts`-twin pointer is vestigial with runtime-only designation; both
+  files and the pointer concept are dropped. The scene-barrel HMR block no
+  longer special-cases a pinned hatch (a designated target is an ordinary
+  instance: it rebuilds like any other and, if its scene file vanishes, is
+  destroyed → Stage degrades scene-panic to hold).
+- **Split-button DOM ids (NFR-1).** Primary `#panic` (PANIC/RESUME), the menu
+  toggle `#panicmenu` (`▾`), radio items `#panic-arm-hold` / `#panic-arm-scene`
+  (the scene arm is **disabled** until a target exists, Q4), and per-target
+  options `[data-panictarget="<id>"]`. The validator was rewritten to drive
+  these and to assert the new boot state (no pinned instance, `panicScene`
+  reports `"none"`, no ⛑ tile until designation; broken-target → hold reframed as
+  a designated instance that throws at render → freezes → falls back to hold).
+- **Scope.** Header.tsx changes are confined to the PANIC cluster (a later
+  console-ui-refactor restyles the rest). `Tile.tsx`'s ⛑ SAFE badge is unchanged
+  (it simply shows less often — only after opt-in).
+- Gates: `pnpm typecheck` green; `pnpm test` green (360 package = 239 runtime +
+  86 engine-app + 35 sidecar; 434 content; 11 script; `panic-controller.test.ts`
+  rewritten for the no-build API);
+  `pnpm validate:panic` **18/18 green** (ran in-env on the WebGL2 fallback).

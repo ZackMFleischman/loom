@@ -605,8 +605,8 @@ export class EngineApi {
       }
       case "panic": {
         // Execute the armed mode (an explicit override is allowed). Scene mode
-        // routes the warm panic instance; if none is usable, Stage falls back
-        // to hold (FR-7) — worst case equals today's behavior, never worse.
+        // routes the designated SAFE target; with none designated (the default,
+        // since scene-panic is opt-in) Stage falls back to hold (FR-7).
         const { mode } = PanicArgs.parse(req.args);
         const effective = mode ?? this.armedPanicMode;
         const panicId = effective === "scene" ? this.deps.panicInstanceId() : null;
@@ -743,7 +743,7 @@ export class EngineApi {
    * MIDI action: crossfade LIVE to the next/prev ok-status tile, wrapping in
    * tile (insertion) order. Mash-safe: ignored mid-fade, under PANIC, or with
    * fewer than two healthy tiles — a stuck button can never throw. Pinned
-   * tiles (the always-warm safe scene) are reserves, not part of the deck
+   * tiles (the designated SAFE target) are reserves, not part of the deck
    * ring — though stepping OFF one still works (escape after a scene-panic).
    */
   liveStep(dir: 1 | -1): void {

@@ -210,6 +210,42 @@ builds sandboxes via `SessionStore.create`'s init seed (chains fold into build
 #1) and NEVER touches the Stage — the pre-load instances cull after a commit
 from the loaded set lands (deferred-cull check in the render loop).
 
+## Module packs
+
+Third-party repos of modules/scenes, imported into a project so the library
+isn't monorepo-only. A pack mirrors `content/`'s layout (no build step):
+`loom-pack.json` (`{ name, version, loomApi, description }`) + `modules/`,
+`scenes/`, optional `assets/` and `test/cases.ts`. Modules import ONLY
+`@loom/runtime` (+ three) — the same portability rule the golden patterns
+enforce in-repo.
+
+- **Registration** is `content/state/packs.json` (`{ packs: [{ name, source,
+  pin, branch?, loomApi? }] }`, committed) — the registered-roots idiom from
+  `media-roots.json`. `pnpm pack:add <git-url|path>` clones (pins the SHA +
+  records the tracked `branch`) or symlinks (`pin: null`) into the **gitignored**
+  `packs/<name>/`; `pnpm pack:update` fetches/resets that branch and re-pins. The
+  checkout is scratch; the JSON is the source of truth. The **canonical name** is
+  the manifest's `name` (`--name` > `loom-pack.json` name > source basename) — a
+  git pack is cloned to a temp dir, the manifest read, then moved to `packs/<name>`,
+  so the published namespace matches what the author declared.
+- **Discovery** is static `packs/*/…` globs added beside the `content/…` ones in
+  the engine barrels (`engine-app/src/scenes.ts`, `effects.ts`), the test harness,
+  and `scripts/build-catalog.mjs`. Absent until `pack:add`, so a pack-free repo is
+  byte-for-byte unchanged.
+- **Namespacing/precedence:** local content keeps its BARE name; pack content
+  surfaces as `<pack>/<name>` in CATALOG / `availableScenes` / `availableEffects`.
+  **Local wins** a bare-name collision (a pack's same-named item is reachable only
+  namespaced) — deterministic, the marketplace relies on it. One rule, two synced
+  helpers: `engine-app/src/packs.ts` (browser) and `scripts/lib/packs.mjs` (Node).
+- **Resolution:** `preserveSymlinks: true` (both Vite configs) lets a linked
+  out-of-tree pack resolve the host's `three`/`three/tsl` from node_modules.
+- **Gate & trust:** `packs/` is in the root tsconfig include, so **typecheck is
+  the real compatibility gate**; `loomApi` is a fast caret-major hint. A pack's
+  `test/cases.ts` merges into the completeness sweep (same enforcement as local
+  modules). A pack is arbitrary code at the SAME trust level as editing
+  `content/` — **documented, not sandboxed**, for v1. Full rationale: the
+  "Module packs (v1)" entry in `DECISIONS.md`.
+
 ## Testing & validation
 
 Four layers, cheapest first. The merge gate is all of them: milestone work merges
@@ -231,10 +267,25 @@ Per-package vitest roots, plain Node:
   Param clamping, Stage commit/panic/rename semantics, modulators, onset detection,
   input rack, palettes, MIDI bindings.
 - `packages/sidecar` — protocol schemas and MCP tool surface.
-- `packages/engine-app` — `EngineLink` (the Console↔engine channel client) against a
-  fake BroadcastChannel.
+- `packages/engine-app` — runs **two vitest projects** under one
+  `pnpm --filter @loom/engine-app test` (each its own environment): a `node` suite
+  (the pure-logic tests — `EngineLink` against a fake BroadcastChannel,
+  render-service, MIDI, projects…) and a `ui` suite (`happy-dom`) that exercises
+  the React `useSyncExternalStore` hooks in `src/ui/hooks.ts` with `renderHook`
+  over a fake `EngineLink`. testing-library + the DOM env are **devDependencies of
+  engine-app only** — they never enter the production Vite build.
 
 Run one file: `pnpm --filter @loom/runtime exec vitest run test/signal.test.ts`.
+
+**Coverage gate (`pnpm test:coverage`) — `packages/` only.** A v8 coverage run
+over `packages/*/src/**` with line/branch/function/statement thresholds set at a
+ratchet floor (= the current measured coverage; raise deliberately, never lower).
+The scope is **physically incapable of measuring `content/`**: the coverage
+`include` is `packages/*/src/**` and `content/**` is excluded outright
+(`vitest.coverage.shared.ts`), mirroring the packages-vs-content line in
+`biome.json`. The gate lives ONLY in `pnpm test:coverage` (and the CI `checks`
+job) — `pnpm test`, `pnpm typecheck`, and the MCP creative loop are untouched, so
+building visuals stays a single round-trip with no coverage step in the loop.
 
 ### 3. Stdlib content tests (`pnpm test:content`, ~3 s — chained into `pnpm test`)
 
