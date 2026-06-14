@@ -115,11 +115,20 @@ Two complementary paths:
   node scripts/shoot.mjs pho-nebula          # boot scene if no args
   node scripts/shoot.mjs pulse lava          # specific scenes
   ```
-  This writes `preview/screenshots/<scene>.png` (a tracked dir). Commit it and
-  reference it in the PR body via a raw URL, which renders on a phone:
+  This writes `preview/screenshots/<scene>.png` (a tracked dir — `git add` +
+  commit it onto your PR branch; any PNG you drop in works too, not just
+  `shoot.mjs` output). Reference it in the PR body via a raw URL, which renders
+  on GitHub and on a phone:
   ```md
-  ![pulse](https://raw.githubusercontent.com/<owner>/<repo>/<branch>/preview/screenshots/pulse.png)
+  ![pulse](https://raw.githubusercontent.com/ZackMFleischman/loom/<sha-or-branch>/preview/screenshots/pulse.png)
   ```
+  Pin to the **commit SHA** for a stable link that survives rebases/force-pushes,
+  or to the **branch** name for one that auto-updates as you push new shots.
+
+  **PRs that introduce or change a feature, the Console, a scene, or a
+  visualization SHOULD include a relevant screenshot here when there's something
+  visual to show.** Agents: this convention is summarized in the root `CLAUDE.md`
+  ("Screenshots in PRs").
 
 `shoot.mjs` mirrors the validators: it spawns the dev server on an isolated port,
 drives headless Chromium against the WebGL2 fallback, points `live.scene.ts` at
