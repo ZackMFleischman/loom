@@ -235,3 +235,216 @@ export function simBuffer(ctx: BuildCtx, opts: SimBufferOpts): SimBufferHandle {
 
   return { sampleOut, pass };
 }
+
+/** What a `simBufferMulti` pass closure is handed to read every named field + the clock. */
+export interface MultiStepApi {
+  /**
+   * Tap field `name`'s READ buffer at a texel offset (dx,dy) in THAT field's
+   * own grid — center is `sample(name, 0, 0)`. Returns its stored vec4. Every
+   * field's latest read state is visible to every pass (coupled solve).
+   */
+  sample(name: string, dx: number, dy: number): ColorNode;
+  /**
+   * Sample field `name`'s READ buffer at an ARBITRARY uv node — for
+   * semi-Lagrangian advection (a continuous backtrace lookup, where the
+   * integer-offset `sample` can't reach). Bilinear if the field's texture
+   * filters linearly (HalfFloat does on both backends).
+   */
+  sampleUv(name: string, at: Node<"vec2">): ColorNode;
+  /** This pass's destination grid texel size as a vec2 node (1/w, 1/h). */
+  texel: Node<"vec2">;
+  /** Frame-clocked counter (whole frames) for deterministic motion — never TSL `time`. */
+  phase: Node<"float">;
+}
+
+/** One named coupled field in a `simBufferMulti`. */
+export interface MultiField {
+  /** Field name — referenced by `sample(name, …)` and `sampleOut(name, …)`. */
+  name: string;
+  /** This field's grid (each field may differ; pressure scratch can be coarser). */
+  width: number;
+  height: number;
+  /** Boundary for THIS field: toroidal (`repeat`, default) or reflecting (`clamp`). */
+  wrap?: "repeat" | "clamp";
+  /** Initial / reseed state at each cell → vec4. */
+  seed: () => ColorNode;
+}
+
+/** One ordered integration pass: writes `target`, may read any field via `sample`. */
+export interface MultiPass {
+  /** Name of the field this pass writes (must be a declared field). */
+  target: string;
+  /** Sub-iterations of THIS pass per integration step (SignalLike, clamped 1..64) — e.g. the Jacobi pressure loop. Default 1. */
+  repeat?: SignalLike;
+  /** The pass shader: read fields via `api.sample`, return the target's next vec4 state. */
+  step: (api: MultiStepApi) => ColorNode;
+}
+
+export interface SimBufferMultiOpts {
+  /** Named coupled fields (velocity, pressure, divergence, dye, …). */
+  fields: MultiField[];
+  /** Ordered integration passes run each step (advect → divergence → Jacobi×N → project → advect dye). */
+  passes: MultiPass[];
+  /** Integration steps per frame (SignalLike, clamped 1..16) — evolution speed. Default 1. */
+  iterations?: SignalLike;
+  /** Rising past 0.5 re-seeds every field (a trigger). */
+  reseed?: SignalLike;
+}
+
+export interface SimBufferMultiHandle {
+  /** Sample field `name`'s freshly written state at a texel offset — build the output color from this. */
+  sampleOut(name: string, dx: number, dy: number): ColorNode;
+  /** The simulation pass — append to your source's `texNode(color, [handle.pass])`. */
+  pass: Pass;
+}
+
+/**
+ * The MULTI-field generalization of `simBuffer`: N named, coupled, ping-ponged
+ * HalfFloat fields integrated forward by an ORDERED list of passes each frame.
+ * Where `simBuffer` runs one `step` closure over a single field, this runs a
+ * pipeline of passes (each writing one named field, able to read EVERY field's
+ * current state) — the shape Stam stable-fluids needs (advect velocity →
+ * divergence → many Jacobi pressure iterations → project → advect dye), and any
+ * other coupled solve. Each field keeps its own grid + ping-pong pair; each pass
+ * can sub-iterate (`repeat`, e.g. the Jacobi loop) within one integration step.
+ *
+ * `simBuffer` is left untouched — its single-field consumers (reactionDiffusion,
+ * waveField, automata, physarum's trail uses its own inline buffers) are
+ * unaffected. Same statefulness model as `simBuffer`/`feedback`: frame-clocked
+ * `phase` (never TSL `time`), seeded fields, and a code change (NFR-5) drops the
+ * fields and re-seeds next frame — so fixture replays stay byte-identical.
+ *
+ * Pass ordering note: passes run SEQUENTIALLY within a step — each pass swaps
+ * its target's ping-pong pair the instant it writes, so a later pass sees the
+ * results of earlier ones (advect velocity, THEN take its divergence, THEN
+ * project with the solved pressure — the natural stable-fluids pipeline). A
+ * pass's own `repeat` sub-loop swaps between sub-iterations too, so successive
+ * Jacobi relaxations read the freshly written pressure. Reads always come from
+ * the current read target, never the half-written write target.
+ */
+export function simBufferMulti(ctx: BuildCtx, opts: SimBufferMultiOpts): SimBufferMultiHandle {
+  const rtOpts = { type: HalfFloatType, depthBuffer: false } as const;
+
+  // Per field: its ping-pong pair, a live read-sampler (its .value tracks the
+  // read target), and an output sampler (tracks the freshly written target).
+  type FieldState = {
+    def: MultiField;
+    read: RenderTarget;
+    write: RenderTarget;
+    readSrc: ReturnType<typeof texture>; // sampled by passes (read buffer)
+    outSrc: ReturnType<typeof texture>; // sampled by the output (latest written)
+    seedQuad: QuadMesh;
+    seedMat: MeshBasicNodeMaterial;
+  };
+  const fields = new Map<string, FieldState>();
+  for (const def of opts.fields) {
+    const wrap = def.wrap === "clamp" ? ClampToEdgeWrapping : RepeatWrapping;
+    const a = new RenderTarget(def.width, def.height, rtOpts);
+    const b = new RenderTarget(def.width, def.height, rtOpts);
+    for (const rt of [a, b]) {
+      rt.texture.wrapS = wrap;
+      rt.texture.wrapT = wrap;
+    }
+    const seedMat = new MeshBasicNodeMaterial();
+    seedMat.colorNode = def.seed();
+    seedMat.transparent = true;
+    seedMat.blending = NoBlending;
+    fields.set(def.name, {
+      def,
+      read: a,
+      write: b,
+      readSrc: texture(a.texture),
+      outSrc: texture(a.texture),
+      seedQuad: new QuadMesh(seedMat),
+      seedMat,
+    });
+  }
+
+  const phase = uniform(0); // frames; set per-frame in render (deterministic, never TSL time)
+
+  // Integer-offset neighbour tap in the SOURCE field's own texel space.
+  const sampleOffset = (name: string, dx: number, dy: number): ColorNode => {
+    const fs = fields.get(name);
+    if (!fs) throw new Error(`simBufferMulti: unknown field "${name}"`);
+    const srcTexel = vec2(1 / fs.def.width, 1 / fs.def.height);
+    return fs.readSrc.sample(uv().add(srcTexel.mul(vec2(dx, dy)))) as ColorNode;
+  };
+  // Continuous lookup at an arbitrary uv (semi-Lagrangian advection backtrace).
+  const sampleUv = (name: string, at: Node<"vec2">): ColorNode => {
+    const fs = fields.get(name);
+    if (!fs) throw new Error(`simBufferMulti: unknown field "${name}"`);
+    return fs.readSrc.sample(at) as ColorNode;
+  };
+
+  // Compile each pass into a material + quad + its swap target name.
+  type PassState = { target: FieldState; quad: QuadMesh; mat: MeshBasicNodeMaterial; repeatU: ReturnType<BuildCtx["uniformOf"]> };
+  const passes: PassState[] = opts.passes.map((p) => {
+    const target = fields.get(p.target);
+    if (!target) throw new Error(`simBufferMulti: pass targets unknown field "${p.target}"`);
+    const destTexel = vec2(1 / target.def.width, 1 / target.def.height);
+    const mat = new MeshBasicNodeMaterial();
+    mat.colorNode = p.step({ sample: sampleOffset, sampleUv, texel: destTexel, phase: phase as unknown as Node<"float"> });
+    mat.transparent = true;
+    mat.blending = NoBlending;
+    return { target, quad: new QuadMesh(mat), mat, repeatU: ctx.uniformOf(p.repeat ?? 1) };
+  });
+
+  const iterU = ctx.uniformOf(opts.iterations ?? 1);
+  const reseedU = ctx.uniformOf(opts.reseed ?? 0);
+
+  const sampleOut = (name: string, dx: number, dy: number): ColorNode => {
+    const fs = fields.get(name);
+    if (!fs) throw new Error(`simBufferMulti: unknown field "${name}"`);
+    const texelN = vec2(1 / fs.def.width, 1 / fs.def.height);
+    return fs.outSrc.sample(uv().add(texelN.mul(vec2(dx, dy)))) as ColorNode;
+  };
+
+  let seeded = false;
+  let reseedWas = false;
+  const pass: Pass = {
+    render(renderer: WebGPURenderer, f: FrameCtx) {
+      phase.value = f.frame;
+      const prev = renderer.getRenderTarget();
+
+      const reseedHigh = (reseedU.value as number) > 0.5;
+      if (!seeded || (reseedHigh && !reseedWas)) {
+        for (const fs of fields.values()) {
+          renderer.setRenderTarget(fs.read);
+          fs.seedQuad.render(renderer);
+        }
+        seeded = true;
+      }
+      reseedWas = reseedHigh;
+
+      const iters = Math.max(1, Math.min(16, Math.round(iterU.value as number)));
+      for (let it = 0; it < iters; it++) {
+        for (const ps of passes) {
+          // Point every read sampler at its field's current read target.
+          for (const fs of fields.values()) fs.readSrc.value = fs.read.texture;
+          const reps = Math.max(1, Math.min(64, Math.round(ps.repeatU.value as number)));
+          const tgt = ps.target;
+          for (let r = 0; r < reps; r++) {
+            // Re-point the target's read sampler each sub-iteration so successive
+            // relaxations (Jacobi) see the freshly written values.
+            tgt.readSrc.value = tgt.read.texture;
+            renderer.setRenderTarget(tgt.write);
+            ps.quad.render(renderer);
+            [tgt.read, tgt.write] = [tgt.write, tgt.read];
+          }
+        }
+      }
+      renderer.setRenderTarget(prev);
+      for (const fs of fields.values()) fs.outSrc.value = fs.read.texture; // freshly written this frame
+    },
+    dispose() {
+      for (const fs of fields.values()) {
+        fs.read.dispose();
+        fs.write.dispose();
+        fs.seedMat.dispose();
+      }
+      for (const ps of passes) ps.mat.dispose();
+    },
+  };
+
+  return { sampleOut, pass };
+}

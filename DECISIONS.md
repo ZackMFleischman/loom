@@ -1693,3 +1693,32 @@ path and never-go-black are untouched, NFR-4):
   `pnpm test:content` green (481 content). Verified on REAL WebGPU (headed system
   Chrome, hardware adapter) — non-black, clean console, no NFR-2 freeze; stills
   also via `shoot.mjs` (WebGL2). validate:stdlib runs WebGL2-only headless.
+
+## 2026-06-14 — fluid2d: Stam stable-fluids smoke on a multi-buffer simBuffer (SHIPPED)
+
+- **`simBufferMulti`** added to `content/modules/_shared.ts` (the single-field
+  `simBuffer` left byte-for-byte unchanged): N *named* coupled HalfFloat
+  ping-pong fields (each its own grid/wrap/seed) driven by an ORDERED pass
+  pipeline — each pass writes one field, may `sample` any field (integer
+  neighbour taps) or `sampleUv` it at an arbitrary uv (advection backtrace), and
+  may `repeat` N sub-iterations (the Jacobi loop). Passes run sequentially,
+  swapping their target's pair the instant they write, so a later pass sees
+  earlier results (advect → divergence → pressure → project → advect dye). Same
+  statefulness as `simBuffer`/`feedback`: frame-clocked phase, seeded, NFR-5
+  reset. Existing `simBuffer` consumers (reactionDiffusion/waveField/automata/
+  physarum) all still pass typecheck + test:content + validate:stdlib unchanged.
+- **`fluid2d`** (source): velocity+divergence+pressure+dye on `simBufferMulti`;
+  two counter-rotating orbiting jets inject a vortex force + coloured puffs on
+  the kick (`inject`), bass eases `dissipation` for longer smoke; `pressureIters`
+  exposes the Jacobi count. Output = dye luminance (.x, ramp it) + speed (.y).
+  Scene `smoke-signals` colorizes through `pickPalette`. Tuning lesson: under
+  constant test-audio kicks the dye saturates into a white blob — tight splat
+  (SPOT_R2 0.0016), low dye injection, fast-sweeping jets and a vortex (not
+  linear) force are what break it into curling wisps; the visible warm-gray was
+  bloom amplifying near-black thin dye, fixed by scaling density into the ramp.
+- Verified on REAL WebGPU (headed system Chrome, NVIDIA Turing adapter):
+  non-black, instanceError null, no NFR-2 freeze, ~56 fps — AND on the WebGL2
+  fallback via shoot.mjs. Both backends render the smoke correctly (no Y-flip /
+  projection bug — the multi-buffer trap physarum hit). Grid 256×144.
+- Gates: `pnpm typecheck` green (83 modules, 41 scenes); `pnpm test` +
+  `pnpm test:content` green (493 content); `pnpm validate:stdlib` 84/84 (WebGL2).
