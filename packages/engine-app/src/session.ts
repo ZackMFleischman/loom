@@ -13,8 +13,12 @@ import {
   type Instance,
   type PaletteRegistry,
   type SceneDef,
+  type SourceResolver,
+  type TexNode,
   type TimeBus,
+  texNode,
 } from "@loom/runtime";
+import { texture, vec4 } from "three/tsl";
 import { RenderTarget } from "three/webgpu";
 import type { InstanceStatus } from "@loom/sidecar/protocol";
 import { logDiag } from "./diagnostics";
@@ -92,12 +96,13 @@ export class SessionStore {
   create(def: SceneDef, id?: string, init?: InstanceInit): Entry {
     const finalId = id ?? `${def.name}-${++this.counter}`;
     if (this.entries.has(finalId)) throw new Error(`instance "${finalId}" already exists`);
-    const chain = new ChainHost(this.effects);
+    const resolver = this.makeResolver(finalId);
+    const chain = new ChainHost(this.effects, undefined, resolver);
     chain.seed(def.chain); // scene-declared default chain (M6)
     if (init?.chain) chain.steps = chain.plan(init.chain); // project-restored chain (defaults stay the scene's)
     const nodeChains = new Map<string, ChainHost>();
     for (const [node, steps] of Object.entries(init?.nodeChains ?? {})) {
-      const host = new ChainHost(this.effects, nodeFxPrefix(node));
+      const host = new ChainHost(this.effects, nodeFxPrefix(node), resolver);
       host.seed([]);
       host.steps = host.plan(steps);
       nodeChains.set(node, host);
@@ -176,6 +181,25 @@ export class SessionStore {
     return ok;
   }
 
+  /**
+   * Build the SourceResolver a ChainHost on instance `ownerId` uses to turn a
+   * `{instance}` SourceRef into a TexNode (multi-input chain steps). The owning
+   * instance is excluded — an instance tapping ITSELF as a source is rejected
+   * (that's a feedback case, not a multi-input overlay), as is a missing one.
+   * Returning null makes the fold throw, so NFR-5 keeps the previous chain.
+   */
+  private makeResolver(ownerId: string): SourceResolver {
+    return {
+      instance: (id): TexNode | null => {
+        if (id === ownerId) return null; // self-tap is rejected (would be feedback)
+        const src = this.entries.get(id);
+        if (!src) return null;
+        // Sample the source instance's render target as a flat (opaque) texture.
+        return texNode(vec4(texture(src.target.texture).rgb, 1));
+      },
+    };
+  }
+
   /** A node's chain host, created lazily; the node must exist on the current build. */
   private requireNodeChain(e: Entry, node: string): ChainHost {
     let host = e.nodeChains.get(node);
@@ -184,7 +208,7 @@ export class SessionStore {
       const have = e.instance.nodes.map((n) => n.id).join(", ") || "(none — wrap one with ctx.layer)";
       throw new Error(`unknown node "${node}" on "${e.id}" — nodes: ${have}`);
     }
-    host = new ChainHost(this.effects, nodeFxPrefix(node));
+    host = new ChainHost(this.effects, nodeFxPrefix(node), this.makeResolver(e.id));
     host.seed([]); // node chains have no scene-declared default (root only)
     e.nodeChains.set(node, host);
     return host;

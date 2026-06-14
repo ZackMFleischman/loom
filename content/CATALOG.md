@@ -77,7 +77,7 @@
 - **mirror** — Folds the frame across an angled line — one-axis symmetry. `mirror(ctx, { input: src, angle: 0, offset: 0 })` _[mirror, symmetry, fold, stateful]_ ⛓chainable
 - **mixer** — Blends two TexNodes: crossfade/add/multiply/screen/difference on a fader. `mixer(ctx, { input: deckA, b: deckB, mode: "crossfade", mix: fader.signal() })` _[mix, blend, crossfade, composite, deck]_
 - **neon** — Turns a stroke/mask source into a glowing neon tube (white-hot core, palette body, flicker) — premultiplied for over+bloom. `neon(ctx, { input: text(ctx, { text: "PHO" }), intensity: kickEnv, flicker })` _[neon, glow, tube, sign, stylize]_ ⛓chainable
-- **over** — Alpha-composites an overlay TexNode on top of an input (logo/still overlays). `over(ctx, { input: chain, overlay: imagePlate(ctx, { url: logoUrl }), opacity: 1 })` _[composite, overlay, blend, alpha]_
+- **over** — Alpha-composites an overlay TexNode on top of an input (logo/still overlays). `over(ctx, { input: chain, overlay: imagePlate(ctx, { url: logoUrl }), opacity: 1 })` _[composite, overlay, blend, alpha]_ ⛓chainable
 - **paletteMap** — Recolors an input's luminance through the active global palette ramp. `paletteMap(ctx, { input: src, shift: scrollSig })` _[color, palette, ramp, grade]_ ⛓chainable
 - **pixelate** — Smooth slider-driven mosaic pixelation; free when amount is 0. `pixelate(ctx, { input: src, amount: 0.4 })` _[pixelate, mosaic, retro, stateful]_ ⛓chainable
 - **posterize** — Quantizes colors to N steps per channel (poster/print-crush look). `posterize(ctx, { input: src, steps: 4 })` _[posterize, quantize, crush, retro]_ ⛓chainable
