@@ -11,6 +11,23 @@ import { FxChain } from "./FxChain";
 import { groupParams, splitRig } from "./param-groups";
 import { ParamWidget } from "./ParamWidget";
 
+// Each contiguous run of param widgets is a CSS grid with a shared label
+// column: `min(max-content, --label-max)` makes column 1 exactly as wide as the
+// widest label in THAT run, capped at the max (labels past the cap wrap inside
+// the column); column 2 (`1fr`) holds the control cluster, so every slider/
+// toggle/value lines up down the run. minmax(0,…) lets the capped label wrap
+// instead of overflowing. Per-run grids = per-section columns (FR-5): each
+// accordion / transform sub-group / the flat top run sizes independently.
+const LABEL_MAX = "120px";
+const sectionGrid = {
+  display: "grid",
+  gridTemplateColumns: `minmax(0, min(max-content, var(--label-max))) 1fr`,
+  columnGap: 1,
+  rowGap: 0.75,
+  alignItems: "center",
+  "--label-max": LABEL_MAX,
+} as const;
+
 const GROUP_OPEN_KEY = "loom.pgroups.open";
 const PANEL_W_KEY = "loom.panelw";
 const PANEL_COLLAPSED_KEY = "loom.panelcollapsed";
@@ -227,15 +244,20 @@ export function ParamPanel({ instance, manifest, session }: Props) {
       <Box id="widgets">
         {ready && (
           <>
-            {flat.map(([path, p]) => (
-              <ParamWidget
-                key={path}
-                instance={instance}
-                path={path}
-                p={p}
-                colorChannels={p.type === "color" ? gatherChannels(manifest, path) : []}
-              />
-            ))}
+            {flat.length > 0 && (
+              <Box sx={sectionGrid}>
+                {flat.map(([path, p]) => (
+                  <ParamWidget
+                    key={path}
+                    instance={instance}
+                    path={path}
+                    p={p}
+                    grid
+                    colorChannels={p.type === "color" ? gatherChannels(manifest, path) : []}
+                  />
+                ))}
+              </Box>
+            )}
             {[...groups.entries()].map(([group, entries]) => {
               const isNode = nodeIds.has(group);
               const parent = parentOf.get(group);
@@ -270,16 +292,21 @@ export function ParamPanel({ instance, manifest, session }: Props) {
                     )}
                   </AccordionSummary>
                   <AccordionDetails>
-                    {rest.map(([path, p]) => (
-                      <ParamWidget
-                        key={path}
-                        instance={instance}
-                        path={path}
-                        p={p}
-                        label={path.slice(group.length + 1)}
-                        colorChannels={p.type === "color" ? gatherChannels(manifest, path) : []}
-                      />
-                    ))}
+                    {rest.length > 0 && (
+                      <Box sx={sectionGrid}>
+                        {rest.map(([path, p]) => (
+                          <ParamWidget
+                            key={path}
+                            instance={instance}
+                            path={path}
+                            p={p}
+                            grid
+                            label={path.slice(group.length + 1)}
+                            colorChannels={p.type === "color" ? gatherChannels(manifest, path) : []}
+                          />
+                        ))}
+                      </Box>
+                    )}
                     {rig.length > 0 && (
                       <Accordion
                         variant="outlined"
@@ -301,15 +328,18 @@ export function ParamPanel({ instance, manifest, session }: Props) {
                           ⤡ transform
                         </AccordionSummary>
                         <AccordionDetails>
-                          {rig.map(([path, p]) => (
-                            <ParamWidget
-                              key={path}
-                              instance={instance}
-                              path={path}
-                              p={p}
-                              label={path.slice(group.length + 1 + "layer.".length)}
-                            />
-                          ))}
+                          <Box sx={sectionGrid}>
+                            {rig.map(([path, p]) => (
+                              <ParamWidget
+                                key={path}
+                                instance={instance}
+                                path={path}
+                                p={p}
+                                grid
+                                label={path.slice(group.length + 1 + "layer.".length)}
+                              />
+                            ))}
+                          </Box>
                         </AccordionDetails>
                       </Accordion>
                     )}
