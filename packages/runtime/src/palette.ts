@@ -1,4 +1,4 @@
-import { Color, DataTexture, LinearFilter, SRGBColorSpace, texture, uniform, vec2 } from "./tsl";
+import { Color, float, mix, uniform, vec4 } from "./tsl";
 import type { Node } from "./tsl";
 import type { Updater } from "./buildctx";
 import { Manifest, normalizeHex, type Param } from "./param";
@@ -83,8 +83,6 @@ const GRAY: string[] = ["#000000", "#404040", "#808080", "#bfbfbf", "#ffffff"];
  */
 export class PaletteCtxImpl {
   private readonly colorUniforms = new Map<number, ReturnType<typeof uniform>>();
-  private rampTex: DataTexture | null = null;
-  private rampData: Uint8Array | null = null;
   private ownStops: string[] | null = null;
   private used = false;
 
@@ -109,18 +107,27 @@ export class PaletteCtxImpl {
     return u as unknown as Node<"vec3">;
   }
 
-  /** Gradient lookup across the 5 stops; t in 0..1 (a TSL node or constant). Returns vec4. */
+  /**
+   * Gradient across the 5 stops; t in 0..1 (a TSL node or constant). Returns vec4.
+   *
+   * Built in-shader from the stop UNIFORMS via sequential mix() — NOT a ramp
+   * texture. A texture() sample built inside a TSL Fn() function-scope isn't
+   * collected into the material's sampler bindings (three's node backend), so it
+   * silently renders black; uniforms cross the Fn boundary fine. So this works
+   * everywhere a raymarch/escape-time shader needs it. The stops interpolate in
+   * linear space (three converts the sRGB hex on the way into the uniform),
+   * matching how ctx.palette.color(i) already composites.
+   */
   ramp(t: Node<"float"> | number): Node<"vec4"> {
-    this.used = true;
-    if (!this.rampTex) {
-      this.rampData = new Uint8Array(256 * 4);
-      this.rampTex = new DataTexture(this.rampData, 256, 1);
-      this.rampTex.minFilter = LinearFilter;
-      this.rampTex.magFilter = LinearFilter;
-      this.rampTex.colorSpace = SRGBColorSpace; // stops are sRGB hex; sampling converts
-      this.rampTex.needsUpdate = true;
+    // color(i) registers each stop uniform so finalize()'s updater fills it.
+    const stops = Array.from({ length: PALETTE_STOPS }, (_, i) => this.color(i));
+    const tn = typeof t === "number" ? float(t) : t;
+    const s = tn.clamp(0, 1).mul(PALETTE_STOPS - 1);
+    let c: Node<"vec3"> = stops[0]!;
+    for (let i = 1; i < PALETTE_STOPS; i++) {
+      c = mix(c, stops[i]!, s.sub(i - 1).clamp(0, 1));
     }
-    return texture(this.rampTex, vec2(t, 0.5)) as unknown as Node<"vec4">;
+    return vec4(c, 1) as unknown as Node<"vec4">;
   }
 
   /** Scene-default stops — exactly 5 "#rrggbb" strings; the "own" source. Once per build. */
@@ -135,11 +142,6 @@ export class PaletteCtxImpl {
       return hex;
     });
     this.used = true;
-  }
-
-  /** Engine/test accessor for the ramp's backing texture (null if ramp() unused). */
-  rampTexture(): DataTexture | null {
-    return this.rampTex;
   }
 
   /** Declare palette.source + the resolver updater. Called once, after build(). */
@@ -164,10 +166,6 @@ export class PaletteCtxImpl {
       if (key === lastKey) return;
       lastKey = key;
       for (const [i, u] of this.colorUniforms) (u.value as Color).set(stops[i]!);
-      if (this.rampTex && this.rampData) {
-        fillRamp(this.rampData, stops);
-        this.rampTex.needsUpdate = true;
-      }
     };
     upd.label = "palette";
     this.updaters.push(upd);

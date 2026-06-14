@@ -54,15 +54,15 @@ describe("golden patterns", () => {
     expect(offenders).toEqual([]);
   });
 
-  // ctx.palette.ramp() returns a texture() sample node. A texture sample built
-  // inside a TSL Fn() function-scope is NOT collected into the material's
-  // sampler bindings by three's node backend — the sampler reads unbound, so
-  // the shader silently renders BLACK (build ok, instanceError null). Build the
-  // ramp at the top level of build() and pass the value in, OR inside an Fn use
-  // the ctx.palette.color(i) UNIFORMS and mix() the gradient by hand (uniforms
-  // cross the Fn boundary fine). See mandelbulb's ramp5 helper for the pattern.
-  // Heuristic: flag a `palette.ramp(` call lexically inside a block-bodied Fn().
-  function paletteRampInsideFn(src: string): boolean {
+  // A texture() sample built inside a TSL Fn() function-scope is NOT collected
+  // into the material's sampler bindings by three's node backend — the sampler
+  // reads unbound, so the shader silently renders BLACK (build ok, instanceError
+  // null). Sample textures at the TOP LEVEL of build() and pass the value in.
+  // (uniform() nodes cross the Fn boundary fine; this is why ctx.palette.ramp()
+  // is now built from the stop UNIFORMS and is safe inside an Fn — see
+  // mandelbulb. Only RAW texture() samples remain hazardous.)
+  // Heuristic: flag a `texture(` call lexically inside a block-bodied Fn().
+  function rawTextureInsideFn(src: string): boolean {
     for (const m of src.matchAll(/\bFn\s*\(/g)) {
       const open = src.indexOf("{", m.index);
       if (open === -1) continue;
@@ -78,21 +78,21 @@ describe("golden patterns", () => {
           }
         }
       }
-      if (/palette\s*\.\s*ramp\s*\(/.test(src.slice(open, end))) return true;
+      if (/\btexture\s*\(/.test(src.slice(open, end))) return true;
     }
     return false;
   }
 
-  it("no module calls ctx.palette.ramp() inside an Fn() (texture sample → black; use color(i) uniforms)", () => {
+  it("no module samples a raw texture() inside an Fn() (unbound sampler → black; sample at top level)", () => {
     const offenders = Object.entries(rawModuleSources())
-      .filter(([, src]) => paletteRampInsideFn(src))
+      .filter(([, src]) => rawTextureInsideFn(src))
       .map(([file]) => file);
     expect(offenders).toEqual([]);
   });
 
-  it("no scene calls ctx.palette.ramp() inside an Fn() (texture sample → black; use color(i) uniforms)", () => {
+  it("no scene samples a raw texture() inside an Fn() (unbound sampler → black; sample at top level)", () => {
     const offenders = Object.entries(rawSceneSources())
-      .filter(([, src]) => paletteRampInsideFn(src))
+      .filter(([, src]) => rawTextureInsideFn(src))
       .map(([file]) => file);
     expect(offenders).toEqual([]);
   });
