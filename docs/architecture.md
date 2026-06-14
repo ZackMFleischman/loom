@@ -249,6 +249,54 @@ enforce in-repo.
   `content/` — **documented, not sandboxed**, for v1. Full rationale: the
   "Module packs (v1)" entry in `DECISIONS.md`.
 
+## Content marketplace (discovery, Phase 1)
+
+The DISCOVERY layer over module packs: packs let you **depend on** a pack whose
+URL you know; the marketplace lets you **find** one you don't. Phase 1 is
+frictionless — a flat, versioned JSON index, no backend, no accounts. (Spec:
+`feature-requests/content-sharing-marketplace.md`; trust + publish one-pager:
+`docs/marketplace-publishing.md`.)
+
+- **The index (`index.json`) — FROZEN schema (Phase 2 reuses it):**
+  `{ schemaVersion: 1, packs: [{ name, gitUrl, gitRef?, description, tags[],
+  author, loomApi, rating? }] }`. `name`/`loomApi` mirror `loom-pack.json`;
+  `tags` draw from the catalog vocabulary. A seed lives at
+  `content/marketplace/index.json`; `LOOM_MARKETPLACE_INDEX` (a path OR an
+  http(s) URL) overrides it — the schema is the stable seam, the transport
+  swappable (NFR-1). One Node helper (`scripts/lib/marketplace.mjs`) and one
+  sidecar mirror (`packages/sidecar/src/marketplace.ts`) own the schema +
+  validator + ranker, kept in sync (the frozen schema makes that safe).
+- **Search, two surfaces, one ranker:** `search_content { query, tags? }` (MCP,
+  agent — read-only, source-tagged, agent-allowed, NO arming because it pulls
+  nothing; answered sidecar-side without the engine) and `pnpm pack:search
+  <query> [--tag t]` (CLI). Both return entries ranked name > tag > description,
+  tags as a hard AND filter, ties broken by `rating` then name. Each result
+  carries the exact `installHint` (`pnpm pack:add <gitUrl>` + `--ref` when
+  pinned). NFR-4 reflex: search the LOCAL catalog first; the tool/CLI say so.
+- **Install handoff (FR-4):** installing a found entry is exactly
+  `pnpm pack:add <gitUrl>` — discovery hands off to module packs, it does not
+  reimplement loading. After install the pack appears namespaced in CATALOG /
+  `availableScenes` (already true).
+- **Override paths (FR-6):** `pnpm pack:fork <name>` copies an installed pack
+  into an editable, un-pinned `forks/<name>/` tree (committed; `.git` excluded)
+  and re-points its registry entry at that local path with `pin: null` — the
+  whole-pack override. To override a SINGLE module without forking, author a
+  bare-name local `content/modules/.../<name>.ts`: **LOCAL-WINS** precedence
+  (module packs) shadows the pack's same-named item — the local-shadow rule.
+- **Git-native publish/ratings/moderation (FR-7/8/9):** publish = PR a line to
+  `index.json` (CI validates it against the frozen schema); a rating is a schema
+  field (a maintained aggregate / GitHub-stars mirror); moderation IS the index
+  repo's merge queue. Trust is loud and UNCHANGED from packs (NFR-3): a rating
+  is popularity, **not** a security audit; installing runs arbitrary code at
+  content-edit trust; install is human-gated like commit. No sandboxing —
+  document, don't promise.
+- **Offline-degrades (NFR-2):** a missing/unreachable/invalid index is a CLEAN
+  tool/CLI error (clear message, exit 1) — it NEVER blocks already-pinned packs,
+  which load offline from `packs.json`.
+- **Deferred to Phase 2:** the hosted index API (same shape, swapped transport),
+  real account-based ratings + active moderation, and the Console browse panel.
+  Payments are out of scope even in Phase 2.
+
 ## Testing & validation
 
 Four layers, cheapest first. The merge gate is all of them: milestone work merges
