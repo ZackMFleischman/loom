@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "packs": [
+    {
+      "name": "hippoPack",
+      "gitUrl": "https://github.com/loom-community/hippo-pack.git",
+      "gitRef": "v1.2.0",
+      "description": "Aurora curtains, lava lamps, and other organic flow scenes plus the feedback effects that drive them.",
+      "tags": ["organic", "feedback", "audio-reactive", "generative"],
+      "author": "loom-community",
+      "loomApi": "^1",
+      "rating": 128
+    },
+    {
+      "name": "retroArcade",
+      "gitUrl": "https://github.com/loom-community/retro-arcade.git",
+      "description": "CRT scanlines, VHS warp, chromatic aberration and an 80s neon grid source. Pure retro finish stack.",
+      "tags": ["retro", "finish", "warp", "color"],
+      "author": "neon-knights",
+      "loomApi": "^1",
+      "rating": 86
+    },
+    {
+      "name": "geoLab",
+      "gitUrl": "https://github.com/loom-community/geo-lab.git",
+      "gitRef": "main",
+      "description": "Orbiting 3D model rigs, particle swarms off mesh surfaces, and an orbitCam preset library.",
+      "tags": ["3d", "particles", "geometric"],
+      "author": "meshwright",
+      "loomApi": "^1",
+      "rating": 54
+    },
+    {
+      "name": "videoKit",
+      "gitUrl": "https://github.com/loom-community/video-kit.git",
+      "description": "Video sources with beat-synced scrub, freeze, and loop plus a glitch-on-onset effect.",
+      "tags": ["video", "audio-reactive", "stateful"],
+      "author": "clip-collective",
+      "loomApi": "^1",
+      "rating": 41
+    },
+    {
+      "name": "paletteForge",
+      "gitUrl": "https://github.com/loom-community/palette-forge.git",
+      "description": "Curated color palettes and colorize/gradient base sources for fast scene tinting.",
+      "tags": ["color", "base", "generative"],
+      "author": "huesmith",
+      "loomApi": "^1",
+      "rating": 73
+    }
+  ]
+}
