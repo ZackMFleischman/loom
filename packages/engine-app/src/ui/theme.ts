@@ -78,12 +78,18 @@ export const theme = createTheme({
         },
         {
           props: { variant: "danger" },
+          // PANIC is the emergency hatch you reach for under stress mid-set, so it
+          // reads loud even at REST: a faint red tint fill + a 1.5px red border,
+          // not just an outline (Q2 — keep the highest-stakes verb from being the
+          // quietest control). The fully-saturated `contained` fill is reserved
+          // for the active/panicked state.
           style: {
-            border: "1px solid",
-            borderColor: "rgba(230,69,90,0.6)",
+            border: "1.5px solid",
+            borderColor: "rgba(230,69,90,0.75)",
             color: "#e6455a",
+            backgroundColor: "rgba(230,69,90,0.12)",
             fontWeight: 700,
-            "&:hover": { borderColor: "#e6455a", backgroundColor: "rgba(230,69,90,0.1)" },
+            "&:hover": { borderColor: "#e6455a", backgroundColor: "rgba(230,69,90,0.22)" },
           },
         },
       ],
