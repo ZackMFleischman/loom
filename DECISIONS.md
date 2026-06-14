@@ -1597,3 +1597,24 @@ surfaces lacked (what build/swap/freeze/perf event led to a number).
   GPU infra best validated on a real WebGPU device.
 - Gates: `pnpm typecheck` green (77 modules, 35 scenes); `pnpm test:content`
   green (459). Stills via `shoot.mjs` (WebGL2). Feature-request docs updated.
+
+## 2026-06-14 — marbleWarp effect + CPU agent systems (flock, flowParticles)
+
+- **`fbm2`** value-noise FBM hoisted into `content/modules/_shared.ts`; `marble`
+  refactored onto it and the new **`marbleWarp`** effect (warps an input's UVs
+  by the iterated field via `bufferPass` — the effect face of `marble`, scene
+  `marble-warp`) shares it. Distinct module name since the catalog requires it.
+- **CPU agent systems over GPU particle-state** (the "tractable-first" choice):
+  **`flock`** (boids S/A/C, oriented cones) and **`flowParticles`** (ABC
+  divergence-free flow advection, instanced octahedra) simulate on the CPU each
+  frame and draw through the existing `render3d` + `InstancedMesh` path —
+  seeded (mulberry32) + frame-clocked + `DynamicDrawUsage`, so fixture-replay
+  safe and verifiable headlessly. Chose this over GPU position-textures because
+  it reuses proven rendering and renders correctly on the WebGL2 fallback.
+  Scenes `flock-swarm`, `flow-field`.
+- Still OPEN from the new-viz list (need GPU infra best validated on a real
+  device): `physarum` (agents + diffusing trail field), `fluid2d` (multi-buffer
+  simBuffer), differential-growth / L-systems (a line/ribbon renderer), and a
+  true GPU `particleState` + additive accumulation for million-point silk.
+- Gates: `pnpm typecheck` green (80 modules, 38 scenes); `pnpm test` +
+  `pnpm test:content` green (476 content). Stills via `shoot.mjs` (WebGL2).
