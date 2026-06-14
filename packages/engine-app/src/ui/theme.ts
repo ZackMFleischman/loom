@@ -4,10 +4,11 @@ import { createTheme } from "@mui/material/styles";
 export const mono = "ui-monospace, 'Cascadia Mono', Consolas, monospace";
 
 /**
- * Button taxonomy (console-ui-refactor FR-2). A custom `intent` prop selects one
- * of four named control weights so importance reads at a glance and per-button
- * `sx` sizing disappears from call sites. This is the whole vocabulary — keep it
- * to four:
+ * Button taxonomy (console-ui-refactor FR-2). Three named `variant`s (plus the
+ * outlined default) select one of four control weights so importance reads at a
+ * glance and per-button `sx` sizing disappears from call sites. Q1 "lean
+ * variants": it all lives here in the theme, not in wrapper components. This is
+ * the whole vocabulary — keep it to four:
  *
  *  - **default** — everyday controls (RACK, PREVIEW resting, tap, projects,
  *    stage/unstage, nav). The theme default; what you get with no intent.
