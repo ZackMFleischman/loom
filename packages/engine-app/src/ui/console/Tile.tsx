@@ -7,6 +7,7 @@ import { tileFps } from "../fps-meter";
 import { useEngine, useEngineFps, useStagePointers, useThumb, useTile } from "../hooks";
 import { snapshotScene } from "../scene-thumbs";
 import { countRender, fail } from "../util";
+import { hintFor } from "./keybindings";
 import { StatusPill } from "./primitives";
 
 type Props = {
@@ -138,7 +139,7 @@ function TileImpl({ id, selected, solo, onSelect, onSolo, onRenamed }: Props) {
       {!isLive && inst.pinned !== "panic" && (
         <IconButton
           className="destroybtn"
-          title="destroy"
+          title={`destroy ${hintFor("destroy")}`}
           size="small"
           onClick={(e) => {
             e.stopPropagation();
@@ -250,6 +251,7 @@ function TileImpl({ id, selected, solo, onSelect, onSolo, onRenamed }: Props) {
         </Typography>
         <Button
           className="stagebtn"
+          title={`stage / unstage this tile ${hintFor("stage")}`}
           disabled={isLive}
           onClick={(e) => {
             e.stopPropagation();

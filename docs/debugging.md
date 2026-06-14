@@ -189,6 +189,27 @@ flow is what `validate:m2` asserts (DECISIONS.md SHIPPED entry: "forced bad save
 
 ## For the human (Console / browser)
 
+### Keyboard shortcuts & the `?` cheatsheet
+
+The Console has a real hotkey layer (feature: keyboard-shortcuts): one delegated
+`keydown` listener driven by a data-driven registry
+(`src/ui/console/keybindings.ts`), with a centralized typing guard (keys are
+ignored while focus is in an input/select/textarea/contenteditable) and scope
+resolution (an open popover/dialog wins; else global). **Press `?` to open the
+cheatsheet** — `src/ui/console/HotkeyCheatsheet.tsx`, the **canonical, always-current
+reference for every binding**. It renders the registry directly, so it can never
+drift: adding a binding adds a cheatsheet row for free (a unit test enforces the
+one-row-per-binding invariant). `?` or `Esc` (or a backdrop click) closes it.
+
+Highlights: `i` rack · `p` preview · `a` advanced params · `t` tap · `[`/`]`
+step LIVE · `j`/`k` (or ←/→) select tile · `f` solo · `s` stage/unstage · `u`
+unstage · `c`/`Enter` COMMIT (press-again to confirm) · `.`/`Shift+P` PANIC
+(no confirm — speed is the point) · `x`/`Del` destroy (press-again) · `Shift+S`
+self-capture. The **PerfOverlay toggle is now a registry hotkey (`d`)** like the
+others — folded into the keymap rather than a separate listener — so it appears
+in the cheatsheet and its tooltip hint stays in sync with the registry. Hotkeys
+are suspended while a MIDI-learn is armed and never fire while typing.
+
 ### FPS meters
 
 LOOM has three independent render rates, each with its own readout:

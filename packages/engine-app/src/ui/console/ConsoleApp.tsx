@@ -15,7 +15,12 @@ import { downloadConsoleCapture } from "../../console-capture";
 import { Disconnected } from "../Disconnected";
 import { useAvailableScenes, useConnected, useEngine, useEngineState, useHasSession, useInstanceIds } from "../hooks";
 import { countRender, fail } from "../util";
+import { toggleAdvanced } from "./advanced-store";
+import { HotkeyCheatsheet } from "./HotkeyCheatsheet";
 import { Header } from "./Header";
+import { KEYBINDINGS } from "./keybindings";
+import type { KeymapContext } from "./keymap";
+import { useKeymap } from "./keymap";
 import { ParamPanel } from "./ParamPanel";
 import { PerfOverlay } from "./PerfOverlay";
 import { PreviewMode } from "./PreviewMode";
@@ -106,6 +111,7 @@ export function ConsoleApp() {
   const [rackOpen, setRackOpen] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [perfOpen, setPerfOpen] = useState(false);
+  const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
   const [order, setOrder] = useState<string[]>(loadOrder);
   // Refs let the drag handler read the current ids/order without re-subscribing,
   // keeping its identity (and thus the DndContext value) stable across renders.
@@ -113,6 +119,10 @@ export function ConsoleApp() {
   idsRef.current = ids;
   const orderRef = useRef(order);
   orderRef.current = order;
+  // The keymap context getter (below) runs at keystroke time, not render time,
+  // so it reads the freshest selection/solo through refs rather than re-running.
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
 
   // Stable callbacks (FR-1): a fresh function identity every render would defeat
   // the memoized Tiles (their `onSelect`/`onSolo`/`onRenamed`/`onCreated` props),
@@ -167,28 +177,68 @@ export function ConsoleApp() {
     return () => window.clearTimeout(t);
   }, [allowEmbed, embed, connected]);
 
-  // Hotkeys — "i" toggles the rack, "p" toggles preview mode, "d" toggles the
-  // perf overlay, "s" downloads a self-capture of the cockpit (the same path the
-  // screenshot_console MCP tool exercises), Escape leaves preview/overlay. All
-  // ignore the human typing in a field (rename box, save dialog).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const t = e.target;
-      const typing =
-        t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement;
-      if (typing) return;
-      if (e.key === "i") setRackOpen((o) => !o);
-      else if (e.key === "p") setPreviewing((p) => !p);
-      else if (e.key === "d") setPerfOpen((o) => !o);
-      else if (e.key === "s") void downloadConsoleCapture().catch(fail);
-      else if (e.key === "Escape") {
+  // The visible tile order (for j/k tile navigation) — same ordering the grid
+  // renders, computed lazily at keystroke time.
+  const orderedIds = useCallback(
+    () =>
+      sortTiles(
+        idsRef.current.map((id) => ({ id })),
+        orderRef.current,
+      ).map((i) => i.id),
+    [],
+  );
+
+  // Hotkeys — the entire Console keymap is one delegated listener driven by the
+  // data-driven registry (keyboard-shortcuts FR-1/NFR-2). The context getter runs
+  // at keystroke time and reads the freshest engine state straight from the link
+  // (no re-render churn) and UI state through refs. `i`/`p`/`d`/`Esc`/`t` keep
+  // their exact prior behavior; the rest delegate to existing handlers (NFR-1).
+  const getKeymapContext = useCallback((): KeymapContext => {
+    const pointers = link.pointers();
+    const meta = link.meta();
+    const sel = selectedRef.current;
+    return {
+      req: (type, args = {}) => void link.req(type, args).catch(fail),
+      toggleRack: () => setRackOpen((o) => !o),
+      togglePreview: () => setPreviewing((p) => !p),
+      togglePerf: () => setPerfOpen((o) => !o),
+      toggleAdvanced,
+      closeTopPopover: () => true, // MUI's modal closes itself on Escape (passive)
+      leaveOverlays: () => {
         setPreviewing(false);
         setPerfOpen(false);
-      }
+      },
+      capture: () => void downloadConsoleCapture().catch(fail),
+      toggleCheatsheet: () => setCheatsheetOpen((o) => !o),
+      cheatsheetOpen,
+      selectStep: (dir) => {
+        const list = orderedIds();
+        if (list.length === 0) return;
+        const cur = selectedRef.current;
+        const i = cur != null ? list.indexOf(cur) : -1;
+        const next = i < 0 ? (dir > 0 ? 0 : list.length - 1) : (i + dir + list.length) % list.length;
+        setSelected(list[next] ?? null);
+      },
+      soloSelected: () => {
+        if (sel != null) onSolo(sel);
+      },
+      stageSelected: () => {
+        if (sel == null || sel === "globals") return;
+        const isStaged = pointers.staged === sel;
+        if (pointers.live === sel) return;
+        void link.req(isStaged ? "unstage" : "stage", isStaged ? {} : { instance: sel }).catch(fail);
+      },
+      destroySelected: () => {
+        if (sel == null || pointers.live === sel) return;
+        void link.req("destroy_instance", { instance: sel }).catch(fail);
+      },
+      selected: sel,
+      panicked: pointers.panicked,
+      staged: pointers.staged,
+      midiLearning: meta?.midi.learning != null,
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [link, cheatsheetOpen, onSolo, orderedIds]);
+  useKeymap(KEYBINDINGS, getKeymapContext);
 
   return (
     <Box
@@ -247,6 +297,7 @@ export function ConsoleApp() {
         />
       )}
       {perfOpen && <PerfOverlay onClose={() => setPerfOpen(false)} />}
+      {cheatsheetOpen && <HotkeyCheatsheet onClose={() => setCheatsheetOpen(false)} />}
       <Disconnected connected={connected} starting={embed} />
     </Box>
   );

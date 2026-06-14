@@ -2,6 +2,7 @@ import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Stack, Typo
 import { memo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useEngine, useInstance, useManifest, useStagePointers } from "../hooks";
 import { countRender, fail } from "../util";
+import { toggleAdvanced as toggleAdvancedStore, useAdvanced } from "./advanced-store";
 import { gatherChannels } from "./ColorChannels";
 import { FxChain } from "./FxChain";
 import { groupParams, splitRig } from "./param-groups";
@@ -32,7 +33,6 @@ const sectionGrid = {
 const GROUP_OPEN_KEY = "loom.pgroups.open";
 const PANEL_W_KEY = "loom.panelw";
 const PANEL_COLLAPSED_KEY = "loom.panelcollapsed";
-const SHOW_ADVANCED_KEY = "loom.params.advanced";
 
 function loadOpen(): Record<string, boolean> {
   try {
@@ -62,18 +62,9 @@ function ParamPanelImpl({ instance }: Props) {
   const inst = useInstance(instance ?? "");
   const pointers = useStagePointers();
   const [open, setOpen] = useState<Record<string, boolean>>(loadOpen);
-  const [showAdvanced, setShowAdvanced] = useState(() => localStorage.getItem(SHOW_ADVANCED_KEY) === "1");
-  const toggleAdvanced = () => {
-    setShowAdvanced((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem(SHOW_ADVANCED_KEY, next ? "1" : "0");
-      } catch {
-        // advanced visibility just won't persist across reloads
-      }
-      return next;
-    });
-  };
+  // Shared with the `a` hotkey (keyboard-shortcuts FR-4) via the advanced-store.
+  const showAdvanced = useAdvanced();
+  const toggleAdvanced = toggleAdvancedStore;
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(PANEL_COLLAPSED_KEY) === "1");
   const setCollapsedPersist = (next: boolean) => {
     setCollapsed(next);
