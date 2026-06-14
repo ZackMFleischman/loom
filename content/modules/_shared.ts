@@ -1,5 +1,5 @@
 import type { BuildCtx, ColorNode, FrameCtx, Pass, SignalLike, TexNode } from "@loom/runtime";
-import { dot, exp, float, floor, fract, int, ivec2, mix, screenSize, sin, texture, textureLoad, uniform, uv, vec2, vec3, vec4, vertexIndex } from "three/tsl";
+import { atan, cos, dot, exp, float, floor, fract, int, ivec2, length, mix, screenSize, sin, texture, textureLoad, uniform, uv, vec2, vec3, vec4, vertexIndex } from "three/tsl";
 import {
   AdditiveBlending,
   BufferAttribute,
@@ -61,6 +61,61 @@ export const fbm2 = (p: Node<"vec2">, octaves: number) => {
     amp *= 0.5;
   }
   return sum;
+};
+
+// ---------------------------------------------------------------------------
+// Vector-arcade geometry — a swappable shape vocabulary + neon-tube shading,
+// shared by the geometry-wars modules (warpGrid / vectorShip / enemySwarm /
+// particleBurst) so the protagonist and the enemies draw from one set of SDFs.
+// All take an aspect-corrected, shape-centered `p` (nose along +x) and return a
+// signed distance (negative inside). Real-ish SDFs (gradient ~1), good to glow.
+// ---------------------------------------------------------------------------
+
+/** Signed distance to a centered regular n-gon with inradius `r` (a flat edge faces +x). */
+export const polygonSdf = (p: Node<"vec2">, sides: number, r: Node<"float">): Node<"float"> => {
+  const n = Math.max(3, Math.round(sides));
+  const seg = (Math.PI * 2) / n;
+  const a = atan(p.y, p.x);
+  const k = floor(a.div(seg).add(0.5)).mul(seg).sub(a); // fold to nearest sector center
+  return cos(k).mul(length(p)).sub(r);
+};
+
+/**
+ * Spiky star / gear: a circle of radius `r` whose rim dips toward `r*(1-spike)`
+ * in `lobes` valleys — `spike` 0 = circle, 1 = sharp star. Cheap and robust
+ * (one atan), reads as a classic arcade "pinwheel" enemy.
+ */
+export const gearSdf = (p: Node<"vec2">, lobes: number, r: Node<"float">, spike: Node<"float">): Node<"float"> => {
+  const n = Math.max(3, Math.round(lobes));
+  const a = atan(p.y, p.x);
+  const teeth = cos(a.mul(n)).mul(0.5).add(0.5); // 0 at valley, 1 at tip
+  const rr = r.mul(float(1).sub(spike.mul(teeth)));
+  return length(p).sub(rr);
+};
+
+/**
+ * Neon-tube shading of any signed distance: a colored glowing body around the
+ * zero-isoline with a white-hot core, returned as a premultiplied vec4 (rgb
+ * already scaled by coverage) so it `over`-composites and adds straight into a
+ * bloom. `thickness` is the tube half-width in the same units as the SDF.
+ */
+export const neonStroke = (sdf: Node<"float">, thickness: Node<"float">, color: Node<"vec3">): Node<"vec4"> => {
+  const t = thickness.max(1e-4);
+  const fall = t.div(sdf.abs().add(t)); // 1 on the edge → 0 far away
+  const tube = fall.mul(fall);
+  const core = fall.pow(8); // white-hot pinpoint along the line
+  const rgb = color.mul(tube).add(vec3(core));
+  const a = tube.add(core).clamp(0, 1);
+  return vec4(rgb, a);
+};
+
+/** Round particle/glow blob: premultiplied vec4 falling off from a center at distance `d`. */
+export const glowDot = (d: Node<"float">, size: Node<"float">, color: Node<"vec3">): Node<"vec4"> => {
+  const s = size.max(1e-4);
+  const fall = s.div(d.add(s));
+  const g = fall.mul(fall);
+  const rgb = color.mul(g).add(vec3(fall.pow(10).mul(0.7)));
+  return vec4(rgb, g.clamp(0, 1));
 };
 
 /** Parse "#rrggbb" (or "#rgb"-less strict 6-digit) to 0..1 rgb floats. */

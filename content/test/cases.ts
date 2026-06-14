@@ -69,6 +69,12 @@ import { softServe } from "../modules/sources/softServe";
 import { sprinkles } from "../modules/sources/sprinkles";
 import { spriteSwarm } from "../modules/sources/spriteSwarm";
 import { starAnise } from "../modules/sources/starAnise";
+import { warpGrid } from "../modules/sources/warpGrid";
+import { vectorShip } from "../modules/sources/vectorShip";
+import { enemySwarm } from "../modules/sources/enemySwarm";
+import { particleBurst } from "../modules/sources/particleBurst";
+import { bullets } from "../modules/sources/bullets";
+import { warpField } from "../modules/sources/warpField";
 import { waffleCone } from "../modules/sources/waffleCone";
 import { video } from "../modules/sources/video";
 import { marble } from "../modules/sources/marble";
@@ -137,6 +143,12 @@ export const CASES: Record<string, ModuleCase> = {
   waffleCone: (ctx) => waffleCone(ctx, {}),
   spriteSwarm: (ctx) => spriteSwarm(ctx, { url: ASSET, cols: 3, rows: 2 }),
   starAnise: (ctx) => starAnise(ctx, { energy: ctx.input("kick") }),
+  warpGrid: (ctx) => warpGrid(ctx, { energy: ctx.input("kick") }),
+  vectorShip: (ctx) => vectorShip(ctx, { thrust: ctx.input("energy") }),
+  enemySwarm: (ctx) => enemySwarm(ctx, { count: 8, surge: ctx.input("kick") }),
+  particleBurst: (ctx) => particleBurst(ctx, { burst: ctx.input("kick") }),
+  bullets: (ctx) => bullets(ctx, { shots: [{ x: 0.5, y: 0.5, angle: 0, life: 1 }] }),
+  warpField: (ctx) => warpField(ctx, { emitters: [{ x: 0.5, y: 0.5, mass: 1, vx: 0.1 }] }),
   video: (ctx) => video(ctx, { url: CLIP }),
   render3d: (ctx) => render3d(ctx, { world: box(ctx, { spin: 0.5 }), cam: orbitCam(ctx, {}) }),
   solid: (ctx) => solid(ctx, { paletteStop: 2 }),
