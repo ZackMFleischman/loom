@@ -1,4 +1,4 @@
-import { defineScene, lagSignal, Signal } from "@loom/runtime";
+import { defineScene, Signal } from "@loom/runtime";
 import { bloom } from "../modules/effects/bloom";
 import { vignette } from "../modules/effects/vignette";
 import { differentialGrowth } from "../modules/geo/differentialGrowth";
@@ -35,7 +35,7 @@ export default defineScene({
     const vig = ctx.float("finish.vignette", { default: 0.55, min: 0, max: 1, step: 0.01, description: "corner darkening" });
 
     const kick = ctx.input("kick");
-    const bass = lagSignal(ctx.audio.band("bass"), 0.12);
+    const bass = ctx.input("bass");
 
     // Repulsion swells with the bass; split rate spurts on the kick.
     const repelBase = repel.signal();

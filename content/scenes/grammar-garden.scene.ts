@@ -1,4 +1,4 @@
-import { defineScene, lagSignal, Signal } from "@loom/runtime";
+import { defineScene, Signal } from "@loom/runtime";
 import { lfo } from "../modules/control/lfo";
 import { bloom } from "../modules/effects/bloom";
 import { vignette } from "../modules/effects/vignette";
@@ -25,7 +25,7 @@ export default defineScene({
       labels: ["plant", "bush", "koch", "dragon", "sierpinski"],
       description: "which grammar to grow (rebuilds)",
     });
-    const iterations = ctx.int("plant.iterations", { default: 5, min: 1, max: 6, step: 1, description: "rewrite generations (rebuilds)" });
+    const iterations = ctx.int("plant.iterations", { default: 5, min: 1, max: 11, step: 1, description: "rewrite generations — clamps to each preset's ceiling (plant 5 / koch·bush 4 / sierpinski 5 / dragon 11); rebuilds" });
     const angle = ctx.float("plant.angle", { default: 25, min: 5, max: 120, step: 0.5, description: "branch turn angle (deg)" });
     const sway = ctx.float("plant.sway", { default: 6, min: 0, max: 30, step: 0.5, description: "angle breathing amplitude (deg)" });
     const open = ctx.float("plant.open", { default: 10, min: 0, max: 40, step: 0.5, description: "bass widening of the angle (deg)" });
@@ -43,7 +43,7 @@ export default defineScene({
     const preset = presets[presetIdx.value] ?? "plant";
 
     const kick = ctx.input("kick");
-    const bass = lagSignal(ctx.audio.band("bass"), 0.12);
+    const bass = ctx.input("bass");
 
     // Angle = base + breathing LFO + bass opening.
     const angleBase = angle.signal();
