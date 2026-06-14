@@ -16,3 +16,4 @@ when its PR merges.
 | console-screenshot | #17 | `f9ac162` |
 | console-performance-stability | #24 | `8b99b02` |
 | validator-test-consolidation | #32 | `aa3dc38` |
+| loom-user-plugin | #35 | bdce009 |
