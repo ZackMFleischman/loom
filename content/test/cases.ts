@@ -82,6 +82,10 @@ import { sphere } from "../modules/geo/sphere";
 import { strangeAttractor } from "../modules/geo/strangeAttractor";
 import { torus } from "../modules/geo/torus";
 import { render3d } from "../modules/sources/render3d";
+import { lineRibbon } from "../modules/geo/lineRibbon";
+import { differentialGrowth } from "../modules/geo/differentialGrowth";
+import { lsystem } from "../modules/geo/lsystem";
+import { Vector3 } from "three/webgpu";
 import { blackInput, makeCtx, markerInput, type DiscoveredModule, type Harness } from "./harness";
 
 /**
@@ -156,6 +160,15 @@ export const CASES: Record<string, ModuleCase> = {
   flock: (ctx) => flock(ctx, { count: 40 }),
   flowParticles: (ctx) => flowParticles(ctx, { count: 200 }),
   displaceGeo: (ctx) => displaceGeo(ctx, { input: plane(ctx, { segments: 12 }), amount: ctx.input("bass") }),
+  // geo — family 3: ribbon / growth / grammars (append-only)
+  lineRibbon: (ctx) =>
+    lineRibbon(ctx, {
+      paths: () => [[new Vector3(-0.5, 0, 0), new Vector3(0, 0.5, 0), new Vector3(0.5, 0, 0)]],
+      width: ctx.input("bass"),
+    }),
+  differentialGrowth: (ctx) =>
+    differentialGrowth(ctx, { startNodes: 16, maxNodes: 200, repel: ctx.input("bass"), growth: ctx.input("kick") }),
+  lsystem: (ctx) => lsystem(ctx, { preset: "plant", iterations: 3, angle: ctx.input("bass"), reveal: ctx.input("kick") }),
   // effects
   colorize: (ctx, input) => colorize(ctx, { input }),
   feedback: (ctx, input) => feedback(ctx, { input }),
