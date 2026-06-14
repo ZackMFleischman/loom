@@ -1,5 +1,6 @@
 import { MeshBasicNodeMaterial, QuadMesh, type RenderTarget, type WebGPURenderer } from "./tsl";
 import { BuildCtx, type Updater } from "./buildctx";
+import { LOOP_GUARD_PREFIX } from "./loopguard-prefix";
 import type { FrameCtx } from "./frame";
 import type { AudioBusLike } from "./inputbus/audio";
 import type { TimeBus } from "./inputbus/time";
@@ -36,6 +37,39 @@ export class Instance {
    */
   static profilingEnabled = true;
 
+  /**
+   * Injected diagnostics sink (app-instrumentation). The kernel keeps NO engine
+   * dependency — like {@link Instance.profilingEnabled}, this is a static the
+   * engine sets at boot. Used to surface the NFR-2 render-time freeze as a
+   * structured event without importing the engine's ring. A no-op when unset
+   * (tests, headless kernel use) and WRAPPED at the call site so emit can never
+   * disturb the loop.
+   */
+  static diagSink: ((event: {
+    level: "info" | "warn" | "error";
+    kind: string;
+    instance?: string;
+    msg: string;
+    data?: Record<string, unknown>;
+  }) => void) | null = null;
+
+  /** Emit through {@link Instance.diagSink}, swallowing any error (NFR-1). */
+  private static emit(event: {
+    level: "info" | "warn" | "error";
+    kind: string;
+    instance?: string;
+    msg: string;
+    data?: Record<string, unknown>;
+  }): void {
+    const sink = Instance.diagSink;
+    if (sink == null) return;
+    try {
+      sink(event);
+    } catch {
+      // a broken sink must never break render
+    }
+  }
+
   private readonly material = new MeshBasicNodeMaterial();
   private readonly quad: QuadMesh;
 
@@ -71,6 +105,17 @@ export class Instance {
     } catch (err) {
       this.error = err;
       console.error(`[loom] instance "${this.sceneName}" froze (NFR-2 containment):`, err);
+      // Surface the freeze as a structured event (app-instrumentation). A loop
+      // guard trip is a distinct, high-value kind the agent should recognize.
+      const message = err instanceof Error ? err.message : String(err);
+      const isLoopGuard = err instanceof Error && err.message.startsWith(LOOP_GUARD_PREFIX);
+      Instance.emit({
+        level: "error",
+        kind: isLoopGuard ? "loopguard.tripped" : "instance.frozen",
+        instance: this.sceneName,
+        msg: `instance "${this.sceneName}" froze (NFR-2): ${message}`,
+        data: { error: message, frame: f.frame },
+      });
     }
     // CPU-side submit cost (GPU time is opaque here) — still the early-warning
     // meter for heavy scenes: stacked chains, geo worlds, particle pools.

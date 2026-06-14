@@ -17,6 +17,7 @@ import {
 } from "@loom/runtime";
 import { RenderTarget } from "three/webgpu";
 import type { InstanceStatus } from "@loom/sidecar/protocol";
+import { logDiag } from "./diagnostics";
 
 /** Offscreen resolution for non-live instances (tiles, candidate screenshots). */
 export const PREVIEW_W = 640;
@@ -32,6 +33,8 @@ export interface Entry {
   readonly target: RenderTarget;
   /** Last HMR rebuild for this instance was rejected (✗ chip). */
   lastUpdateRejected: boolean;
+  /** The build error from the last rejected rebuild (for diagnostics), else null. */
+  lastRebuildError: string | null;
   /** Run-time param modulators — per instance, surviving rebuilds (FR-3/FR-4). */
   readonly modulators: ModulatorHost;
   /** Post-effect chain — per instance, folded into every build (M6). */
@@ -128,6 +131,7 @@ export class SessionStore {
       def,
       target: new RenderTarget(PREVIEW_W, PREVIEW_H),
       lastUpdateRejected: false,
+      lastRebuildError: null,
       modulators: new ModulatorHost({ bpm: () => this.buses.time.bpm, audio: this.buses.audio }),
       chain,
       nodeChains,
@@ -205,10 +209,19 @@ export class SessionStore {
       e.lastUpdateRejected = false;
       e.builds += 1;
       e.modulators.reattach(e.instance.manifest); // FR-4: survive, orphan, or recover
+      e.lastRebuildError = null;
       return true;
     } catch (err) {
       e.lastUpdateRejected = true;
-      console.error(`[loom] rebuild of "${e.id}" (${def.name}) rejected; previous still running`, err);
+      const error = err instanceof Error ? err.message : String(err);
+      e.lastRebuildError = error;
+      logDiag({
+        level: "error",
+        kind: "instance.rejected",
+        instance: e.id,
+        msg: `rebuild of "${e.id}" (${def.name}) rejected; previous still running`,
+        data: { scene: def.name, error },
+      });
       return false;
     }
   }

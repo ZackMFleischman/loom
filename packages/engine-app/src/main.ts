@@ -24,6 +24,8 @@ import liveScene from "../../../content/scenes/live.scene";
 import { startBridge } from "./bridge";
 import { Compositor } from "./compositor";
 import { DebugSurface } from "./debug-surface";
+import { configureDiagnostics, diagOptionsFromQuery, logDiag } from "./diagnostics";
+import { PerfEvents } from "./perf-events";
 import { ProjectsController } from "./projects-controller";
 import { readTargetToDataUrl } from "./readback";
 import { startConsoleChannel } from "./console-channel";
@@ -44,6 +46,13 @@ const qs = new URLSearchParams(location.search);
 // Per-signal cost attribution is on by default (negligible overhead); `?profile=0`
 // opts out for the perf-paranoid. Surfaces as `slowSignals` in get_session.
 Instance.profilingEnabled = qs.get("profile") !== "0";
+
+// Structured diagnostics ring (app-instrumentation). `?diag=0` turns it off
+// (mirrors `?profile=0`); `?diag=<n>` sets a custom ring capacity. The kernel
+// emits the NFR-2 render freeze through an injected static sink — no engine
+// dependency in the runtime — wrapped so it can never throw into the loop.
+const diag = configureDiagnostics(diagOptionsFromQuery(qs.get("diag")));
+Instance.diagSink = (event) => diag.push(event);
 
 const canvas = document.querySelector<HTMLCanvasElement>("#out");
 const fpsEl = document.querySelector<HTMLElement>("#fps");
@@ -112,7 +121,13 @@ function tryDefineInputs(def: InputsDef): boolean {
     inputs.define(def);
     return true;
   } catch (err) {
-    console.error("[loom] content/inputs.ts rejected; keeping previous rack", err);
+    const error = err instanceof Error ? err.message : String(err);
+    logDiag({
+      level: "error",
+      kind: "inputs.rejected",
+      msg: "content/inputs.ts rejected; keeping previous rack",
+      data: { error },
+    });
     return false;
   }
 }
@@ -287,13 +302,37 @@ let bootId = "boot";
  * build/rebuild keeps whatever is running — never go black.
  */
 function trySwapLive(def: SceneDef): boolean {
-  if (session.get(bootId)) return session.rebuild(bootId, def);
+  if (session.get(bootId)) {
+    const ok = session.rebuild(bootId, def);
+    // The boot instance tracks live.scene.ts — a rejected hot-swap of the live
+    // scene is a SCENE rejection (the agent's most-needed causal event). The
+    // generic per-instance `instance.rejected` from session.rebuild stays for
+    // other instances; this is the live-scene-specific signal the loop awaits.
+    if (!ok) {
+      const error = session.get(bootId)?.lastRebuildError;
+      logDiag({
+        level: "error",
+        kind: "scene.rejected",
+        instance: bootId,
+        msg: `scene "${def?.name ?? "?"}" rejected; keeping previous`,
+        data: { scene: def?.name ?? null, error: error ?? "build rejected" },
+      });
+    }
+    return ok;
+  }
   try {
     session.create(def, bootId);
     if (stage.live === null) stage.adoptLive(bootId);
     return true;
   } catch (err) {
-    console.error(`[loom] scene "${def?.name ?? "?"}" rejected; keeping previous`, err);
+    const error = err instanceof Error ? err.message : String(err);
+    logDiag({
+      level: "error",
+      kind: "scene.rejected",
+      instance: bootId,
+      msg: `scene "${def?.name ?? "?"}" rejected; keeping previous`,
+      data: { scene: def?.name ?? null, error },
+    });
     return false;
   }
 }
@@ -311,7 +350,13 @@ async function startAudio(): Promise<void> {
   try {
     await audio.startMic();
   } catch (err) {
-    console.warn("[loom] mic unavailable; falling back to test signal", err);
+    const error = err instanceof Error ? err.message : String(err);
+    logDiag({
+      level: "warn",
+      kind: "audio.fallback",
+      msg: "mic unavailable; falling back to test signal",
+      data: { error },
+    });
     audio.startTest(timeBus.bpm);
   }
 }
@@ -440,6 +485,14 @@ trySwapLive(liveScene);
 // onset count, screenshot/preview queues). Its api hooks (captureLiveMirror /
 // tickPreview) read `api`, constructed just below — closures, called only
 // in-frame. Started in Boot 5.
+// Sampled + threshold-crossing perf events into the diagnostics ring (FR-3).
+const perfEvents = new PerfEvents(
+  diag,
+  session,
+  () => fps.current,
+  () => (document.hidden ? "worker" : "raf"),
+);
+
 const renderService = new RenderService({
   renderer,
   canvas,
@@ -457,12 +510,16 @@ const renderService = new RenderService({
   compositor,
   fps,
   debug,
+  perfEvents,
   captureLiveMirror: (mode) => api.captureLiveMirror(mode),
   tickPreview: (mode, currentFps) => api.tickPreview(mode, currentFps),
   previewRoute: () => api.previewRoute(),
   mirrorPreviewCanvas: () => api.mirrorPreviewCanvas(),
   workerInterval,
 });
+
+// Stamp every diagnostics event with the live frame + carry fps for query `now`.
+diag.bind(() => renderService.latestFrame.frame, () => fps.current);
 
 // Explicitly typed to break the renderService ↔ api ↔ debug closure cycle
 // (each references the others; one anchor type lets the rest infer).
@@ -482,6 +539,8 @@ const api: EngineApi = new EngineApi(
     latestFrame: () => renderService.latestFrame,
     captureCanvas: () => renderService.captureCanvas(),
     fps: () => fps.current,
+    clockSource: () => (document.hidden ? "worker" : "raf"),
+    worstFrameMsRecent: () => perfEvents.worstFrameMsRecent,
     rms: () => window.__loom?.rms ?? 0,
     onsetCount: () => renderService.onsetCount,
     currentMix: () => renderService.currentMix,
@@ -552,26 +611,42 @@ if (import.meta.hot) {
   // the instance (NFR-2). All three keep the previous pixels alive.
   import.meta.hot.accept("../../../content/scenes/live.scene", (mod) => {
     if (!mod?.default) {
-      console.warn("[loom] hot update carried no scene default export; keeping previous");
+      logDiag({
+        level: "warn",
+        kind: "scene.rejected",
+        instance: bootId,
+        msg: "hot update carried no scene default export; keeping previous",
+      });
       return;
     }
     const ok = trySwapLive(mod.default as SceneDef);
-    console.info(
-      ok
-        ? `[loom] scene hot-swapped: ${session.get(bootId)?.sceneName}`
-        : "[loom] scene rejected; previous still live",
-    );
+    // trySwapLive already emits scene.rejected on failure; emit the success here.
+    if (ok) {
+      const scene = session.get(bootId)?.sceneName;
+      logDiag({
+        level: "info",
+        kind: "scene.swapped",
+        instance: bootId,
+        msg: `scene hot-swapped: ${scene}`,
+        data: { scene: scene ?? null },
+      });
+    }
   });
 
   // The input rack hot-reloads like scenes: a bad inputs.ts is rejected and
   // the previous rack (with its tunings and detector state) keeps running.
   import.meta.hot.accept("../../../content/inputs", (mod) => {
     if (!mod?.default) {
-      console.warn("[loom] inputs hot update carried no default export; keeping previous rack");
+      logDiag({
+        level: "warn",
+        kind: "inputs.rejected",
+        msg: "inputs hot update carried no default export; keeping previous rack",
+      });
       return;
     }
     const ok = tryDefineInputs(mod.default as InputsDef);
-    console.info(ok ? "[loom] input rack redefined" : "[loom] inputs.ts rejected; previous rack still active");
+    // tryDefineInputs emits inputs.rejected on failure; emit the redefine here.
+    if (ok) logDiag({ level: "info", kind: "inputs.redefined", msg: "input rack redefined" });
   });
 
   // Any scene file edit bubbles through the barrel: rebuild only instances
@@ -588,16 +663,28 @@ if (import.meta.hot) {
       if (entry.id === bootId) continue; // owned by the live.scene accept above
       const def = map.get(entry.sceneName);
       if (!def) {
-        console.warn(`[loom] scene "${entry.sceneName}" removed; destroying instance "${entry.id}"`);
+        logDiag({
+          level: "warn",
+          kind: "instance.removed",
+          instance: entry.id,
+          msg: `scene "${entry.sceneName}" removed; destroying instance "${entry.id}"`,
+          data: { scene: entry.sceneName },
+        });
         stage.onInstanceDestroyed(entry.id);
         session.destroy(entry.id);
       } else if (def !== entry.def) {
         const ok = session.rebuild(entry.id, def);
-        console.info(
-          ok
-            ? `[loom] instance "${entry.id}" rebuilt (${def.name})`
-            : `[loom] instance "${entry.id}" rejected the update; previous still running`,
-        );
+        // session.rebuild emits instance.rejected on failure (via the sink below);
+        // emit the success here.
+        if (ok) {
+          logDiag({
+            level: "info",
+            kind: "instance.rebuilt",
+            instance: entry.id,
+            msg: `instance "${entry.id}" rebuilt (${def.name})`,
+            data: { scene: def.name },
+          });
+        }
       }
     }
   });
@@ -609,6 +696,6 @@ if (import.meta.hot) {
   import.meta.hot.accept("./effects", (mod) => {
     if (!mod?.getEffectLibrary) return;
     effectsLib = (mod.getEffectLibrary as typeof getEffectLibrary)();
-    console.info("[loom] effect library reloaded");
+    logDiag({ level: "info", kind: "effects.reloaded", msg: "effect library reloaded" });
   });
 }

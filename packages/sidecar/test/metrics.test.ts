@@ -42,4 +42,34 @@ describe("ToolMetrics", () => {
     m.record("set_param", { instance: "sandbox", path: "b", value: 2 }); // same as previous → 1 miss
     expect(m.summary().missedBatchable).toBe(1);
   });
+
+  it("builds a per-tool latency/outcome table with percentiles (FR-6)", () => {
+    const m = new ToolMetrics();
+    m.observe("set_param", 10, "ok");
+    m.observe("set_param", 20, "ok");
+    m.observe("set_param", 30, "error", "boom");
+    m.observe("screenshot", 100, "timeout", "timed out");
+
+    const table = m.latencyTable();
+    const sp = table.find((t) => t.tool === "set_param")!;
+    expect(sp.count).toBe(3);
+    expect(sp.ok).toBe(2);
+    expect(sp.error).toBe(1);
+    expect(sp.max).toBe(30);
+    expect(sp.lastError).toBe("boom");
+    expect(sp.p50).toBeGreaterThan(0);
+    expect(sp.p95).toBeGreaterThanOrEqual(sp.p50);
+
+    const ss = table.find((t) => t.tool === "screenshot")!;
+    expect(ss.timeout).toBe(1);
+    expect(ss.lastError).toBe("timed out");
+    // Sorted by call count, descending.
+    expect(table[0]!.tool).toBe("set_param");
+  });
+
+  it("observe() never throws", () => {
+    const m = new ToolMetrics();
+    expect(() => m.observe("x", Number.NaN, "ok")).not.toThrow();
+    expect(m.latencyTable().find((t) => t.tool === "x")?.count).toBe(1);
+  });
 });

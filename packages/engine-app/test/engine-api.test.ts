@@ -97,6 +97,8 @@ function world() {
     latestFrame: () => ({ frame: 0, now: 0, dt: 1 / 60 }),
     captureCanvas: () => Promise.reject(new Error("no canvas in tests")),
     fps: () => 60,
+    clockSource: () => "raf",
+    worstFrameMsRecent: () => 0,
     rms: () => 0,
     onsetCount: () => 0,
     currentMix: () => null,

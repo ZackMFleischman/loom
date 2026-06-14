@@ -56,6 +56,7 @@ function harness(directive: StageDirective = { mode: "single", live: "boot" }) {
     compositor: { render: tag("render")() },
     fps: { tick: tag("fps")(), current: 60 },
     debug: { update: tag("debug")() },
+    perfEvents: { tick: tag("perfEvents")() },
     captureLiveMirror: () => log.push("mirror"),
     tickPreview: () => log.push("preview-overlay"),
     previewRoute: () => null,
@@ -96,6 +97,7 @@ describe("RenderService.tick ordering", () => {
       "preview",
       "preview-done",
       "debug",
+      "perfEvents",
     ]);
   });
 

@@ -36,6 +36,8 @@ export interface RenderServiceDeps {
   compositor: Compositor;
   fps: FpsMeter;
   debug: DebugSurface;
+  /** Sampled + threshold perf events into the diagnostics ring (FR-3). */
+  perfEvents: { tick(frame: number): void };
   /** EngineApi hook: same-task canvas read for the live tile mirror. */
   captureLiveMirror: (mode: StageDirective["mode"]) => void;
   /** EngineApi hook: full-res preview overlay + fps auto-reduction ladder. */
@@ -220,5 +222,8 @@ export class RenderService {
     }
 
     d.debug.update(f, { onsetCount: this.onsets, currentMix: this.mix });
+    // Sampled + threshold-crossing perf events (FR-3). After debug.update so the
+    // frameMs/fps it samples are this frame's; itself wrapped to never throw.
+    d.perfEvents.tick(f.frame);
   }
 }
