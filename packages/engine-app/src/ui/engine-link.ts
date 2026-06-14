@@ -43,6 +43,13 @@ export type ChannelLike = {
   close(): void;
 };
 
+/**
+ * Handler for an engine→Console reverse request (the generic reverse-envelope
+ * primitive). Keyed by `op`; returns the response payload (resolved into the
+ * `console-response`). A throw becomes an `ok:false` response — never a hang.
+ */
+export type ConsoleOpHandler = (payload: Record<string, unknown>) => Promise<unknown> | unknown;
+
 export type EngineLinkOptions = {
   /** Per-tab request-id prefix so pages sharing the channel ignore each other's responses. */
   prefix: string;
@@ -50,6 +57,9 @@ export type EngineLinkOptions = {
   /** Frame scheduler for write coalescing (rAF in the browser). */
   schedule?: (cb: () => void) => void;
   now?: () => number;
+  /** Stable id announced in `hello` so the engine can address THIS Console
+   *  (most-recent-hello targeting). Defaults to the request-id prefix. */
+  consoleId?: string;
 };
 
 const HELLO_MS = 2000;
@@ -73,6 +83,10 @@ export class EngineLink {
   private readonly prefix: string;
   private readonly schedule: (cb: () => void) => void;
   private readonly now: () => number;
+  /** This Console's stable id, announced in `hello` for reverse-request targeting. */
+  readonly consoleId: string;
+  /** Reverse-request op handlers (engine→Console), keyed by op name. */
+  private readonly opHandlers = new Map<string, ConsoleOpHandler>();
 
   private seq = 0;
   private readonly pending = new Map<
@@ -98,6 +112,7 @@ export class EngineLink {
 
   constructor(opts: EngineLinkOptions) {
     this.prefix = opts.prefix;
+    this.consoleId = opts.consoleId ?? opts.prefix;
     // BroadcastChannel's DOM onmessage is typed for MessageEvent; ChannelLike
     // only needs `{ data }`. Structurally compatible at runtime — cast across.
     this.ch = opts.channel ?? (new BroadcastChannel("loom") as unknown as ChannelLike);
@@ -105,8 +120,10 @@ export class EngineLink {
     this.now = opts.now ?? (() => performance.now());
 
     this.ch.onmessage = (ev) => this.onMessage(ev.data);
-    this.ch.postMessage({ kind: "hello" });
-    this.timers.push(setInterval(() => this.ch.postMessage({ kind: "hello" }), HELLO_MS));
+    this.ch.postMessage({ kind: "hello", consoleId: this.consoleId });
+    this.timers.push(
+      setInterval(() => this.ch.postMessage({ kind: "hello", consoleId: this.consoleId }), HELLO_MS),
+    );
     this.timers.push(
       setInterval(() => {
         const connected = this.now() - this.lastStateAt < STALE_MS;
@@ -143,6 +160,20 @@ export class EngineLink {
     };
   };
   preview = (): PreviewFrame | null => this.previewFrame;
+
+  /**
+   * Register a handler for an engine→Console reverse-request op (the generic
+   * reverse-envelope primitive, NFR-2). The engine addresses this Console by id
+   * (most-recent hello) with `{ kind:"console-request", id, target, op, payload }`;
+   * the matching handler runs in THIS page and replies with `console-response`.
+   * Returns an unregister fn.
+   */
+  onConsoleOp(op: string, handler: ConsoleOpHandler): () => void {
+    this.opHandlers.set(op, handler);
+    return () => {
+      if (this.opHandlers.get(op) === handler) this.opHandlers.delete(op);
+    };
+  }
 
   req(type: string, args: Record<string, unknown> = {}): Promise<unknown> {
     const id = `${this.prefix}${++this.seq}`;
@@ -220,6 +251,34 @@ export class EngineLink {
     if (msg.kind === "preview") {
       this.previewFrame = msg.preview as PreviewFrame;
       for (const fn of this.previewListeners) fn();
+      return;
+    }
+    if (msg.kind === "console-request") {
+      // Engine→Console reverse request. Only answer when addressed to THIS
+      // Console (most-recent-hello targeting) so two open Consoles never race
+      // one id. A missing/throwing op handler becomes an ok:false response.
+      if (msg.target !== this.consoleId) return;
+      const id = msg.id as string;
+      const op = msg.op as string;
+      const payload = (msg.payload as Record<string, unknown> | undefined) ?? {};
+      void this.runConsoleOp(op, payload).then((res) => {
+        // `res` spreads to top-level `ok` + (`result` | `error`) — the exact keys
+        // the engine's console-channel reads off the response (msg.ok/result/error).
+        this.ch.postMessage({ kind: "console-response", id, consoleId: this.consoleId, ...res });
+      });
+    }
+  }
+
+  private async runConsoleOp(
+    op: string,
+    payload: Record<string, unknown>,
+  ): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
+    const handler = this.opHandlers.get(op);
+    if (handler == null) return { ok: false, error: `unknown console op "${op}"` };
+    try {
+      return { ok: true, result: await handler(payload) };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 

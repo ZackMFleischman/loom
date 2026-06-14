@@ -11,6 +11,7 @@ import {
 import { arrayMove } from "@dnd-kit/sortable";
 import { Box } from "@mui/material";
 import { useEffect, useRef, useState } from "react";
+import { downloadConsoleCapture } from "../../console-capture";
 import { Disconnected } from "../Disconnected";
 import { useEngine, useEngineState } from "../hooks";
 import { fail } from "../util";
@@ -94,8 +95,10 @@ export function ConsoleApp() {
     return () => window.clearTimeout(t);
   }, [allowEmbed, embed, connected]);
 
-  // Hotkeys — "i" toggles the rack, "p" toggles preview mode, Escape leaves
-  // preview. All ignore the human typing in a field (rename box, save dialog).
+  // Hotkeys — "i" toggles the rack, "p" toggles preview mode, "s" downloads a
+  // self-capture of the cockpit (the same path the screenshot_console MCP tool
+  // exercises — free human debugging), Escape leaves preview. All ignore the
+  // human typing in a field (rename box, save dialog).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target;
@@ -106,6 +109,7 @@ export function ConsoleApp() {
       if (typing) return;
       if (e.key === "i") setRackOpen((o) => !o);
       else if (e.key === "p") setPreviewing((p) => !p);
+      else if (e.key === "s") void downloadConsoleCapture().catch(fail);
       else if (e.key === "Escape") setPreviewing(false);
     };
     window.addEventListener("keydown", onKey);

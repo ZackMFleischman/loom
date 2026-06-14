@@ -29,6 +29,7 @@ export const RequestType = z.enum([
   "save_chain",
   "preview_effect",
   "screenshot",
+  "screenshot_console",
   "create_instance",
   "destroy_instance",
   "rename_instance",
@@ -760,6 +761,34 @@ export const ScreenshotResult = z.object({
   fps: z.number().default(0),
 });
 export type ScreenshotResult = z.infer<typeof ScreenshotResult>;
+
+/**
+ * `screenshot_console` args — capture the human's Console COCKPIT UI (tiles,
+ * badges, param panels, status bar), not instance pixels. No instance arg: it
+ * captures the page. `maxWidth` caps the PNG width (default 1280; the height
+ * scales to preserve aspect) to keep responses snappy; `maxWidth: 0` = native
+ * device-pixel resolution (NFR-3).
+ */
+export const ScreenshotConsoleArgs = z.object({
+  maxWidth: z.number().int().min(0).max(7680).optional(),
+});
+export type ScreenshotConsoleArgs = z.infer<typeof ScreenshotConsoleArgs>;
+
+/**
+ * `screenshot_console` result. Same image shape as `ScreenshotResult` but with
+ * `consoleId` (which Console answered — most-recent-hello targeting, FR-3) and
+ * no engine `frame`/`fps`: this is a DOM re-render in the Console page, not a
+ * read of the Output render loop. Fidelity is APPROXIMATE (FR-6).
+ */
+export const ScreenshotConsoleResult = z.object({
+  mime: z.literal("image/png"),
+  base64: z.string().min(1),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  /** The Console that produced this capture (stable across repeat calls). */
+  consoleId: z.string(),
+});
+export type ScreenshotConsoleResult = z.infer<typeof ScreenshotConsoleResult>;
 
 // ---- Diagnostics (app-instrumentation): the structured, queryable event log ----
 

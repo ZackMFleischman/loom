@@ -146,6 +146,39 @@ describe("EngineApi audience-safety gates", () => {
     await api.handleRequest(req("set_chain", { instance: "boot", steps: [] }), "agent");
   });
 
+  it("screenshot_console errors cleanly with no Console connected, and is agent-allowed (relay-only)", async () => {
+    const { api } = world();
+    // No requester wired (no Console channel) → the clean FR-3 error, not a crash.
+    await expect(api.handleRequest(req("screenshot_console"), "agent")).rejects.toThrow(
+      /no Console connected — open \/console\.html/,
+    );
+
+    // Wire a fake requester (what the Console channel injects): the engine is
+    // pure relay — it forwards the op + payload and returns the Console's reply.
+    const calls: Array<{ op: string; payload: Record<string, unknown> }> = [];
+    api.setConsoleRequester((op, payload) => {
+      calls.push({ op, payload });
+      return Promise.resolve({ mime: "image/png", base64: "AAAA", width: 1280, height: 720, consoleId: "c-1" });
+    });
+    const res = (await api.handleRequest(req("screenshot_console", { maxWidth: 640 }), "agent")) as {
+      consoleId: string;
+      width: number;
+    };
+    expect(calls).toEqual([{ op: "screenshot_console", payload: { maxWidth: 640 } }]);
+    expect(res.consoleId).toBe("c-1");
+    expect(res.width).toBe(1280);
+
+    // Omitted maxWidth → empty payload (the Console applies its own default).
+    await api.handleRequest(req("screenshot_console"), "agent");
+    expect(calls.at(-1)!.payload).toEqual({});
+  });
+
+  it("a reverse-request rejection (timeout/stall) surfaces as the tool error", async () => {
+    const { api } = world();
+    api.setConsoleRequester(() => Promise.reject(new Error("console did not answer")));
+    await expect(api.handleRequest(req("screenshot_console"), "agent")).rejects.toThrow(/console did not answer/);
+  });
+
   it("agent commit is gated; human-only verbs reject agents outright", async () => {
     const { api, session, stage } = world();
     session.create(scene, "boot");

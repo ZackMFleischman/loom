@@ -6,6 +6,8 @@ const STATE_MS = 100; // ~10 fps session state
 const THUMBS_MS = 150; // ~6.6 fps tile thumbnails
 const PREVIEW_MS = 120; // ~8 fps full-res preview overlay stream
 const PRESENCE_TIMEOUT_MS = 5000;
+/** Engine-side timeout for a reverse (engine→Console) request (FR-5). */
+const CONSOLE_REQUEST_TIMEOUT_MS = 3000;
 
 export type ConsoleChannelOpts = {
   /** This engine runs inside the Console's hidden iframe (solo mode). */
@@ -33,9 +35,50 @@ export function startConsoleChannel(api: EngineApi, opts: ConsoleChannelOpts = {
   let yielded = false;
   const consolePresent = () => performance.now() - lastHello < PRESENCE_TIMEOUT_MS;
 
+  // Reverse-envelope (engine→Console) state (Phase 2). `targetConsoleId` is the
+  // most-recently-hello'd Console — the one the performer just touched (decision
+  // #3). The pending map mirrors the bridge's: a correlation id → resolver, each
+  // with a ~3s timeout (FR-5) so a self-capture that throws or stalls becomes a
+  // clean tool error, never a hung request.
+  let targetConsoleId: string | null = null;
+  let reqSeq = 0;
+  const pending = new Map<
+    string,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >();
+
+  /**
+   * Generic engine→Console request (NFR-2 — not screenshot-specific): send
+   * `{ kind:"console-request", id, target, op, payload }` to the most-recent
+   * Console and resolve with its `console-response.result`. Rejects on the
+   * Console's error, on no Console connected, or on the timeout.
+   */
+  const requestConsole = (op: string, payload: Record<string, unknown> = {}): Promise<unknown> => {
+    if (yielded) return Promise.reject(new Error("engine has stood down"));
+    if (targetConsoleId == null || !consolePresent()) {
+      return Promise.reject(new Error("no Console connected — open /console.html"));
+    }
+    const id = `e${engineId}-${++reqSeq}`;
+    const target = targetConsoleId;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (pending.delete(id)) reject(new Error("console did not answer"));
+      }, CONSOLE_REQUEST_TIMEOUT_MS);
+      pending.set(id, { resolve, reject, timer });
+      ch.postMessage({ kind: "console-request", id, target, op, payload });
+    });
+  };
+  api.setConsoleRequester(requestConsole);
+
   const standDown = () => {
     if (yielded) return;
     yielded = true;
+    // Reject any in-flight reverse requests so callers don't hang on the timeout.
+    for (const { reject, timer } of pending.values()) {
+      clearTimeout(timer);
+      reject(new Error("engine has stood down"));
+    }
+    pending.clear();
     console.info("[loom] another engine is live on this origin — this one is standing down");
     opts.onYield?.();
   };
@@ -43,7 +86,16 @@ export function startConsoleChannel(api: EngineApi, opts: ConsoleChannelOpts = {
   ch.onmessage = (ev) => {
     const data: unknown = ev.data;
     if (typeof data !== "object" || data === null) return;
-    const msg = data as { kind?: string; engineId?: string; embedded?: boolean };
+    const msg = data as {
+      kind?: string;
+      engineId?: string;
+      embedded?: boolean;
+      consoleId?: string;
+      id?: string;
+      ok?: boolean;
+      result?: unknown;
+      error?: string;
+    };
     if (msg.kind === "state") {
       // Another engine broadcasting on this origin (BroadcastChannel never
       // echoes to the sender). Embedded engines defer to the Output window;
@@ -56,7 +108,27 @@ export function startConsoleChannel(api: EngineApi, opts: ConsoleChannelOpts = {
     if (yielded) return;
     if (msg.kind === "hello") {
       lastHello = performance.now();
+      // Target the most-recently-hello'd Console (decision #3). Older Consoles
+      // keep pinging too, but the last hello wins each round.
+      if (typeof msg.consoleId === "string") targetConsoleId = msg.consoleId;
       api.markConsolePresent(); // lets the render loop mirror the live canvas
+      return;
+    }
+    if (msg.kind === "console-response") {
+      // Reply to a reverse request we issued. Correlate by id ONLY (not by
+      // consoleId): ids are engine-prefixed + per-engine monotonic, so a reply
+      // can never correlate to a request this engine didn't mint. Correctness
+      // rests on that id-uniqueness, not on the responder matching the current
+      // target — a stale Console answering an in-flight id still resolves it,
+      // which is harmless for a read-only capture. Ignore stragglers.
+      const id = msg.id;
+      if (typeof id !== "string") return;
+      const p = pending.get(id);
+      if (p == null) return;
+      pending.delete(id);
+      clearTimeout(p.timer);
+      if (msg.ok) p.resolve(msg.result);
+      else p.reject(new Error(typeof msg.error === "string" ? msg.error : "console request failed"));
       return;
     }
     if (msg.kind === "req") {

@@ -42,8 +42,99 @@ describe("EngineLink", () => {
     vi.useRealTimers();
   });
 
-  it("says hello on construction (presence)", () => {
-    expect(page.sent).toContainEqual({ kind: "hello" });
+  it("says hello on construction (presence) carrying its consoleId", () => {
+    expect(page.sent).toContainEqual({ kind: "hello", consoleId: link.consoleId });
+  });
+
+  describe("reverse envelope (engine→Console requests)", () => {
+    it("runs the matching op handler and replies with console-response (addressed to this console)", async () => {
+      link.onConsoleOp("screenshot_console", (payload) => ({ shot: "png", echo: payload.maxWidth }));
+      const replies: unknown[] = [];
+      engine.onmessage = (ev) => {
+        const m = ev.data as { kind?: string };
+        if (m.kind === "console-response") replies.push(ev.data);
+      };
+      engine.postMessage({
+        kind: "console-request",
+        id: "e1",
+        target: link.consoleId,
+        op: "screenshot_console",
+        payload: { maxWidth: 640 },
+      });
+      await vi.waitFor(() => expect(replies).toHaveLength(1));
+      expect(replies[0]).toEqual({
+        kind: "console-response",
+        id: "e1",
+        consoleId: link.consoleId,
+        ok: true,
+        result: { shot: "png", echo: 640 },
+      });
+    });
+
+    it("ignores a request addressed to a DIFFERENT console (most-recent-hello targeting)", async () => {
+      const handler = vi.fn(() => ({ shot: "png" }));
+      link.onConsoleOp("screenshot_console", handler);
+      const replies: unknown[] = [];
+      engine.onmessage = (ev) => {
+        if ((ev.data as { kind?: string }).kind === "console-response") replies.push(ev.data);
+      };
+      engine.postMessage({
+        kind: "console-request",
+        id: "e2",
+        target: "some-other-console",
+        op: "screenshot_console",
+        payload: {},
+      });
+      await Promise.resolve();
+      expect(handler).not.toHaveBeenCalled();
+      expect(replies).toHaveLength(0);
+    });
+
+    it("replies ok:false for an unknown op", async () => {
+      const replies: Array<Record<string, unknown>> = [];
+      engine.onmessage = (ev) => {
+        const m = ev.data as Record<string, unknown>;
+        if (m.kind === "console-response") replies.push(m);
+      };
+      engine.postMessage({ kind: "console-request", id: "e3", target: link.consoleId, op: "nope", payload: {} });
+      await vi.waitFor(() => expect(replies).toHaveLength(1));
+      expect(replies[0]!.ok).toBe(false);
+      expect(String(replies[0]!.error)).toMatch(/unknown console op/);
+    });
+
+    it("maps a throwing handler to ok:false (never a hang)", async () => {
+      link.onConsoleOp("screenshot_console", () => {
+        throw new Error("rasterizer exploded");
+      });
+      const replies: Array<Record<string, unknown>> = [];
+      engine.onmessage = (ev) => {
+        const m = ev.data as Record<string, unknown>;
+        if (m.kind === "console-response") replies.push(m);
+      };
+      engine.postMessage({
+        kind: "console-request",
+        id: "e4",
+        target: link.consoleId,
+        op: "screenshot_console",
+        payload: {},
+      });
+      await vi.waitFor(() => expect(replies).toHaveLength(1));
+      expect(replies[0]!.ok).toBe(false);
+      expect(String(replies[0]!.error)).toMatch(/rasterizer exploded/);
+    });
+
+    it("onConsoleOp returns an unregister fn", async () => {
+      const off = link.onConsoleOp("op", () => "v");
+      off();
+      const replies: Array<Record<string, unknown>> = [];
+      engine.onmessage = (ev) => {
+        const m = ev.data as Record<string, unknown>;
+        if (m.kind === "console-response") replies.push(m);
+      };
+      engine.postMessage({ kind: "console-request", id: "e5", target: link.consoleId, op: "op", payload: {} });
+      await vi.waitFor(() => expect(replies).toHaveLength(1));
+      expect(replies[0]!.ok).toBe(false); // handler gone → unknown op
+    });
   });
 
   it("resolves a request with the matching ok response", async () => {

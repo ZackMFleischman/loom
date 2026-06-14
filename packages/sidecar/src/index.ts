@@ -21,6 +21,8 @@ import {
   SaveChainArgs,
   SaveProjectArgs,
   ScreenshotArgs,
+  ScreenshotConsoleArgs,
+  ScreenshotConsoleResult,
   ScreenshotFramesResult,
   ScreenshotResult,
   SetChainArgs,
@@ -315,6 +317,28 @@ const TOOLS = [
           type: "array",
           items: { type: "integer" },
           description: "Deterministic capture frames (fixture instances only, max 16).",
+        },
+      },
+    },
+  },
+  {
+    name: "screenshot_console",
+    description:
+      "Capture a PNG of the human's CONSOLE COCKPIT UI — tiles, LIVE/STAGED badges, param " +
+      "panels, status bar, stage strip — your eyes on the interface you're reasoning about " +
+      "(verify a staged badge shows, check param-panel layout, give concrete UX feedback). " +
+      "This is the Console PAGE, not instance pixels: for what the AUDIENCE sees use `screenshot`. " +
+      "FIDELITY IS APPROXIMATE — it's an in-page DOM re-render (SVG-foreignObject), not a " +
+      "compositor read: great for layout/state/feedback, NOT for pixel-perfect color work. " +
+      "Requires an open Console (errors 'no Console connected — open /console.html' otherwise); " +
+      "with multiple Consoles open it captures the most recently active one and returns its " +
+      "consoleId so repeat calls are comparable. maxWidth caps the width (default 1280; 0 = native).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        maxWidth: {
+          type: "integer",
+          description: "Cap the PNG width in px (height scales to aspect). Default 1280; 0 = native resolution.",
         },
       },
     },
@@ -629,6 +653,24 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           ],
         };
       }
+      case "screenshot_console": {
+        // Engine relays to the Console, which self-captures and replies. The
+        // engine-side reverse-request timeout (~3s) bounds it; give the WS leg a
+        // little headroom over that so the structured engine error surfaces
+        // ("console did not answer" / "no Console connected") rather than a WS timeout.
+        const parsed = ScreenshotConsoleArgs.parse(args);
+        const raw = await broker.request("screenshot_console", { ...parsed }, 8_000);
+        const shot = ScreenshotConsoleResult.parse(raw);
+        return {
+          content: [
+            { type: "image" as const, data: shot.base64, mimeType: shot.mime },
+            {
+              type: "text" as const,
+              text: JSON.stringify({ width: shot.width, height: shot.height, consoleId: shot.consoleId }),
+            },
+          ],
+        };
+      }
       case "create_instance": {
         const result = await broker.request(
           "create_instance",
@@ -714,6 +756,8 @@ function budgetFor(tool: string, args: Record<string, unknown>): number {
   switch (tool) {
     case "screenshot":
       return Array.isArray((args as { frames?: unknown }).frames) ? 30_000 : 10_000;
+    case "screenshot_console":
+      return 8_000;
     case "set_chain":
     case "create_instance":
       return 10_000;
@@ -755,7 +799,9 @@ function extractImages(result: unknown, images: ImageContent[]): unknown {
   const r = result as Record<string, unknown>;
   if (typeof r.base64 === "string" && r.mime === "image/png") {
     images.push({ type: "image", data: r.base64, mimeType: "image/png" });
-    return { width: r.width, height: r.height, frame: r.frame, fps: r.fps };
+    // screenshot → frame/fps; screenshot_console → consoleId. Echo whichever
+    // metadata the sub-result carried (the others are simply undefined).
+    return { width: r.width, height: r.height, frame: r.frame, fps: r.fps, consoleId: r.consoleId };
   }
   if (
     Array.isArray(r.frames) &&

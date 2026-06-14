@@ -32,6 +32,7 @@ import {
   SaveChainArgs,
   SaveProjectArgs,
   ScreenshotArgs,
+  ScreenshotConsoleArgs,
   SetAudioArgs,
   SetChainArgs,
   SetColorSpaceArgs,
@@ -209,6 +210,16 @@ export class EngineApi {
   /** Armed PANIC behavior; the human sets it from the Console (FR-1/FR-10). */
   armedPanicMode: PanicMode = "hold";
 
+  /**
+   * Reverse-envelope requester (engine→Console), injected by the Console
+   * channel. The engine is RELAY-ONLY (FR-7): it forwards an op to the
+   * most-recently-hello'd Console and awaits the reply. Null until the channel
+   * wires it (so the agent gets a clean "no Console" error, never a crash).
+   */
+  private consoleRequester:
+    | ((op: string, payload: Record<string, unknown>) => Promise<unknown>)
+    | null = null;
+
   // The live output's thumbnail source. The WebGL canvas is only readable in
   // the task that rendered it, so the render loop mirrors it in here (a 2D
   // canvas keeps its bitmap) and thumbnails() reads the mirror at leisure.
@@ -263,6 +274,11 @@ export class EngineApi {
 
   markConsolePresent(): void {
     this.consoleSeenAt = performance.now();
+  }
+
+  /** Wire the engine→Console reverse-request transport (Console channel owns it). */
+  setConsoleRequester(fn: (op: string, payload: Record<string, unknown>) => Promise<unknown>): void {
+    this.consoleRequester = fn;
   }
 
   /**
@@ -550,6 +566,19 @@ export class EngineApi {
         }
         if (this.isOnCanvas(e)) return this.deps.captureCanvas();
         return this.targetShot(e);
+      }
+      case "screenshot_console": {
+        // Relay-only (FR-7): the Console self-captures its own DOM in its own
+        // page/thread; the engine just forwards the op and returns the reply.
+        // Agent-allowed + read-only. The Console channel's pending-map timeout
+        // (FR-5) maps a stall to "console did not answer"; no Console connected
+        // maps to "no Console connected — open /console.html" (FR-3).
+        const { maxWidth } = ScreenshotConsoleArgs.parse(req.args);
+        if (this.consoleRequester == null) {
+          throw new Error("no Console connected — open /console.html");
+        }
+        const payload: Record<string, unknown> = maxWidth != null ? { maxWidth } : {};
+        return await this.consoleRequester("screenshot_console", payload);
       }
       case "create_instance": {
         const { scene, id, inputs } = CreateInstanceArgs.parse(req.args);

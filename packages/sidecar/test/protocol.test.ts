@@ -16,6 +16,8 @@ import {
   RequestMsg,
   ResponseMsg,
   SaveChainArgs,
+  ScreenshotConsoleArgs,
+  ScreenshotConsoleResult,
   SetChainArgs,
   SetParamArgs,
   SetParamsArgs,
@@ -26,7 +28,7 @@ describe("RequestMsg", () => {
   it("parses every request type", () => {
     const types = [
       "get_session", "get_manifest", "set_param", "set_params", "set_param_range", "modulate_param", "clear_modulation",
-      "screenshot", "create_instance", "destroy_instance", "stage", "unstage", "commit",
+      "screenshot", "screenshot_console", "create_instance", "destroy_instance", "stage", "unstage", "commit",
       "set_chain", "save_chain", "preview_effect",
       "panic", "resume", "set_transport", "arm_agent_commit",
       "midi_learn", "midi_unbind", "get_diagnostics", "batch",
@@ -199,6 +201,33 @@ describe("chain args (M6)", () => {
     expect(SaveChainArgs.parse({ name: "vhsStack" }).instance).toBe("live");
     expect(() => SaveChainArgs.parse({})).toThrow();
     expect(() => SaveChainArgs.parse({ name: "VHS Stack" })).toThrow();
+  });
+});
+
+describe("screenshot_console schemas (console-screenshot)", () => {
+  it("ScreenshotConsoleArgs takes an optional maxWidth (0 = native) and bounds it", () => {
+    expect(ScreenshotConsoleArgs.parse({})).toEqual({}); // maxWidth optional → default capture
+    expect(ScreenshotConsoleArgs.parse({ maxWidth: 0 }).maxWidth).toBe(0); // explicit native res
+    expect(ScreenshotConsoleArgs.parse({ maxWidth: 1280 }).maxWidth).toBe(1280);
+    expect(() => ScreenshotConsoleArgs.parse({ maxWidth: -1 })).toThrow();
+    expect(() => ScreenshotConsoleArgs.parse({ maxWidth: 1.5 })).toThrow();
+    expect(() => ScreenshotConsoleArgs.parse({ maxWidth: 99_999 })).toThrow();
+  });
+
+  it("ScreenshotConsoleResult carries the PNG, dims, and the answering consoleId", () => {
+    const r = ScreenshotConsoleResult.parse({
+      mime: "image/png",
+      base64: "iVBORw0KGgo=",
+      width: 1280,
+      height: 720,
+      consoleId: "c-abc123",
+    });
+    expect(r.mime).toBe("image/png");
+    expect(r.consoleId).toBe("c-abc123");
+    // Unlike a render screenshot, there's no engine frame/fps on a DOM capture.
+    expect("frame" in r).toBe(false);
+    expect(() => ScreenshotConsoleResult.parse({ mime: "image/png", base64: "x", width: 1, height: 1 })).toThrow(); // consoleId required
+    expect(() => ScreenshotConsoleResult.parse({ mime: "image/jpeg", base64: "x", width: 1, height: 1, consoleId: "c" })).toThrow();
   });
 });
 
