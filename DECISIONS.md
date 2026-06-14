@@ -1618,3 +1618,30 @@ surfaces lacked (what build/swap/freeze/perf event led to a number).
   true GPU `particleState` + additive accumulation for million-point silk.
 - Gates: `pnpm typecheck` green (80 modules, 38 scenes); `pnpm test` +
   `pnpm test:content` green (476 content). Stills via `shoot.mjs` (WebGL2).
+
+## 2026-06-14 — physarum: GPU slime-mold agents on a diffusing trail field (SHIPPED)
+
+- **`physarum`** (source): the first FULLY-GPU agent system — agents in a
+  ping-ponged HalfFloat position texture (rgba = posX, posY, heading), a
+  full-screen update quad senses the trail at L/C/R and steers, the trail field
+  is a second ping-pong (gentle 3×3 diffuse + decay), and moved agents are
+  deposited additively via an instanced `Points` pass whose `positionNode` does
+  `textureLoad(agentTex, vertexIndex→texel)`. No vertex-texture-fetch guesswork,
+  no shared `particleState` primitive (deferred — `simBuffer`'s per-pixel step
+  can't read agent positions for the deposit, so physarum owns its 4 passes
+  inline). Seeded in-shader (hash, no Math.random) + frame-clocked → fixture-safe.
+- **Real-WebGPU verification caught two backend bugs the WebGL2 fallback hid:**
+  (1) the deposit pass camera was a bare `Camera` — WebGPU's `_renderScene` calls
+  `updateProjectionMatrix` which only exists on `OrthographicCamera` (froze via
+  NFR-2 on WebGPU, rendered fine on WebGL2); (2) RT Y-orientation differs
+  (WebGL2 bottom-up, WebGPU top-down) so agents deposited Y-mirrored from where
+  they sensed and the network collapsed to horizontal bands — fixed with a
+  per-frame `depFlipY` uniform keyed off `renderer.backend.isWebGLBackend`.
+- **Tuning:** a full 1/9 box diffuse + high deposit over-reinforces into a few
+  fat channels; center-weighted diffuse (40% toward box avg) + low deposit (0.12)
+  + 768×432 grid yields the fine leaf-venation/neuron lattice. Scene `slime-veins`
+  (kick flares sensor splay + flashes deposit, bass breathes speed, `pickPalette`).
+- Gates: `pnpm typecheck` green (81 modules, 39 scenes); `pnpm test` +
+  `pnpm test:content` green (481 content). Verified on REAL WebGPU (headed system
+  Chrome, hardware adapter) — non-black, clean console, no NFR-2 freeze; stills
+  also via `shoot.mjs` (WebGL2). validate:stdlib runs WebGL2-only headless.
