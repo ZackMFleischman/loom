@@ -11,3 +11,5 @@ when its PR merges.
 | frontend-tests-coverage-gate | #10 | `f2e5952` |
 | docs-skills-audit | #9 | `e8b12d2` |
 | params-panel-alignment | #13 | `a2a2bd5` |
+| app-instrumentation | #14 | `47b858e` |
+| console-ui-refactor | #15 | `be4ffcf` |
