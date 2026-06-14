@@ -110,4 +110,109 @@ describe("EngineLink", () => {
     expect(writes.find((w) => w.args.path === "a")?.args.value).toBe(2);
     expect(writes.find((w) => w.args.path === "b")?.args.value).toBe(3);
   });
+
+  it("re-arms the flush after a frame: a later write schedules a new flush", () => {
+    link.sendParam("live", "a", 1);
+    expect(frames.length).toBe(1);
+    frames[0]!(); // flush #1
+    link.sendParam("live", "a", 9);
+    expect(frames.length).toBe(2); // a fresh flush is scheduled, not swallowed
+    frames[1]!();
+    const writes = page.sent.filter((m) => (m as { type?: string }).type === "set_param") as Array<{
+      args: { value: number };
+    }>;
+    expect(writes.at(-1)?.args.value).toBe(9);
+  });
+
+  it("correlates by request id — ignores a response addressed to another tab", async () => {
+    const other = new EngineLink({
+      prefix: "u-",
+      channel: engine, // shares the same engine end
+      schedule: (cb) => frames.push(cb),
+      now: () => Date.now(),
+    });
+    // The engine echoes whatever id it is asked, so each tab only matches its own.
+    engine.onmessage = (ev) => {
+      const m = ev.data as { id?: string; kind: string };
+      if (m.kind === "req") engine.postMessage({ id: m.id, kind: "res", ok: true, result: m.id });
+    };
+    await expect(link.req("stage", {})).resolves.toMatch(/^t-/);
+    other.dispose();
+  });
+
+  it("does not reject a request whose id never matches (pending stays until timeout)", async () => {
+    engine.onmessage = (ev) => {
+      const m = ev.data as { kind: string };
+      if (m.kind === "req") engine.postMessage({ id: "someone-else-7", kind: "res", ok: true });
+    };
+    const p = link.req("commit", {});
+    const expectation = expect(p).rejects.toThrow(/timed out/);
+    vi.advanceTimersByTime(5001);
+    await expectation;
+  });
+
+  it("emits repeated hello pings on the presence interval", () => {
+    const helloCount = () => page.sent.filter((m) => (m as { kind?: string }).kind === "hello").length;
+    const initial = helloCount();
+    vi.advanceTimersByTime(2000); // one HELLO_MS interval
+    expect(helloCount()).toBe(initial + 1);
+    vi.advanceTimersByTime(2000);
+    expect(helloCount()).toBe(initial + 2);
+  });
+
+  it("sends a param-range request straight out (skips coalescing)", async () => {
+    engine.onmessage = (ev) => {
+      const m = ev.data as { id: string; kind: string; type?: string };
+      if (m.kind === "req" && m.type === "set_param_range") {
+        engine.postMessage({ id: m.id, kind: "res", ok: true, result: { ok: true } });
+      }
+    };
+    await expect(link.sendParamRange("live", "size", { min: 0, max: 4 })).resolves.toEqual({ ok: true });
+    // No frame flush was scheduled by a range write.
+    expect(frames.length).toBe(0);
+    const ranges = page.sent.filter((m) => (m as { type?: string }).type === "set_param_range");
+    expect(ranges).toHaveLength(1);
+  });
+
+  it("delivers preview frames to preview subscribers only", () => {
+    const onPreview = vi.fn();
+    const onState = vi.fn();
+    link.subscribePreview(onPreview);
+    link.subscribe(onState);
+    const frame = { instance: "boot", width: 1, height: 1 };
+    engine.postMessage({ kind: "preview", preview: frame });
+    expect(onPreview).toHaveBeenCalledTimes(1);
+    expect(onState).not.toHaveBeenCalled();
+    expect(link.preview()).toEqual(frame);
+  });
+
+  it("ignores non-object and unknown-kind messages", () => {
+    const onState = vi.fn();
+    link.subscribe(onState);
+    engine.postMessage(null);
+    engine.postMessage(42);
+    engine.postMessage({ kind: "bogus" });
+    expect(onState).not.toHaveBeenCalled();
+  });
+
+  it("unsubscribes cleanly (listener stops receiving)", () => {
+    const onState = vi.fn();
+    const off = link.subscribe(onState);
+    engine.postMessage({ kind: "state", session: SESS, manifests: {} });
+    expect(onState).toHaveBeenCalledTimes(1);
+    off();
+    engine.postMessage({ kind: "state", session: SESS, manifests: {} });
+    expect(onState).toHaveBeenCalledTimes(1); // no further calls
+  });
+
+  it("dispose clears timers and closes the channel", () => {
+    const closed = vi.fn();
+    page.close = closed;
+    link.dispose();
+    expect(closed).toHaveBeenCalledTimes(1);
+    const helloBefore = page.sent.filter((m) => (m as { kind?: string }).kind === "hello").length;
+    vi.advanceTimersByTime(10000); // timers are gone — no new hellos
+    const helloAfter = page.sent.filter((m) => (m as { kind?: string }).kind === "hello").length;
+    expect(helloAfter).toBe(helloBefore);
+  });
 });

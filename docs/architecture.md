@@ -231,10 +231,25 @@ Per-package vitest roots, plain Node:
   Param clamping, Stage commit/panic/rename semantics, modulators, onset detection,
   input rack, palettes, MIDI bindings.
 - `packages/sidecar` — protocol schemas and MCP tool surface.
-- `packages/engine-app` — `EngineLink` (the Console↔engine channel client) against a
-  fake BroadcastChannel.
+- `packages/engine-app` — runs **two vitest projects** under one
+  `pnpm --filter @loom/engine-app test` (each its own environment): a `node` suite
+  (the pure-logic tests — `EngineLink` against a fake BroadcastChannel,
+  render-service, MIDI, projects…) and a `ui` suite (`happy-dom`) that exercises
+  the React `useSyncExternalStore` hooks in `src/ui/hooks.ts` with `renderHook`
+  over a fake `EngineLink`. testing-library + the DOM env are **devDependencies of
+  engine-app only** — they never enter the production Vite build.
 
 Run one file: `pnpm --filter @loom/runtime exec vitest run test/signal.test.ts`.
+
+**Coverage gate (`pnpm test:coverage`) — `packages/` only.** A v8 coverage run
+over `packages/*/src/**` with line/branch/function/statement thresholds set at a
+ratchet floor (= the current measured coverage; raise deliberately, never lower).
+The scope is **physically incapable of measuring `content/`**: the coverage
+`include` is `packages/*/src/**` and `content/**` is excluded outright
+(`vitest.coverage.shared.ts`), mirroring the packages-vs-content line in
+`biome.json`. The gate lives ONLY in `pnpm test:coverage` (and the CI `checks`
+job) — `pnpm test`, `pnpm typecheck`, and the MCP creative loop are untouched, so
+building visuals stays a single round-trip with no coverage step in the loop.
 
 ### 3. Stdlib content tests (`pnpm test:content`, ~3 s — chained into `pnpm test`)
 

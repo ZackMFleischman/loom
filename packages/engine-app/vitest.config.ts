@@ -1,17 +1,13 @@
-import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
+/**
+ * Engine-app runs TWO vitest projects under one `pnpm --filter @loom/engine-app
+ * test` (FR-6): the existing node logic suite and a DOM (happy-dom) React suite,
+ * each with its own environment + setup. Both are defined as standalone leaf
+ * configs so the root coverage config can reference them directly too.
+ */
 export default defineConfig({
   test: {
-    environment: "node",
-    include: ["test/**/*.test.ts"],
-  },
-  resolve: {
-    // Mirrors vite.config.ts — tests that exercise EngineApi import the
-    // protocol's VALUE schemas, so the alias must resolve at runtime too.
-    alias: {
-      "@loom/runtime": fileURLToPath(new URL("../runtime/src/index.ts", import.meta.url)),
-      "@loom/sidecar/protocol": fileURLToPath(new URL("../sidecar/src/protocol.ts", import.meta.url)),
-    },
+    projects: ["./vitest.node.config.ts", "./vitest.ui.config.ts"],
   },
 });
