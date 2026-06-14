@@ -12,6 +12,7 @@ Doc map (pull on demand, don't pre-read):
 - `docs/architecture.md` — how it's built: layout, kernel contracts, the "Testing & validation" section (all four test layers: when/why/how). **Read before changing `packages/`.**
 - `docs/requirements-v1.md` — what LOOM is; its §8 out-of-scope list is load-bearing.
 - `docs/roadmap.md` — what's shipped, what's next.
+- `docs/debugging.md` — instrumentation & debugging tooling: `get_diagnostics` + the perf rollup (agent), FPS meters / `window.__loom` / URL knobs / loop guard (human), the four test layers + coverage gate (developer).
 - `DECISIONS.md` — append-only decision log. Grep it when touching an unfamiliar subsystem; add an entry for non-obvious decisions; when milestone-level work ships, append a ≤6-line SHIPPED entry (date, gates run, deviations, stumbles).
 - `.claude/CLAUDE.md` + skills — the in-session visuals-agent guide (content/ territory).
 
