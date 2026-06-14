@@ -39,6 +39,29 @@ describe("groupParams", () => {
     expect(nodeIds.has("halo")).toBe(true);
     expect(parentOf.get("halo")).toBe("logo");
   });
+
+  it("hides params flagged hidden by default but counts them", () => {
+    const m: Record<string, ParamDesc> = {
+      speed: f(),
+      "input.bass.amount": { ...f(), hidden: true },
+      "input.kick.amount": { ...f(), hidden: true },
+    };
+    const { flat, groups, hiddenCount } = groupParams(m, []);
+    expect(flat.map(([p]) => p)).toEqual(["speed"]);
+    expect(groups.has("input")).toBe(false); // the auto trim group never renders
+    expect(hiddenCount).toBe(2);
+  });
+
+  it("reveals hidden params (and groups them) when includeHidden is set", () => {
+    const m: Record<string, ParamDesc> = {
+      speed: f(),
+      "input.bass.amount": { ...f(), hidden: true },
+    };
+    const { flat, groups, hiddenCount } = groupParams(m, [], true);
+    expect(flat.map(([p]) => p)).toEqual(["speed"]);
+    expect(groups.get("input")!.map(([p]) => p)).toEqual(["input.bass.amount"]);
+    expect(hiddenCount).toBe(1); // still reported so the toggle stays available
+  });
 });
 
 describe("splitRig", () => {

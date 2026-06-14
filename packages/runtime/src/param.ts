@@ -32,6 +32,13 @@ const RangedSpec = z
      * you never select a palette by number to discover its colors (R7.3).
      */
     swatches: z.array(z.array(z.string().refine((s) => HEX_RE.test(s.trim()), 'swatch stops must be "#rrggbb"')).min(2)).optional(),
+    /**
+     * Drop this param from the default Console params box (it stays fully live —
+     * persisted, MIDI-bindable, modulatable, set_param-able — and is revealed by
+     * the panel's "advanced" toggle). For machinery a scene never asked for, like
+     * the auto-declared per-instance input trim (`input.<name>.amount`).
+     */
+    hidden: z.boolean().optional(),
     description: z.string().optional(),
   })
   .refine((s) => s.min <= s.max, { message: "min must be <= max" })

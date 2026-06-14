@@ -621,6 +621,9 @@ export const ParamDescriptor = z.looseObject({
   default: z.union([z.number(), z.boolean(), z.string()]),
   /** Value names for int selectors (palette.source) — UI renders a toggle. */
   labels: z.array(z.string()).optional(),
+  /** Hidden from the default params box (e.g. the auto-added input trim); still
+   *  fully live (set_param, MIDI, modulators). The Console's advanced toggle reveals it. */
+  hidden: z.boolean().optional(),
   /** Active modulator config, or null when the param is hand-driven (FR-8). */
   modulator: z.record(z.string(), z.unknown()).nullable().optional(),
   /** Author-declared [min, max] — present only when the live range was widened/narrowed. */
