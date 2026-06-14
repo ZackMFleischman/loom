@@ -4,73 +4,32 @@
 // persisted via the loom:state middleware, and bindable to (mocked) MIDI CCs
 // through learn. Runs with state persistence ON â€” content/state/ is
 // snapshotted and restored around the run.
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { execSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
-import { glArgs, forceWebGL2, resQuery } from "./_browser.mjs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  ROOT,
+  ARTIFACTS,
+  STATE_DIR,
+  bootStack,
+  makeResults,
+  sleep,
+  toolJson,
+  callOk,
+  waitFor,
+  waitForFps,
+  backupState,
+  restoreState,
+} from "./_harness.mjs";
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const ARTIFACTS = join(ROOT, "artifacts");
-const SCENE = join(ROOT, "content", "scenes", "live.scene.ts");
 const INPUTS = join(ROOT, "content", "inputs.ts");
-const STATE_DIR = join(ROOT, "content", "state");
 const PORT = 5202;
 const WS_PORT = 7345;
-// State persistence stays ON here (no state=off) â€” it's under test.
-const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}${resQuery}`;
+// State persistence stays ON here (no state=off) — it's under test.
+const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}`;
 // embed=0: validator consoles must never spawn an embedded engine (it would dial the default sidecar port).
 const CONSOLE_URL = `http://localhost:${PORT}/console.html?embed=0`;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const results = [];
-function check(name, ok, detail = "") {
-  results.push({ name, ok });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` â€” ${detail}` : ""}`);
-}
-
-async function waitForServer(url, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {}
-    await sleep(250);
-  }
-  throw new Error(`dev server did not come up at ${url}`);
-}
-
-function toolJson(res) {
-  const text = res.content?.find((c) => c.type === "text")?.text ?? "";
-  return JSON.parse(text);
-}
-
-async function callOk(client, name, args = {}) {
-  const res = await client.callTool({ name, arguments: args });
-  if (res.isError) throw new Error(`${name} failed: ${res.content?.[0]?.text}`);
-  return res;
-}
-
-async function waitFor(fn, timeoutMs = 10_000, label = "condition") {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(100);
-  }
-  throw new Error(`timed out waiting for ${label}`);
-}
-
-const waitForFps = (page) =>
-  page.waitForFunction(
-    () => /\d+ fps/.test(document.querySelector("#fps")?.textContent ?? ""),
-    null,
-    { timeout: 20_000 },
-  );
+const { results, check } = makeResults();
 
 /** Sample window.__loom.inputs[name] on the output page for windowMs. */
 async function sampleChannel(page, name, windowMs, stepMs = 80) {
@@ -83,77 +42,28 @@ async function sampleChannel(page, name, windowMs, stepMs = 80) {
   return samples;
 }
 
-// ---- pin the scene, snapshot tuned state, keep originals for restore ----
-const PULSE_PIN = `export { default } from "./pulse.scene";\n`;
-const originalScene = readFileSync(SCENE, "utf8");
+// ---- snapshot tuned state (persistence is under test) + back up inputs.ts ----
 const originalInputs = readFileSync(INPUTS, "utf8");
-writeFileSync(SCENE, PULSE_PIN);
+const stateBackup = backupState();
+restoreState(new Map()); // pristine state for the run
 
-const stateBackup = new Map();
-if (existsSync(STATE_DIR)) {
-  for (const rel of readdirSync(STATE_DIR, { recursive: true })) {
-    const file = join(STATE_DIR, String(rel));
-    if (file.endsWith(".json")) stateBackup.set(String(rel), readFileSync(file, "utf8"));
-  }
-}
-rmSync(STATE_DIR, { recursive: true, force: true }); // pristine state for the run
-mkdirSync(ARTIFACTS, { recursive: true });
-
-const vite = spawn("pnpm", ["exec", "vite", "--port", String(PORT), "--strictPort"], {
-  cwd: join(ROOT, "packages", "engine-app"),
-  shell: true,
-  stdio: ["ignore", "pipe", "pipe"],
-  windowsHide: true,
-});
-vite.stdout.on("data", (d) => process.stdout.write(`[vite] ${d}`));
-vite.stderr.on("data", (d) => process.stderr.write(`[vite] ${d}`));
-let viteExit = null;
-vite.on("exit", (code) => {
-  viteExit = code ?? -1;
-});
-
-let browser;
-let client;
+const T_START = Date.now();
+let tChecks = T_START;
+let teardown = async () => {};
 try {
-  await Promise.race([
-    waitForServer(`http://localhost:${PORT}/`),
-    (async () => {
-      while (viteExit === null) await sleep(200);
-      throw new Error(`vite exited early (code ${viteExit}) â€” is port ${PORT} already in use?`);
-    })(),
-  ]);
-
-  client = new Client({ name: "validate-m5", version: "0.0.0" });
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: ["--import", "tsx", "packages/sidecar/src/index.ts"],
-    cwd: ROOT,
-    env: { ...process.env, LOOM_WS_PORT: String(WS_PORT) },
-    stderr: "pipe",
+  const boot = await bootStack({
+    name: "validate-m5",
+    port: PORT,
+    wsPort: WS_PORT,
+    url: OUTPUT_URL,
+    stateMode: "on",
+    fakeMedia: true,
   });
-  await client.connect(transport);
-  transport.stderr?.on("data", (d) => process.stderr.write(`[sidecar] ${d}`));
-
-  browser = await chromium.launch({
-    headless: true,
-    args: [
-      ...glArgs,
-      "--autoplay-policy=no-user-gesture-required",
-      "--use-fake-device-for-media-stream",
-      "--use-fake-ui-for-media-stream",
-    ],
-  });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  await forceWebGL2(context);
-  const output = await context.newPage();
+  teardown = boot.teardown;
+  const { client, context, output } = boot;
   const consoleMsgs = [];
   output.on("console", (m) => consoleMsgs.push(m.text()));
-  await output.goto(OUTPUT_URL);
-  await waitForFps(output);
-  await waitFor(async () => {
-    const res = await client.callTool({ name: "get_session", arguments: {} });
-    return res.isError ? null : toolJson(res);
-  }, 15_000, "engine to connect to sidecar");
+  tChecks = Date.now();
 
   // 1. The globals pseudo-instance serves the rack's manifest over MCP.
   const globals = toolJson(await callOk(client, "get_manifest", { instance: "globals" }));
@@ -491,23 +401,14 @@ try {
 } catch (err) {
   check("validation run completed", false, String(err));
 } finally {
-  // Kill the engine BEFORE restoring state: a still-alive page can flush a
-  // late debounced save and recreate files after the restore.
-  if (client) await client.close().catch(() => {});
-  if (browser) await browser.close();
-  if (process.platform === "win32") {
-    try { execSync(`taskkill /pid ${vite.pid} /T /F`, { stdio: "ignore" }); } catch {}
-  } else {
-    vite.kill("SIGTERM");
-  }
-  writeFileSync(SCENE, originalScene);
+  console.log(
+    `[timing] m5 boot=${((tChecks - T_START) / 1000).toFixed(1)}s checks=${((Date.now() - tChecks) / 1000).toFixed(1)}s`,
+  );
+  // teardown() kills the engine + restores the pinned scene BEFORE we restore
+  // state (a still-alive page can flush a late debounced save after the restore).
+  await teardown();
   writeFileSync(INPUTS, originalInputs);
-  rmSync(STATE_DIR, { recursive: true, force: true });
-  for (const [rel, content] of stateBackup) {
-    const file = join(STATE_DIR, rel);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, content);
-  }
+  restoreState(stateBackup);
 }
 
 const failed = results.filter((r) => !r.ok);
