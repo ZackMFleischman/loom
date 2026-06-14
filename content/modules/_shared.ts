@@ -1,5 +1,5 @@
 import type { BuildCtx, ColorNode, FrameCtx, Pass, SignalLike, TexNode } from "@loom/runtime";
-import { screenSize, texture, uniform, uv, vec2 } from "three/tsl";
+import { dot, float, floor, fract, mix, screenSize, sin, texture, uniform, uv, vec2 } from "three/tsl";
 import {
   ClampToEdgeWrapping,
   HalfFloatType,
@@ -27,6 +27,34 @@ import {
  * an explicit `aspect` opt instead.
  */
 export const surfaceAspect = () => screenSize.x.div(screenSize.y);
+
+/** Lattice hash 0..1 from a vec2 node — the seed for value noise. */
+export const valueHash2 = (p: Node<"vec2">) => fract(sin(dot(p, vec2(127.1, 311.7))).mul(43758.5453));
+
+/** Bilinear value noise in 0..1 (smoothstep-interpolated hash lattice). */
+export const valueNoise2 = (p: Node<"vec2">) => {
+  const i = floor(p);
+  const f = fract(p);
+  const u = f.mul(f).mul(f.mul(-2).add(3)); // smoothstep weights
+  const a = valueHash2(i);
+  const b = valueHash2(i.add(vec2(1, 0)));
+  const c = valueHash2(i.add(vec2(0, 1)));
+  const d = valueHash2(i.add(vec2(1, 1)));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+};
+
+/** Fractal value-noise sum in ~0..1 over `octaves` (compile-time). Shared by marble/marbleWarp. */
+export const fbm2 = (p: Node<"vec2">, octaves: number) => {
+  let sum: Node<"float"> = float(0);
+  let amp = 0.5;
+  let freq = 1;
+  for (let i = 0; i < octaves; i++) {
+    sum = sum.add(valueNoise2(p.mul(freq)).mul(amp));
+    freq *= 2;
+    amp *= 0.5;
+  }
+  return sum;
+};
 
 /** Parse "#rrggbb" (or "#rgb"-less strict 6-digit) to 0..1 rgb floats. */
 export function parseHex(c: string, fallback = 0xffffff): [number, number, number] {

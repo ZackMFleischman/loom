@@ -1,12 +1,14 @@
 # Particle & agent systems — flow, flocking, attractors, slime mold (post-v1 candidates)
 
-**Status:** PARTIALLY SHIPPED. **`strangeAttractor`** shipped (geo module,
-scene `attractor-cloud`) — but via a simpler route than this doc's
-`particleState`: the trajectory is integrated CPU-side into a vertex buffer and
-drawn through the existing `pointCloud` + `render3d` path (no GPU particle-state
-texture, no accumulation buffer). **`flowParticles`, `flock`, `physarum`** —
-and the `particleState`/accumulation primitive they'd share — remain open.
-Sibling family to `gpu-field-simulations.md`.
+**Status:** MOSTLY SHIPPED — via a simpler route than this doc's GPU
+`particleState`: agents simulated **CPU-side** each frame, drawn through the
+existing `render3d` + `InstancedMesh` path (seeded + frame-clocked, no GPU
+particle-state texture, no accumulation buffer). Shipped: **`strangeAttractor`**
+(scene `attractor-cloud`), **`flock`** (boids, scene `flock-swarm`),
+**`flowParticles`** (ABC-flow advection, scene `flow-field`). **`physarum`**
+(agents writing a diffusing trail field — genuinely wants the GPU route) remains
+open, as does a real `particleState`/additive-accumulation primitive for the
+million-point "silk" looks. Sibling family to `gpu-field-simulations.md`.
 
 ## The opportunity
 
@@ -38,19 +40,20 @@ instance buffers (or fixture offline passes silently freeze), frame-clock only.
 
 ## The systems
 
-### `flowParticles` — curl-noise advection (silky smoke streams)
-Positions advected by a **divergence-free curl-noise** field (curl of an fbm
-potential → no sources/sinks → streamlines that never clump). Respawn on
-lifetime; render as additive points with a faded trail. Distinct from the
-static `noiseField` texture — this is the *motion*. Audio scales field force /
-scale / spawn rate. Reuses `particleState` + accumulation directly.
+### `flowParticles` — flow-field advection ✅ SHIPPED (silky streams)
+Shipped CPU-side: positions advected through an **ABC (Arnold–Beltrami–
+Childress) flow** — a closed-form divergence-free field — so streamlines never
+clump; respawn on lifetime, drawn as glowing instanced octahedra via
+`render3d`. Bass drives flow speed (scene `flow-field`). A future GPU
+`particleState` version could swap ABC for true curl-of-fbm noise and add the
+additive-trail "silk" pass for huge counts.
 
-### `flock` — boids (separation / alignment / cohesion)
-Legible swarm motion. Naive neighbour search is O(n²); for v1 a few-hundred-agent
-**CPU** flock feeding an instanced sprite renderer (the `spriteSwarm` path) is
-honest and cheap, with a GPU spatial-hash version as a later upgrade. Energy
-widens cohesion, the kick scatters the flock. Ships as a GeoNode (instanced) or
-a 2D overlay source.
+### `flock` — boids ✅ SHIPPED
+Shipped CPU-side: separation / alignment / cohesion over a ~240-agent flock
+(O(n²) neighbour search), drawn as oriented cones (each points along its
+heading) via `render3d`. The three weights ride live as signals; bass gathers
+the flock, kick flares the bloom (scene `flock-swarm`). A GPU spatial-hash
+upgrade for larger counts remains a later option.
 
 ### `attractor` — strange-attractor point cloud ✅ SHIPPED (as `strangeAttractor`)
 Shipped the geometry-first route: the chaotic ODE (Lorenz/Aizawa/Thomas/

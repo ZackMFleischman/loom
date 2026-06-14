@@ -1,9 +1,9 @@
 # Domain-warp marble — iterated fbm warping (post-v1 candidate)
 
-**Status:** SOURCE SHIPPED — `marble` (grayscale iterated domain warp, scene
-`marble-slab`). The chainable **effect** face (warp an input's UVs by the same
-field, via `bufferPass`) remains the open item. Pure shader, no state — the
-cheapest of the brainstorm batch.
+**Status:** SHIPPED (both faces). `marble` (source, grayscale iterated domain
+warp, scene `marble-slab`) and `marbleWarp` (chainable effect — warps an
+input's UVs by the same field via `bufferPass`, scene `marble-warp`). Both
+share `fbm2` in `content/modules/_shared.ts`. Pure shader, no state.
 
 ## The gap
 

@@ -1,7 +1,6 @@
 import { asSignal, BuildCtx, defineModule, integrateSignal, texNode, type SignalLike, type TexNode } from "@loom/runtime";
-import { dot, float, floor, fract, mix, sin, uv, vec2, vec4 } from "three/tsl";
-import { type Node } from "three/webgpu";
-import { surfaceAspect } from "../_shared";
+import { uv, vec2, vec4 } from "three/tsl";
+import { fbm2, surfaceAspect } from "../_shared";
 
 export interface MarbleOpts {
   /** Field scale (bigger = finer veining). */
@@ -15,21 +14,6 @@ export interface MarbleOpts {
   /** Output contrast into the palette ramp. */
   contrast?: SignalLike;
 }
-
-/** value-noise hash 0..1 from a vec2 node. */
-const hash = (p: Node<"vec2">) => fract(sin(dot(p, vec2(127.1, 311.7))).mul(43758.5453));
-
-/** Bilinear value noise in 0..1 (smoothstep-interpolated lattice). */
-const vnoise = (p: Node<"vec2">) => {
-  const i = floor(p);
-  const f = fract(p);
-  const u = f.mul(f).mul(f.mul(-2).add(3)); // smoothstep weights
-  const a = hash(i);
-  const b = hash(i.add(vec2(1, 0)));
-  const c = hash(i.add(vec2(0, 1)));
-  const d = hash(i.add(vec2(1, 1)));
-  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-};
 
 /**
  * Iterated domain-warp "marble": fractal noise warped by fractal noise warped
@@ -55,19 +39,8 @@ export const marble = defineModule(
     const contrast = ctx.uniformOf(opts.contrast ?? 1.1);
     const t = ctx.uniformOf(integrateSignal(asSignal(opts.evolve ?? 0.1)));
 
-    const fbm = (p: Node<"vec2">) => {
-      let sum: Node<"float"> = float(0);
-      let amp = 0.5;
-      let freq = 1;
-      for (let i = 0; i < oct; i++) {
-        sum = sum.add(vnoise(p.mul(freq)).mul(amp));
-        freq *= 2;
-        amp *= 0.5;
-      }
-      return sum;
-    };
-
     const p = uv().sub(0.5).mul(vec2(surfaceAspect(), 1)).mul(scale.max(0.1));
+    const fbm = (q: Parameters<typeof fbm2>[0]) => fbm2(q, oct);
 
     // Two-level domain warp (IQ pattern), the inner level drifting on the clock.
     const q = vec2(fbm(p.add(vec2(0, 0))), fbm(p.add(vec2(5.2, 1.3)).add(t)));

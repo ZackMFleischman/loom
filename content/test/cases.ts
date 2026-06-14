@@ -69,7 +69,10 @@ import { starAnise } from "../modules/sources/starAnise";
 import { waffleCone } from "../modules/sources/waffleCone";
 import { video } from "../modules/sources/video";
 import { marble } from "../modules/sources/marble";
+import { marbleWarp } from "../modules/effects/marbleWarp";
 import { box } from "../modules/geo/box";
+import { flock } from "../modules/geo/flock";
+import { flowParticles } from "../modules/geo/flowParticles";
 import { model } from "../modules/geo/model";
 import { orbitCam } from "../modules/geo/orbitCam";
 import { particleEmitter } from "../modules/geo/particleEmitter";
@@ -146,6 +149,8 @@ export const CASES: Record<string, ModuleCase> = {
   tube: (ctx) => tube(ctx, { glow: ctx.input("kick") }),
   pointCloud: (ctx) => pointCloud(ctx, { source: plane(ctx, { segments: 12 }) }),
   strangeAttractor: (ctx) => strangeAttractor(ctx, { kind: "lorenz", points: 2000 }),
+  flock: (ctx) => flock(ctx, { count: 40 }),
+  flowParticles: (ctx) => flowParticles(ctx, { count: 200 }),
   displaceGeo: (ctx) => displaceGeo(ctx, { input: plane(ctx, { segments: 12 }), amount: ctx.input("bass") }),
   // effects
   colorize: (ctx, input) => colorize(ctx, { input }),
@@ -164,6 +169,7 @@ export const CASES: Record<string, ModuleCase> = {
   bloom: (ctx, input) => bloom(ctx, { input }),
   mixer: (ctx, input) => mixer(ctx, { input, b: blackInput(), mix: ctx.input("bass") }),
   displace: (ctx, input) => displace(ctx, { input }),
+  marbleWarp: (ctx, input) => marbleWarp(ctx, { input }),
   hsv: (ctx, input) => hsv(ctx, { input, hue: lfo(ctx, { periodBeats: 8 }) }),
   mirror: (ctx, input) => mirror(ctx, { input }),
   tile: (ctx, input) => tile(ctx, { input }),
