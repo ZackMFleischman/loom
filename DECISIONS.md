@@ -1767,3 +1767,32 @@ path and never-go-black are untouched, NFR-4):
   blend + position `textureLoad`) needs a human eyeball — `navigator.gpu` undefined.
 - Gates: `pnpm typecheck` (87 modules, 44 scenes), `pnpm test`, `pnpm test:content`
   (513), `pnpm validate:stdlib` (88/88 non-black, silk lum 82) all green.
+
+## 2026-06-14 — multi-input / branching chain steps (BUILDABLE subset)
+- **SourceRef = `{ instance } | { step } | { asset }`** (runtime `chain.ts`,
+  mirrored in `sidecar/protocol.ts`). A chain step declares extra TexNode slots
+  via `meta.chainInputs: [{ name, kind: "tex" }]`; `ChainStep.inputs[slot]` binds
+  each to a SourceRef. Additive/optional — a classic single-input step has no
+  `inputs` key and serializes byte-for-byte as before.
+- **Resolution at fold time.** `{instance}` → `texNode(vec4(texture(entry.target.
+  texture).rgb, 1))` via a `SourceResolver` the `SessionStore` hands to every
+  ChainHost (root + per-node). `{step}` → an EARLIER step's folded TexNode
+  (linear chain → small DAG). Self-tap (instance == owner) is rejected (that's
+  feedback, not overlay); so is a missing instance / dangling step.
+- **Ordering/cycle guard at plan time:** a `{step}` ref may only name a step
+  PLANNED BEFORE it; self/forward refs throw and the whole edit is rejected.
+- **NFR-5 — never go black:** an unresolvable SourceRef (missing instance, cycle,
+  dangling step, or `{asset}`) makes the fold throw → `SessionStore.setChain`
+  restores the previous chain and the old instance keeps rendering. Unit-covered
+  in runtime/chain.test.ts and engine-app/engine-api.test.ts.
+- **`over` is the reference multi-input step** (declares `overlay` + an `opacity`
+  chainParam). Console `FxChain.tsx` grows an `InputSlotRow` (source picker:
+  other instances / earlier steps) per declared slot.
+- **DEFERRED → M10:** `{asset}` SourceRef + asset-picker UI need the M10 asset
+  explorer (absent). `asset` stays in the SourceRef TYPE (forward-compat) but the
+  fold/plan REJECT it ("not yet supported — needs M10"); a persisted asset source
+  renders as an inert error-colored option, never silently dropped. `flyby`
+  (needs asset urls, no chainParams/chainInputs) stays out of the picker.
+- **Also deferred:** multi-input steps aren't yet saveable as composites
+  (`serialize()` throws) or persisted into projects (`projects.ts` carries only
+  id/effect/params) — both want the asset/persistence work to land first.
