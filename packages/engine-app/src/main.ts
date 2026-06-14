@@ -32,7 +32,7 @@ import liveScene from "../../../content/scenes/live.scene";
 import panicScene from "../../../content/scenes/panic.scene";
 import { startBridge } from "./bridge";
 import { Compositor } from "./compositor";
-import { assertProjectName, ProjectStore, type ProjectData } from "./projects";
+import { ProjectsController } from "./projects-controller";
 import { readTargetToDataUrl } from "./readback";
 import { startConsoleChannel } from "./console-channel";
 import { EngineApi } from "./engine-api";
@@ -42,7 +42,7 @@ import { MidiRouter } from "./midi-router";
 import { PanicController } from "./panic-controller";
 import { getScenes } from "./scenes";
 import { entryStatus, PREVIEW_H, PREVIEW_W, SessionStore } from "./session";
-import { fixtureKey, projectKey, repoStatePath, StateClient, StateDir, StateKey } from "./state";
+import { fixtureKey, repoStatePath, StateClient, StateDir, StateKey } from "./state";
 import { workerInterval } from "./worker-clock";
 
 declare global {
@@ -308,24 +308,10 @@ const stage = new Stage();
 const compositor = new Compositor(RENDER_W, RENDER_H);
 
 // ---- Projects: set lists (serialized instance sets in content/state/projects/) ----
-// Save/load are explicit user actions, so they work regardless of ?state=off
-// (which only disables AMBIENT persistence).
-const projectStore = new ProjectStore(session, stage, () => currentScenes());
-let projectNames: string[] = [];
-async function refreshProjects(): Promise<string[]> {
-  try {
-    const res = await fetch(`/loom/state-list/${StateDir.projects}`);
-    if (res.ok) projectNames = (await res.json()) as string[];
-  } catch {
-    // listing is a convenience, never a blocker
-  }
-  return projectNames;
-}
-
-// Deferred cull: after a load the pre-load instances keep running until a
-// commit from the loaded set LANDS (fade complete) — then they cull. Loading
-// alone never changes what the audience sees (audience-safe trust model).
-let pendingCull: { loaded: Set<string>; stale: Set<string> } | null = null;
+// ProjectsController owns the fetch/persist plumbing + deferred-cull bookkeeping
+// over the tested ProjectStore. Save/load are explicit user actions, so they
+// work regardless of ?state=off (which only disables AMBIENT persistence).
+const projectsController = new ProjectsController({ session, stage, scenes: () => currentScenes() });
 
 // ---- Fixtures: deterministic input traces (content/state/fixtures/) ----
 
@@ -470,35 +456,7 @@ async function finishRecording(r: NonNullable<typeof recording>): Promise<void> 
   }
 }
 
-const projectsApi = {
-  list: () => refreshProjects(),
-  cached: () => projectNames,
-  async save(name: string, tileOrder?: string[]) {
-    assertProjectName(name);
-    const data = projectStore.serialize(name, new Date().toISOString(), tileOrder);
-    if (data.instances.length === 0) throw new Error("nothing to save — no instances");
-    const res = await fetch(`/loom/state/${StateDir.projects}/${encodeURIComponent(name)}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(data, null, 2),
-    });
-    if (!res.ok) throw new Error(`project save failed (${res.status})`);
-    await refreshProjects();
-    return { saved: name, path: repoStatePath(projectKey(name)), instances: data.instances.length };
-  },
-  async load(name: string) {
-    assertProjectName(name);
-    const res = await fetch(`/loom/state/${StateDir.projects}/${encodeURIComponent(name)}`);
-    if (!res.ok) {
-      throw new Error(`unknown project "${name}" — saved projects: ${projectNames.join(", ") || "(none)"}`);
-    }
-    const data = (await res.json()) as ProjectData;
-    const out = projectStore.load(data);
-    pendingCull = { loaded: new Set(out.created), stale: new Set(out.replaced) };
-    return out;
-  },
-};
-void refreshProjects();
+void projectsController.list();
 
 // The barrel binding goes stale when ./scenes hot-updates; HMR swaps it below.
 let currentScenes = getScenes;
@@ -715,7 +673,7 @@ const api = new EngineApi(
     midiDevices: () => midi.devices,
     midiRecent: () => midi.recent,
     persist,
-    projects: projectsApi,
+    projects: projectsController,
     fixtures: fixturesApi,
     // live.scene.ts hot-swaps must keep landing on the boot instance even
     // after the human renames its tile.
@@ -778,21 +736,10 @@ const frameTick = (tMs: number): void => {
   currentMix = directive.mode === "crossfade" ? directive.mix : null;
   lastDirectiveHold = directive.mode === "hold";
 
-  // Projects: a commit from the loaded set has landed (live, fade done) —
-  // cull the replaced instances. Before the render, so a culled instance is
-  // never referenced by this frame's directive (it can't be: it isn't live).
-  if (pendingCull != null && !stage.fading && stage.live != null && pendingCull.loaded.has(stage.live)) {
-    let culled = 0;
-    for (const id of pendingCull.stale) {
-      const e = session.get(id);
-      if (!e || e.id === stage.live || e.pinned != null) continue;
-      stage.onInstanceDestroyed(id);
-      session.destroy(id);
-      culled++;
-    }
-    if (culled > 0) console.info(`[loom] project set committed — culled ${culled} replaced instance(s)`);
-    pendingCull = null;
-  }
+  // Projects: a commit from the loaded set has landed (live, fade done) — cull
+  // the replaced instances. Before the render, so a culled instance is never
+  // referenced by this frame's directive (it can't be: it isn't live).
+  projectsController.maybeCull();
   // Modulators write CPU-side before any leg renders. Hold pauses them all;
   // scene-panic pauses only the suspended live instance (FR-5/FR-10).
   if (directive.mode === "panic-scene") session.tickModulators(f, directive.live);
