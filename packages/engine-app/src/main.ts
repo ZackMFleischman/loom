@@ -803,6 +803,7 @@ const api = new EngineApi(
   {
     renderer,
     canvas,
+    renderSize: { width: RENDER_W, height: RENDER_H },
     session,
     stage,
     audio,
@@ -922,12 +923,16 @@ const frameTick = (tMs: number): void => {
   // Global palette color-channel modulators (R7.4) write the stops before any
   // leg reads them; hold freezes their phase like instance modulators (FR-10).
   if (directive.mode !== "hold") globalsModulators.tick(palettes.manifest, f);
-  compositor.render(renderer, f, directive, session);
-  api.captureLiveMirror(directive.mode); // same-task canvas read for the live tile
-  fps.tick();
-  // Full-res preview overlay: resize the previewed sandbox target / mirror the
-  // live canvas, and run the fps auto-reduction ladder (same task as the render).
+  // Full-res preview overlay: decide the route (which previewed sandbox renders
+  // into the fixed full-res preview target) and run the fps ladder BEFORE the
+  // render, so the route takes effect this frame.
   api.tickPreview(directive.mode, fps.current);
+  compositor.render(renderer, f, directive, session, api.previewRoute());
+  api.captureLiveMirror(directive.mode); // same-task canvas read for the live tile
+  // Mirror the live canvas into the preview source when the LIVE instance is the
+  // one being previewed (must follow the render — the canvas is readable here).
+  api.mirrorPreviewCanvas();
+  fps.tick();
 
   if (pendingShots.length > 0) {
     const waiting = pendingShots.splice(0);
