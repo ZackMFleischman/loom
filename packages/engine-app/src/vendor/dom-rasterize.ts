@@ -107,8 +107,11 @@ export async function rasterize(target: HTMLElement, opts: RasterizeOptions = {}
   const srcH = Math.max(1, Math.ceil(rect.height));
   const ratio = opts.pixelRatio ?? window.devicePixelRatio ?? 1;
 
-  // Output cap: scale DOWN to maxWidth (never up); 0/undefined = native * ratio.
-  const cap = opts.maxWidth && opts.maxWidth > 0 ? opts.maxWidth : srcW * ratio;
+  // Output cap: scale DOWN to maxWidth (never up). A positive maxWidth is the
+  // px cap; 0 or undefined means "native" (cap = native * ratio). A negative
+  // value can't reach here (the zod schema clamps maxWidth to >= 0), so the
+  // truthiness guard's only job is the explicit 0-means-native case.
+  const cap = opts.maxWidth != null && opts.maxWidth > 0 ? opts.maxWidth : srcW * ratio;
   const scale = Math.min(cap / srcW, ratio);
   const outW = Math.max(1, Math.round(srcW * scale));
   const outH = Math.max(1, Math.round(srcH * scale));

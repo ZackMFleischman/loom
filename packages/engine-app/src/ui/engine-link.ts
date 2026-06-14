@@ -262,6 +262,8 @@ export class EngineLink {
       const op = msg.op as string;
       const payload = (msg.payload as Record<string, unknown> | undefined) ?? {};
       void this.runConsoleOp(op, payload).then((res) => {
+        // `res` spreads to top-level `ok` + (`result` | `error`) — the exact keys
+        // the engine's console-channel reads off the response (msg.ok/result/error).
         this.ch.postMessage({ kind: "console-response", id, consoleId: this.consoleId, ...res });
       });
     }

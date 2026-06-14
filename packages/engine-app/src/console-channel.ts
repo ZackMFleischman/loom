@@ -115,7 +115,12 @@ export function startConsoleChannel(api: EngineApi, opts: ConsoleChannelOpts = {
       return;
     }
     if (msg.kind === "console-response") {
-      // Reply to a reverse request we issued. Correlate by id; ignore stragglers.
+      // Reply to a reverse request we issued. Correlate by id ONLY (not by
+      // consoleId): ids are engine-prefixed + per-engine monotonic, so a reply
+      // can never correlate to a request this engine didn't mint. Correctness
+      // rests on that id-uniqueness, not on the responder matching the current
+      // target — a stale Console answering an in-flight id still resolves it,
+      // which is harmless for a read-only capture. Ignore stragglers.
       const id = msg.id;
       if (typeof id !== "string") return;
       const p = pending.get(id);
