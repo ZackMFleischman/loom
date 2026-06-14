@@ -31,7 +31,7 @@ const SAFE = join(ROOT, "content", "scenes", "panic-canary.scene.ts");
 const PORT = 5200;
 const WS_PORT = 7343;
 const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off`;
-const CONSOLE_URL = `http://localhost:${PORT}/console.html`;
+const CONSOLE_URL = `http://localhost:${PORT}/console.html?embed=0`;
 
 const { results, check } = makeResults();
 const loomState = (page) => page.evaluate(() => ({ ...window.__loom, instances: window.__loom.instances }));
@@ -181,7 +181,18 @@ try {
   const cand = toolJson(await callOk(client, "create_instance", { scene: "panic-canary" }));
   const candId = cand.instance;
   await consolePage.waitForSelector(`.tile[data-id="${candId}"]`, { timeout: 10_000 });
-  const buildsBefore = (await loomState(output)).instances.find((i) => i.id === candId)?.builds ?? -1;
+  // Poll, never read once: the Output page absorbs a just-created sandbox
+  // asynchronously, so a single read races it and intermittently sees the
+  // instance missing (builds -1) instead of its real value (1). Wait until the
+  // instance's `builds` is a real count (>= 0) before capturing the baseline.
+  const buildsBefore = (await waitFor(async () => {
+    try {
+      const b = (await loomState(output)).instances.find((i) => i.id === candId)?.builds;
+      return typeof b === "number" && b >= 0 ? { builds: b } : null;
+    } catch {
+      return null;
+    }
+  }, 10_000, "candidate builds counter to appear")).builds;
   await menuClickUntil(
     consolePage,
     `[data-panictarget="${candId}"]`,
