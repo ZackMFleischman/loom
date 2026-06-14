@@ -1553,3 +1553,47 @@ surfaces lacked (what build/swap/freeze/perf event led to a number).
   **24/24 green** on the WebGL2 fallback (forced bad save → `scene.rejected`
   surfaced @frame 558 on "boot", live pixels unchanged, `since` paging, sidecar
   latency table, `?diag=0` vs `?diag=1` both 60 fps).
+
+## 2026-06-14 — Simulation sources: reaction-diffusion + the `simBuffer` field family
+
+- **New source class — cellular GPU simulations.** `reactionDiffusion`
+  (Gray-Scott) shipped first; then the ping-pong/iterate/seed/reseed boilerplate
+  was extracted to **`simBuffer`** (`content/modules/_shared.ts`) — two
+  HalfFloat targets, N iterations/frame, seed-on-first-frame + reseed rising
+  edge, frame-clocked `phase`. `reactionDiffusion` was refactored onto it
+  (behaviour-preserving) and **`waveField`** (2D wave equation) + **`automata`**
+  (cyclic CA) built on it. Stateful like `feedback` (NFR-5 reset on rebuild),
+  frame-clocked (no TSL `time`), seeded → fixture-deterministic.
+- **`pickPalette`** (`content/palettes.ts`): scenes needed *both* global
+  palettes selectable at once, which the built-in `palette.source` (one active
+  at a time) can't do. A swatched int param listing primary + secondary (read
+  live from the registry) + scene presets, returning the `ctx.palette`-shaped
+  `color(i)`/`ramp(t)` surface. Reusable; used by `coral-bloom`/`ripple-pool`/
+  `cyclic-spiral`.
+- Showcase scenes: `coral-bloom`, `ripple-pool`, `cyclic-spiral`. Follow-ons in
+  `feature-requests/{gpu-field-simulations,particle-agent-systems,generative-growth-grammars,domain-warp-marble}.md`
+  (`fluid2d` wants multi-buffer `simBuffer`).
+- Gates: `pnpm typecheck` green (75 modules, 33 scenes); `pnpm test` green (449
+  content). GPU `validate:stdlib` not run (headless container, no WebGPU);
+  stills rendered via `scripts/shoot.mjs` on the WebGL2 fallback.
+
+## 2026-06-14 — More generative sources: marble + strangeAttractor
+
+- **`marble`** (source): iterated domain-warp FBM (`fbm(p+fbm(p+fbm(p)))`) →
+  agate/oil veins. Kept **grayscale** (composes with colorize/palette) rather
+  than self-colouring, so the scene (`marble-slab`) ramps it through
+  `pickPalette` — consistent with the other new scenes' palette-as-choice.
+- **`strangeAttractor`** (geo): chaotic ODEs (Lorenz/Aizawa/Thomas/Halvorsen)
+  integrated CPU-side into a vertex buffer (deterministic start, no
+  Math.random), then drawn via the existing `pointCloud` + `render3d` +
+  `orbitCam` path. Chose this geometry-first route over a GPU particle-state
+  texture: reuses proven 3D-point rendering and is verifiable headlessly.
+  Trade-off — constants bake at build (changing the system rebuilds); camera/
+  spin/size/glow are the live surface. Scene `attractor-cloud`.
+- Headless-verification reality: pure-shader (`marble`) and geometry-reusing
+  (`strangeAttractor`) techniques verify via `shoot.mjs` on WebGL2. The
+  remaining list items (`flowParticles`/`flock`/`physarum` — GPU particle
+  state; `fluid2d` — multi-buffer; growth/L-systems — a line renderer) need new
+  GPU infra best validated on a real WebGPU device.
+- Gates: `pnpm typecheck` green (77 modules, 35 scenes); `pnpm test:content`
+  green (459). Stills via `shoot.mjs` (WebGL2). Feature-request docs updated.

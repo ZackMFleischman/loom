@@ -10,8 +10,8 @@ The design rule the whole surface obeys: **instrumentation never goes black.** T
 diagnostics ring's `push` is wrapped so an instrumentation bug can't throw into the
 render loop, perf sampling is integer compares per frame, and profiling only
 *measures* — it never feeds a value back into render, so fixture replays stay
-byte-identical (`packages/engine-app/src/diagnostics.ts:9-20`,
-`packages/runtime/src/instance.ts:32-38`).
+byte-identical (`packages/engine-app/src/diagnostics.ts:120-138`,
+`packages/runtime/src/instance.ts:56-71`).
 
 ---
 
@@ -39,7 +39,7 @@ Args (`GetDiagnosticsArgs`, `packages/sidecar/src/protocol.ts:823-831`):
 | `scope` | `"engine"` (default) = the event timeline + perf rollup; `"sidecar"` = this process's own MCP-call latency table |
 | `since` | a `seq` cursor — return events with `seq` strictly greater (page forward from a prior `now.seq`) |
 | `kinds` | filter to these exact kinds, e.g. `["scene.rejected","instance.frozen"]` |
-| `instance` | filter to one instance id (resolved through the `live` alias engine-side, `engine-api.ts:322`) |
+| `instance` | filter to one instance id (resolved through the `live` alias engine-side, `engine-api.ts:288-289`) |
 | `level` | minimum severity (`info` < `warn` < `error`) |
 | `limit` | cap returned events, newest kept, 1..512 |
 
@@ -270,8 +270,8 @@ read at boot from `location.search` (`main.ts:44`).
 | `?res=WxH` | render at a fixed internal resolution (default 1920×1080), CSS `object-fit: cover` scales it | `main.ts:67-72` |
 | `?bpm=<n>` | initial transport BPM (default 120) | `main.ts:76` |
 | `?audio=test` | use synthetic kick/hats instead of the mic (also the automatic fallback when getUserMedia fails) | `main.ts` (AudioBus); arch.md |
-| `?state=off` | disable AMBIENT tuned-state load+save (validators use it; explicit save/load still work) | `main.ts:152`, `state.ts:49`, `projects-controller.ts:18` |
-| `?agentCommit=1` / `?agentCommit=0` | arm / restore the human gate for agent `commit` at boot | `main.ts:569`, `engine-api.ts:301,617` |
+| `?state=off` | disable AMBIENT tuned-state load+save (validators use it; explicit save/load still work) | `main.ts:153`, `state.ts:49`, `projects-controller.ts:18` |
+| `?agentCommit=1` / `?agentCommit=0` | arm / restore the human gate for agent `commit` at boot | `main.ts:571`, `engine-api.ts:301,617` |
 | `?ws=<port>` | dial an isolated sidecar WS port (default `DEFAULT_WS_PORT` 7341) — validator port isolation | `main.ts:581-583`, `protocol.ts:10` |
 | `?embedded=1` | mark the Console's hidden-iframe engine (solo mode, stands down if a real Output appears) | `main.ts:585-587` |
 | `?embed=0` | (Console page) disable the embedded engine entirely — validators use it | `ConsoleApp.tsx:86-88` |

@@ -24,6 +24,7 @@ import { rgbSplit } from "../modules/effects/rgbSplit";
 import { threshold } from "../modules/effects/threshold";
 import { tile } from "../modules/effects/tile";
 import { vignette } from "../modules/effects/vignette";
+import { automata } from "../modules/sources/automata";
 import { checker } from "../modules/sources/checker";
 import { gradient } from "../modules/sources/gradient";
 import { plasma } from "../modules/sources/plasma";
@@ -58,6 +59,8 @@ import { noiseField } from "../modules/sources/noiseField";
 import { noodles } from "../modules/sources/noodles";
 import { osc } from "../modules/sources/osc";
 import { pulseRings } from "../modules/sources/pulseRings";
+import { reactionDiffusion } from "../modules/sources/reactionDiffusion";
+import { waveField } from "../modules/sources/waveField";
 import { ripples } from "../modules/sources/ripples";
 import { softServe } from "../modules/sources/softServe";
 import { sprinkles } from "../modules/sources/sprinkles";
@@ -65,11 +68,13 @@ import { spriteSwarm } from "../modules/sources/spriteSwarm";
 import { starAnise } from "../modules/sources/starAnise";
 import { waffleCone } from "../modules/sources/waffleCone";
 import { video } from "../modules/sources/video";
+import { marble } from "../modules/sources/marble";
 import { box } from "../modules/geo/box";
 import { model } from "../modules/geo/model";
 import { orbitCam } from "../modules/geo/orbitCam";
 import { particleEmitter } from "../modules/geo/particleEmitter";
 import { sphere } from "../modules/geo/sphere";
+import { strangeAttractor } from "../modules/geo/strangeAttractor";
 import { torus } from "../modules/geo/torus";
 import { render3d } from "../modules/sources/render3d";
 import { blackInput, makeCtx, markerInput, type DiscoveredModule, type Harness } from "./harness";
@@ -110,6 +115,9 @@ export const CASES: Record<string, ModuleCase> = {
   noodles: (ctx) => noodles(ctx, { energy: ctx.input("kick") }),
   osc: (ctx) => osc(ctx, {}),
   pulseRings: (ctx) => pulseRings(ctx, { energy: ctx.input("kick") }),
+  reactionDiffusion: (ctx) => reactionDiffusion(ctx, { inject: ctx.input("kick"), reseed: ctx.input("kick") }),
+  waveField: (ctx) => waveField(ctx, { impact: ctx.input("kick"), reseed: ctx.input("kick") }),
+  automata: (ctx) => automata(ctx, { reseed: ctx.input("kick") }),
   ripples: (ctx) => ripples(ctx, { energy: ctx.input("kick") }),
   softServe: (ctx) => softServe(ctx, { energy: ctx.input("bass") }),
   sprinkles: (ctx) => sprinkles(ctx, { count: 12, burst: ctx.input("kick") }),
@@ -124,6 +132,7 @@ export const CASES: Record<string, ModuleCase> = {
   checker: (ctx) => checker(ctx, { count: 8, line: 0.05, scroll: 0.5 }),
   voronoi: (ctx) => voronoi(ctx, {}),
   plasma: (ctx) => plasma(ctx, {}),
+  marble: (ctx) => marble(ctx, {}),
   text: (ctx) => text(ctx, { text: "LOOM" }),
   webcam: (ctx) => webcam(ctx, {}),
   // geo
@@ -136,6 +145,7 @@ export const CASES: Record<string, ModuleCase> = {
   plane: (ctx) => plane(ctx, { segments: 16 }),
   tube: (ctx) => tube(ctx, { glow: ctx.input("kick") }),
   pointCloud: (ctx) => pointCloud(ctx, { source: plane(ctx, { segments: 12 }) }),
+  strangeAttractor: (ctx) => strangeAttractor(ctx, { kind: "lorenz", points: 2000 }),
   displaceGeo: (ctx) => displaceGeo(ctx, { input: plane(ctx, { segments: 12 }), amount: ctx.input("bass") }),
   // effects
   colorize: (ctx, input) => colorize(ctx, { input }),

@@ -13,3 +13,4 @@ when its PR merges.
 | params-panel-alignment | #13 | `a2a2bd5` |
 | app-instrumentation | #14 | `47b858e` |
 | console-ui-refactor | #15 | `be4ffcf` |
+| console-screenshot | #17 | `f9ac162` |
