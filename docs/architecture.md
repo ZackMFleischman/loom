@@ -220,10 +220,14 @@ isn't monorepo-only. A pack mirrors `content/`'s layout (no build step):
 enforce in-repo.
 
 - **Registration** is `content/state/packs.json` (`{ packs: [{ name, source,
-  pin, loomApi? }] }`, committed) — the registered-roots idiom from
-  `media-roots.json`. `pnpm pack:add <git-url|path>` clones (pins the SHA) or
-  symlinks (`pin: null`) into the **gitignored** `packs/<name>/`; `pnpm
-  pack:update` re-pins. The checkout is scratch; the JSON is the source of truth.
+  pin, branch?, loomApi? }] }`, committed) — the registered-roots idiom from
+  `media-roots.json`. `pnpm pack:add <git-url|path>` clones (pins the SHA +
+  records the tracked `branch`) or symlinks (`pin: null`) into the **gitignored**
+  `packs/<name>/`; `pnpm pack:update` fetches/resets that branch and re-pins. The
+  checkout is scratch; the JSON is the source of truth. The **canonical name** is
+  the manifest's `name` (`--name` > `loom-pack.json` name > source basename) — a
+  git pack is cloned to a temp dir, the manifest read, then moved to `packs/<name>`,
+  so the published namespace matches what the author declared.
 - **Discovery** is static `packs/*/…` globs added beside the `content/…` ones in
   the engine barrels (`engine-app/src/scenes.ts`, `effects.ts`), the test harness,
   and `scripts/build-catalog.mjs`. Absent until `pack:add`, so a pack-free repo is

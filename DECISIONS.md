@@ -1415,9 +1415,16 @@ so the on-disk schema is deliberately small and stable. (Spec:
   description }`. `loomApi` is a caret-major HINT (`"^1"`), NOT a gate.
 - **`content/state/packs.json` schema** (host-side registry, committed; mirrors
   `media-roots.json` — the checkout is scratch, the JSON travels in git):
-  `{ "packs": [ { name, source, pin, loomApi? } ] }`. `source` is a git URL or an
-  absolute local path; `pin` is the cloned commit SHA, or `null` for a linked
-  local path. The `packs/` checkout dir is **gitignored**.
+  `{ "packs": [ { name, source, pin, branch?, loomApi? } ] }`. `source` is a git
+  URL or an absolute local path; `pin` is the cloned commit SHA, or `null` for a
+  linked local path; `branch` (git packs only) is the tracked ref so `pack:update`
+  fetches/resets it explicitly (shallow-clone `origin/HEAD` is unreliable). The
+  `packs/` checkout dir is **gitignored**.
+- **Canonical pack name = the manifest's `name`** (the namespace authors publish
+  under, the marketplace keys on). `pack:add` resolves it as
+  `--name > loom-pack.json name > source basename` — for a git URL it clones to a
+  temp dir, reads the manifest, then moves into `packs/<name>`, so the namespace
+  matches what the author declared, not the folder/URL they cloned from.
 - **Namespacing + precedence (LOAD-BEARING — the marketplace depends on it):**
   local content keeps its BARE name; pack content surfaces as `<pack>/<name>` in
   CATALOG, `availableScenes`, and `availableEffects`. Precedence is

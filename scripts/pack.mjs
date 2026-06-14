@@ -16,7 +16,7 @@
 // level as editing content/ yourself. We DON'T sandbox (documented in
 // DECISIONS.md); typecheck is the real gate, loomApi is the fast hint.
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import {
   PACK_NAME_RE,
@@ -53,14 +53,25 @@ function parseArgs(argv) {
   return { positionals, flags };
 }
 
-/** Default pack name from a source: manifest name if checked out, else basename. */
-function deriveName(source, flagName) {
-  if (flagName) return flagName;
-  const base = path
+/** Fallback name from a source path/URL when no manifest name is available. */
+function basenameOf(source) {
+  return path
     .basename(source.replace(/\.git$/, "").replace(/[\\/]+$/, ""))
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, "-");
-  return base;
+}
+
+/**
+ * The canonical pack name — the namespace authors publish under and the
+ * marketplace keys on. Precedence: explicit --name > loom-pack.json `name` >
+ * source basename. The manifest is authoritative so packs/<name> and the
+ * "<pack>/<item>" ids match what the author declared (not an accident of which
+ * folder/URL they happened to clone from).
+ */
+function deriveName(flagName, manifest, source) {
+  if (flagName) return flagName;
+  if (manifest?.name) return manifest.name;
+  return basenameOf(source);
 }
 
 function checkApi(manifest, name) {
@@ -89,47 +100,69 @@ function add(argv) {
   const source = positionals[0];
   if (!source) fail("usage: pnpm pack:add <git-url|path> [--name <name>] [--ref <ref>]");
 
-  const name = deriveName(source, flags.name);
-  if (!PACK_NAME_RE.test(name)) {
-    fail(`invalid pack name "${name}" — must be letters-first, [a-z][a-zA-Z0-9-]*. Pass --name.`);
-  }
-
   const reg = readRegistry();
-  if (reg.packs.some((p) => p.name === name)) {
-    fail(`pack "${name}" is already registered — use \`pnpm pack:update ${name}\` or remove it first.`);
-  }
-
   mkdirSync(packsDir, { recursive: true });
-  const dest = path.join(packsDir, name);
-  if (existsSync(dest)) {
-    fail(`packs/${name} already exists on disk — remove it first.`);
-  }
 
   let entry;
   if (isGitUrl(source)) {
     const ref = flags.ref;
-    console.log(`pack: cloning ${source} → packs/${name}${ref ? ` @ ${ref}` : ""}`);
-    git(["clone", "--depth", "1", ...(ref ? ["--branch", ref] : []), source, dest]);
+    // Clone to a temp dir FIRST so we can read loom-pack.json's `name` and adopt
+    // it as the canonical namespace, then move into packs/<name>.
+    const tmp = path.join(packsDir, `.tmp-clone-${Date.now()}`);
+    console.log(`pack: cloning ${source}${ref ? ` @ ${ref}` : ""}`);
+    git(["clone", "--depth", "1", ...(ref ? ["--branch", ref] : []), source, tmp]);
+    // Record the branch we're tracking so pack:update can fetch/reset it
+    // explicitly (origin/HEAD is unreliable on a shallow clone).
+    let branch;
+    try {
+      branch = git(["rev-parse", "--abbrev-ref", "HEAD"], tmp);
+    } catch {
+      branch = ref ?? null;
+    }
+    const manifest = readPackManifest(tmp);
+    const name = settleName(flags.name, manifest, source, reg);
+    const dest = path.join(packsDir, name);
+    if (existsSync(dest)) {
+      rmSync(tmp, { recursive: true, force: true });
+      fail(`packs/${name} already exists on disk — remove it first.`);
+    }
+    renameSync(tmp, dest);
     const pin = git(["rev-parse", "HEAD"], dest);
-    entry = { name, source, pin };
+    entry = { name, source, pin, ...(branch ? { branch } : {}) };
+    checkApi(manifest, name);
+    if (manifest?.loomApi) entry.loomApi = manifest.loomApi;
   } else {
     const abs = path.resolve(source);
     if (!existsSync(abs)) fail(`local path does not exist: ${abs}`);
+    const manifest = readPackManifest(abs); // read from source directly (no checkout yet)
+    const name = settleName(flags.name, manifest, source, reg);
+    const dest = path.join(packsDir, name);
+    if (existsSync(dest)) fail(`packs/${name} already exists on disk — remove it first.`);
     console.log(`pack: linking ${abs} → packs/${name}`);
     symlinkSync(abs, dest, "junction"); // junction works without admin on Windows
     entry = { name, source: abs, pin: null };
+    checkApi(manifest, name);
+    if (manifest?.loomApi) entry.loomApi = manifest.loomApi;
   }
-
-  const manifest = readPackManifest(dest);
-  checkApi(manifest, name);
-  if (manifest?.loomApi) entry.loomApi = manifest.loomApi;
 
   reg.packs.push(entry);
   writeRegistry(reg);
   console.log(
-    `pack: registered "${name}"${entry.pin ? ` @ ${entry.pin.slice(0, 10)}` : " (linked)"}. ` +
-      `Run \`pnpm typecheck\` to verify and regenerate the catalog (content appears as "${name}/<item>").`,
+    `pack: registered "${entry.name}"${entry.pin ? ` @ ${entry.pin.slice(0, 10)}` : " (linked)"}. ` +
+      `Run \`pnpm typecheck\` to verify and regenerate the catalog (content appears as "${entry.name}/<item>").`,
   );
+}
+
+/** Resolve + validate the canonical name and guard against a duplicate registration. */
+function settleName(flagName, manifest, source, reg) {
+  const name = deriveName(flagName, manifest, source);
+  if (!PACK_NAME_RE.test(name)) {
+    fail(`invalid pack name "${name}" — must be letters-first, [a-z][a-zA-Z0-9-]*. Pass --name.`);
+  }
+  if (reg.packs.some((p) => p.name === name)) {
+    fail(`pack "${name}" is already registered — use \`pnpm pack:update ${name}\` or remove it first.`);
+  }
+  return name;
 }
 
 function update(argv) {
@@ -155,8 +188,18 @@ function update(argv) {
       continue;
     }
     console.log(`pack: updating ${entry.name} (${entry.source})`);
-    git(["fetch", "--depth", "1", "origin"], dest);
-    git(["reset", "--hard", "origin/HEAD"], dest);
+    // origin/HEAD is unreliable on a shallow clone — fetch/reset the explicit
+    // branch we recorded at add time (fall back to the clone's current branch).
+    let branch = entry.branch;
+    if (!branch) {
+      try {
+        branch = git(["rev-parse", "--abbrev-ref", "HEAD"], dest);
+      } catch {
+        branch = "HEAD";
+      }
+    }
+    git(["fetch", "--depth", "1", "origin", branch], dest);
+    git(["reset", "--hard", "FETCH_HEAD"], dest);
     const newPin = git(["rev-parse", "HEAD"], dest);
     if (newPin !== entry.pin) {
       console.log(`pack: ${entry.name} ${entry.pin.slice(0, 10)} → ${newPin.slice(0, 10)}`);

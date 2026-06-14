@@ -70,7 +70,15 @@ export function discoverPacks() {
   const reg = readRegistry();
   const out = [];
   for (const entry of reg.packs) {
-    if (!entry?.name || !PACK_NAME_RE.test(entry.name)) continue;
+    if (!entry?.name || !PACK_NAME_RE.test(entry.name)) {
+      // A hand-edited/typo'd name would otherwise vanish from the catalog with
+      // no trace — surface it so the author can fix packs.json.
+      console.warn(
+        `[loom] packs.json: skipping entry with invalid name ${JSON.stringify(entry?.name)} ` +
+          `(must be letters-first, [a-z][a-zA-Z0-9-]*).`,
+      );
+      continue;
+    }
     const dir = path.join(packsDir, entry.name);
     if (!existsSync(dir)) continue; // registered but not checked out yet
     out.push({
