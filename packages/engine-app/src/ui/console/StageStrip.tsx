@@ -4,6 +4,7 @@ import {
 import type { SessionSnapshot } from "@loom/sidecar/protocol";
 import { useEngine } from "../hooks";
 import { fail } from "../util";
+import { TopBar } from "./primitives";
 
 type Props = { session: SessionSnapshot };
 
@@ -23,20 +24,7 @@ export function StageStrip({ session: s }: Props) {
   };
 
   return (
-    <Stack
-      id="stagestrip"
-      direction="row"
-      spacing={1.5}
-      alignItems="center"
-      sx={{
-        px: 1.25,
-        py: 0.5,
-        bgcolor: "background.paper",
-        borderBottom: 1,
-        borderColor: "divider",
-        flex: "0 0 auto",
-      }}
-    >
+    <TopBar id="stagestrip" spacing={1.5}>
       <Typography variant="caption" color="text.secondary">LIVE ▸</Typography>
       <Typography id="livename" sx={{ fontWeight: 700, color: "error.main" }}>{withScene(s.live)}</Typography>
       <Typography variant="caption" color="text.secondary">STAGED ▸</Typography>
@@ -66,14 +54,14 @@ export function StageStrip({ session: s }: Props) {
       </Button>
       <Button
         id="commit"
-        color="primary"
+        variant="primary"
         disabled={s.staged == null || s.panicked}
         onClick={() => void link.req("commit", {}).catch(fail)}
-        sx={{ fontWeight: 700, fontSize: 14, px: 2 }}
+        sx={{ fontSize: 14 }}
       >
         COMMIT
       </Button>
-    </Stack>
+    </TopBar>
   );
 }
 

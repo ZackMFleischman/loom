@@ -3,6 +3,33 @@ import { createTheme } from "@mui/material/styles";
 /** Numbers, wordmark, readouts — the instrument face is monospace. */
 export const mono = "ui-monospace, 'Cascadia Mono', Consolas, monospace";
 
+/**
+ * Button taxonomy (console-ui-refactor FR-2). Three named `variant`s (plus the
+ * outlined default) select one of four control weights so importance reads at a
+ * glance and per-button `sx` sizing disappears from call sites. Q1 "lean
+ * variants": it all lives here in the theme, not in wrapper components. This is
+ * the whole vocabulary — keep it to four:
+ *
+ *  - **default** — everyday controls (RACK, PREVIEW resting, tap, projects,
+ *    stage/unstage, nav). The theme default; what you get with no intent.
+ *  - **primary** — the commit-path verbs (COMMIT, GO LIVE): filled accent, heavy.
+ *  - **ghost** — out-of-flow nav links (`output ⧉`, `staged ⧉`): borderless,
+ *    secondary text, clearly lighter than a real verb.
+ *  - **danger** — PANIC: the error palette, heavy; `contained` while engaged.
+ *
+ * Q2 (how loud should danger/primary read): defaulting to weight + outline at
+ * rest and FILL only on the active/engaged state (COMMIT/GO LIVE are filled
+ * because they're one-shot verbs; PANIC fills only while panicked). Flagged for
+ * the performer to dial louder if they want resting fills.
+ */
+declare module "@mui/material/Button" {
+  interface ButtonPropsVariantOverrides {
+    primary: true;
+    ghost: true;
+    danger: true;
+  }
+}
+
 /** Dark cockpit theme — palette carried over from the old console.html CSS vars. */
 export const theme = createTheme({
   palette: {
@@ -22,8 +49,50 @@ export const theme = createTheme({
     MuiButton: {
       defaultProps: { variant: "outlined", size: "small", color: "inherit" },
       // Validators compare button textContent ("stage"/"unstage"/"cc21") —
-      // uppercase styling is CSS-only and harmless, but keep labels readable.
+      // uppercase/weight styling is CSS-only and harmless, but keep labels
+      // readable and NEVER change the text itself.
       styleOverrides: { root: { textTransform: "none", padding: "1px 8px", minWidth: 0, lineHeight: 1.6 } },
+      // The taxonomy. Encoded ONCE here; call sites pass `variant="primary|ghost|
+      // danger"` (or nothing for default) instead of hand-tuned sizing sx.
+      variants: [
+        {
+          props: { variant: "primary" },
+          style: {
+            border: "1px solid",
+            borderColor: "rgba(61,220,151,0.5)",
+            color: "#3ddc97",
+            fontWeight: 700,
+            padding: "2px 14px",
+            "&:hover": { borderColor: "#3ddc97", backgroundColor: "rgba(61,220,151,0.08)" },
+            "&.Mui-disabled": { border: "1px solid rgba(61,220,151,0.18)", color: "rgba(61,220,151,0.35)" },
+          },
+        },
+        {
+          props: { variant: "ghost" },
+          style: {
+            border: "1px solid transparent",
+            color: "#6b7280",
+            fontWeight: 400,
+            "&:hover": { color: "#c8cdd8", backgroundColor: "rgba(255,255,255,0.04)" },
+          },
+        },
+        {
+          props: { variant: "danger" },
+          // PANIC is the emergency hatch you reach for under stress mid-set, so it
+          // reads loud even at REST: a faint red tint fill + a 1.5px red border,
+          // not just an outline (Q2 — keep the highest-stakes verb from being the
+          // quietest control). The fully-saturated `contained` fill is reserved
+          // for the active/panicked state.
+          style: {
+            border: "1.5px solid",
+            borderColor: "rgba(230,69,90,0.75)",
+            color: "#e6455a",
+            backgroundColor: "rgba(230,69,90,0.12)",
+            fontWeight: 700,
+            "&:hover": { borderColor: "#e6455a", backgroundColor: "rgba(230,69,90,0.22)" },
+          },
+        },
+      ],
     },
     MuiTextField: { defaultProps: { size: "small" } },
   },

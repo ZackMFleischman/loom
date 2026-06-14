@@ -10,6 +10,7 @@ import { gatherChannels } from "./ColorChannels";
 import { FxChain } from "./FxChain";
 import { groupParams, splitRig } from "./param-groups";
 import { ParamWidget } from "./ParamWidget";
+import { StatusPill } from "./primitives";
 
 // Each contiguous run of param widgets is a CSS grid with a shared label
 // column: `fit-content(--label-max)` makes column 1 exactly as wide as the
@@ -199,16 +200,13 @@ export function ParamPanel({ instance, manifest, session }: Props) {
           </Typography>
         )}
         <Box sx={{ flex: 1 }} />
-        {isLive && (
-          <Typography variant="caption" sx={{ color: "error.main", fontWeight: 700 }}>LIVE</Typography>
-        )}
-        {isStaged && (
-          <Typography variant="caption" sx={{ color: "warning.main", fontWeight: 700 }}>STAGED</Typography>
-        )}
+        {isLive && <StatusPill kind="live" />}
+        {isStaged && <StatusPill kind="staged" />}
         <Button
+          variant="ghost"
           onClick={() => setCollapsedPersist(true)}
           title="hide params"
-          sx={{ minWidth: 0, px: 0.5, py: 0, fontSize: 16, lineHeight: 1, color: "text.secondary" }}
+          sx={{ px: 0.5, py: 0, fontSize: 16, lineHeight: 1 }}
         >
           ›
         </Button>
@@ -225,21 +223,21 @@ export function ParamPanel({ instance, manifest, session }: Props) {
             onClick={() =>
               void link.req(isStaged ? "unstage" : "stage", isStaged ? {} : { instance }).catch(fail)
             }
-            sx={{ fontSize: 12, py: 0.25 }}
+            sx={{ py: 0.25 }}
           >
             {isStaged ? "unstage" : "stage"}
           </Button>
           <Button
             id="panel-golive"
-            variant="contained"
-            color="error"
+            // GO LIVE is a commit-path verb → primary taxonomy (FR-2).
+            variant="primary"
             fullWidth
             disabled={isLive || session?.panicked}
             title="stage this scene and crossfade it LIVE now"
             onClick={() =>
               void link.req("stage", { instance }).then(() => link.req("commit", {})).catch(fail)
             }
-            sx={{ fontSize: 12, fontWeight: 700, py: 0.25 }}
+            sx={{ py: 0.25 }}
           >
             {isLive ? "LIVE" : "GO LIVE"}
           </Button>
@@ -358,6 +356,7 @@ export function ParamPanel({ instance, manifest, session }: Props) {
             {hiddenCount > 0 && (
               <Button
                 id="panel-advanced"
+                variant="ghost"
                 onClick={toggleAdvanced}
                 title={showAdvanced ? "hide advanced params" : "show advanced params (input trims)"}
                 sx={{
@@ -365,7 +364,6 @@ export function ParamPanel({ instance, manifest, session }: Props) {
                   fontSize: 11,
                   letterSpacing: "0.08em",
                   textTransform: "uppercase",
-                  color: "text.secondary",
                 }}
               >
                 {showAdvanced ? "▾ hide advanced" : `▸ advanced (${hiddenCount})`}

@@ -23,6 +23,12 @@ import { useEngine } from "../hooks";
 import { mono } from "../theme";
 import { fail, primeMidiPermission } from "../util";
 import { MidiMonitorDialog } from "./MidiMonitorDialog";
+import { TopBar } from "./primitives";
+
+/** A light vertical separator between header clusters (FR-4). */
+function GroupSep() {
+  return <Divider orientation="vertical" flexItem sx={{ my: 0.75, borderColor: "divider" }} />;
+}
 
 type Props = {
   session: SessionSnapshot;
@@ -36,13 +42,8 @@ export function Header({ session: s, onToggleRack, previewing, onTogglePreview }
   // The Console's own paint rate — independent of the engine's output fps below.
   const uiFps = useRenderFps();
   return (
-    <Stack
-      direction="row"
-      spacing={1.25}
-      alignItems="center"
-      component="header"
-      sx={{ px: 1.25, py: 0.5, bgcolor: "background.paper", borderBottom: 1, borderColor: "divider", flex: "0 0 auto" }}
-    >
+    <TopBar component="header" spacing={1.25}>
+      {/* ── Transport + audio ──────────────────────────────────── */}
       <Typography
         sx={{
           fontFamily: mono,
@@ -89,19 +90,31 @@ export function Header({ session: s, onToggleRack, previewing, onTogglePreview }
       </Box>
       <AudioPicker session={s} />
       <MidiStatus midi={s.midi} />
+
+      <GroupSep />
+
+      {/* ── Nav / views ────────────────────────────────────────── */}
       <Button onClick={onToggleRack} title="input rack (i)">
         RACK
       </Button>
       <Button
         id="previewbtn"
-        variant={previewing ? "contained" : "text"}
+        // FR-1: a real resting affordance in BOTH states. Resting = outlined
+        // (reads as a button, weighted like a verb); active = contained (filled,
+        // unmistakably engaged). Behavior (the `p` hotkey + click) is unchanged.
+        variant={previewing ? "contained" : "outlined"}
+        color={previewing ? "primary" : "inherit"}
         onClick={onTogglePreview}
         title="preview the selected instance full-screen (p)"
+        sx={{ fontWeight: 700 }}
       >
         PREVIEW
       </Button>
       <ProjectsControl session={s} />
+
       <Box sx={{ flex: 1 }} />
+
+      {/* ── Monitoring ─────────────────────────────────────────── */}
       {/* Two independent meters: the Output window's render rate (engine, from
           the snapshot) and the Console's own paint rate (this React app). When
           the Console janks while Output stays smooth, the gap shows it here. */}
@@ -130,10 +143,18 @@ export function Header({ session: s, onToggleRack, previewing, onTogglePreview }
           {` out · f${s.frame}`}
         </Box>
       </Typography>
-      <Button component="a" href="/" target="_blank" rel="noopener" title="open the Output window in a new tab">
+      <Button
+        variant="ghost"
+        component="a"
+        href="/"
+        target="_blank"
+        rel="noopener"
+        title="open the Output window in a new tab"
+      >
         output ⧉
       </Button>
       <Button
+        variant="ghost"
         component="a"
         href="/staged.html"
         target="_blank"
@@ -142,8 +163,12 @@ export function Header({ session: s, onToggleRack, previewing, onTogglePreview }
       >
         staged ⧉
       </Button>
+
+      <GroupSep />
+
+      {/* ── Emergency ──────────────────────────────────────────── */}
       <PanicControls session={s} />
-    </Stack>
+    </TopBar>
   );
 }
 
@@ -300,7 +325,11 @@ function PanicControls({ session: s }: { session: SessionSnapshot }) {
       <Button
         id="panic"
         color="error"
-        variant={s.panicked ? "contained" : "outlined"}
+        // danger taxonomy: outlined-red at rest, FILLED while engaged (Q2 — the
+        // highest-stakes verb reads loudest only when it's live). The `danger`
+        // variant carries the heavy weight + red border once; only the larger
+        // hit padding (this is the emergency hatch) stays local.
+        variant={s.panicked ? "contained" : "danger"}
         onClick={() => void link.req(s.panicked ? "resume" : "panic", s.panicked ? {} : { mode }).catch(fail)}
         title={
           s.panicked
@@ -311,14 +340,14 @@ function PanicControls({ session: s }: { session: SessionSnapshot }) {
                 : "PANIC → will hold (no usable SAFE target)"
               : "PANIC → freeze the last frame (hold)"
         }
-        sx={{ fontWeight: 700, fontSize: 15, px: 2.5 }}
+        sx={{ fontSize: 15, px: 2.5 }}
       >
         {s.panicked ? "RESUME" : "PANIC"}
       </Button>
       <Button
         id="panicmenu"
         color="error"
-        variant={s.panicked ? "contained" : "outlined"}
+        variant={s.panicked ? "contained" : "danger"}
         size="small"
         aria-haspopup="menu"
         aria-expanded={menuOpen}
