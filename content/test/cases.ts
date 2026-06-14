@@ -62,7 +62,7 @@ import { softServe } from "../modules/sources/softServe";
 import { sprinkles } from "../modules/sources/sprinkles";
 import { spriteSwarm } from "../modules/sources/spriteSwarm";
 import { starAnise } from "../modules/sources/starAnise";
-import { wafffleCone } from "../modules/sources/wafffleCone";
+import { waffleCone } from "../modules/sources/waffleCone";
 import { video } from "../modules/sources/video";
 import { box } from "../modules/geo/box";
 import { model } from "../modules/geo/model";
@@ -111,7 +111,7 @@ export const CASES: Record<string, ModuleCase> = {
   ripples: (ctx) => ripples(ctx, { energy: ctx.input("kick") }),
   softServe: (ctx) => softServe(ctx, { energy: ctx.input("bass") }),
   sprinkles: (ctx) => sprinkles(ctx, { count: 12, burst: ctx.input("kick") }),
-  wafffleCone: (ctx) => wafffleCone(ctx, {}),
+  waffleCone: (ctx) => waffleCone(ctx, {}),
   spriteSwarm: (ctx) => spriteSwarm(ctx, { url: ASSET, cols: 3, rows: 2 }),
   starAnise: (ctx) => starAnise(ctx, { energy: ctx.input("kick") }),
   video: (ctx) => video(ctx, { url: CLIP }),
