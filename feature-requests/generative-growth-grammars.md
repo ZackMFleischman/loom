@@ -1,7 +1,24 @@
 # Generative growth & grammars — differential growth, L-systems (post-v1 candidates)
 
-**Status:** ideas, not scheduled. Spawned from the `reactionDiffusion` work
+**Status:** SHIPPED (2026-06-14). All three landed as `content/`-only geo
+modules + two showcase scenes: the shared `lineRibbon` stroke renderer,
+`differentialGrowth`, and `lsystem`. Spawned from the `reactionDiffusion` work
 (PR #18) — the *vector* cousins of its organic growth.
+
+**What shipped:**
+- `content/modules/geo/lineRibbon.ts` — the shared thin-stroke renderer (the #1
+  prerequisite). Went with the **lineRibbon GeoNode** route (instanced oriented
+  segment boxes feeding `render3d`), not the 2D-stroke source — it reuses the
+  existing geo/render3d/orbitCam path and opens 3D orbit framing. Per-frame
+  `paths()` rebuild + `DynamicDrawUsage`.
+- `content/modules/geo/differentialGrowth.ts` — repel (spatial-hash O(n)) +
+  chain smoothing + edge-split; bass→repulsion, kick→split rate. Scene:
+  `coral-growth`.
+- `content/modules/geo/lsystem.ts` — axiom rewrite + turtle (F/G,+/-,&/^,[/]),
+  `reveal` unfurl, presets plant/koch/dragon/sierpinski/bush; iterations/angle/
+  preset exposed. Scene: `grammar-garden`.
+- All seeded (mulberry32) + frame-clocked (no TSL `time`); cases.ts entries
+  added; verified via `validate:stdlib` (WebGL2).
 
 ## The opportunity
 

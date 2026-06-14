@@ -1722,3 +1722,28 @@ path and never-go-black are untouched, NFR-4):
   projection bug — the multi-buffer trap physarum hit). Grid 256×144.
 - Gates: `pnpm typecheck` green (83 modules, 41 scenes); `pnpm test` +
   `pnpm test:content` green (493 content); `pnpm validate:stdlib` 84/84 (WebGL2).
+
+## 2026-06-14 — family 3: lineRibbon + differentialGrowth + lsystem (SHIPPED)
+
+- **`lineRibbon`** (geo) — the shared thin-stroke renderer both growth modules
+  build on. Polylines → glowing instanced segment-quad strokes (one thin oriented
+  box per edge, joined end-to-end), rebuilt every frame from a `paths()` provider
+  so a *growing* vertex set re-uploads each frame (`DynamicDrawUsage` — the
+  particleEmitter lesson). Returns a GeoNode; feeds `render3d`+`orbitCam`. Chose
+  the GeoNode route over a 2D-stroke source to reuse the existing geo path.
+- **`differentialGrowth`** (geo) — a closed polyline that repels locally
+  (spatial-hash grid, O(n)), Laplacian-smooths along the chain, and inserts a
+  node where an edge overstretches → coral meanders. Solver lesson: force×dt was
+  a self-crossing tangle; rewrote to a Jacobi relax with per-iteration
+  displacement CAPPED to ~0.45·radius + z damped near-planar + 8 iters/frame, so
+  the curve stays relaxed (non-crossing) as it grows. Seeded (mulberry32),
+  node-capped. Audio: bass→repulsion, kick→split rate.
+- **`lsystem`** (geo) — axiom rewritten k gens (length-capped), turtle-drawn
+  (F/G draw, +/- yaw, &/^ pitch, [/] branch) into disjoint 2-pt ribbon paths
+  (branch jumps never connect); `reveal` draws a growing fraction → unfurl;
+  `angle` re-tessellates only on change. Presets plant/koch/dragon/sierpinski/
+  bush. Scenes: `coral-growth`, `grammar-garden` (bloom+vignette, palette-able).
+- Verified WebGL2 only (headless + shoot.mjs) — no real-WebGPU adapter available
+  this session. validate:stdlib 87/87 non-black; new modules lum≈18.
+- Gates: `pnpm typecheck` (86 modules, 43 scenes), `pnpm test`,
+  `pnpm test:content` (508), `pnpm validate:stdlib` (87/87) all green.
