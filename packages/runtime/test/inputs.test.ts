@@ -245,6 +245,8 @@ describe("BuildCtx.input — late-bound consumption with a per-instance trim", (
     expect(ctx.manifest.paths().filter((p) => p === "input.bass.amount")).toHaveLength(1);
     const trim = ctx.manifest.get("input.bass.amount")!;
     expect(trim.value).toBe(1);
+    // Auto-added, so it's hidden from the default params box (still fully live).
+    expect((trim.toJSON() as { hidden?: boolean }).hidden).toBe(true);
     audio.energies.bass = 0.4;
     reg.update(F(0));
     expect(a.get(F(0))).toBeCloseTo(0.4);

@@ -14,6 +14,7 @@ import { ParamWidget } from "./ParamWidget";
 const GROUP_OPEN_KEY = "loom.pgroups.open";
 const PANEL_W_KEY = "loom.panelw";
 const PANEL_COLLAPSED_KEY = "loom.panelcollapsed";
+const SHOW_ADVANCED_KEY = "loom.params.advanced";
 
 function loadOpen(): Record<string, boolean> {
   try {
@@ -37,6 +38,18 @@ type Props = {
 export function ParamPanel({ instance, manifest, session }: Props) {
   const link = useEngine();
   const [open, setOpen] = useState<Record<string, boolean>>(loadOpen);
+  const [showAdvanced, setShowAdvanced] = useState(() => localStorage.getItem(SHOW_ADVANCED_KEY) === "1");
+  const toggleAdvanced = () => {
+    setShowAdvanced((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(SHOW_ADVANCED_KEY, next ? "1" : "0");
+      } catch {
+        // advanced visibility just won't persist across reloads
+      }
+      return next;
+    });
+  };
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(PANEL_COLLAPSED_KEY) === "1");
   const setCollapsedPersist = (next: boolean) => {
     setCollapsed(next);
@@ -88,7 +101,7 @@ export function ParamPanel({ instance, manifest, session }: Props) {
   // its chain knobs (<node>.fx.*) render inside that chain, not as widgets. The
   // bucketing is pure (param-groups.ts); this component owns only the rendering.
   const nodes = session?.instances.find((i) => i.id === instance)?.nodes ?? [];
-  const { flat, groups, nodeIds, parentOf } = groupParams(manifest, nodes);
+  const { flat, groups, nodeIds, parentOf, hiddenCount } = groupParams(manifest, nodes, showAdvanced);
   const ready = instance != null && manifest != null;
   const isLive = ready && session?.live === instance;
   const isStaged = ready && session?.staged === instance;
@@ -308,6 +321,22 @@ export function ParamPanel({ instance, manifest, session }: Props) {
               );
             })}
             {instance !== "globals" && <FxChain instance={instance} manifest={manifest} />}
+            {hiddenCount > 0 && (
+              <Button
+                id="panel-advanced"
+                onClick={toggleAdvanced}
+                title={showAdvanced ? "hide advanced params" : "show advanced params (input trims)"}
+                sx={{
+                  mt: 1,
+                  fontSize: 11,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "text.secondary",
+                }}
+              >
+                {showAdvanced ? "▾ hide advanced" : `▸ advanced (${hiddenCount})`}
+              </Button>
+            )}
           </>
         )}
       </Box>

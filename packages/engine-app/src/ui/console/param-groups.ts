@@ -17,6 +17,10 @@ export interface ParamGroups {
   groups: Map<string, ParamEntry[]>;
   nodeIds: Set<string>;
   parentOf: Map<string, string | null>;
+  /** How many params are flagged `hidden` (e.g. auto input trims) — drives the
+   *  panel's "advanced" toggle. The count reflects the full manifest, so the
+   *  toggle stays available whether or not hidden params are currently shown. */
+  hiddenCount: number;
 }
 
 /**
@@ -26,18 +30,29 @@ export interface ParamGroups {
  * palette.source stays flat (the scene's palette switch is too load-bearing to
  * bury in a collapsed accordion). Every layer node gets a section even if the
  * manifest snapshot lags the session's node list.
+ *
+ * Params flagged `hidden` (e.g. the auto-added per-instance input trim
+ * `input.<name>.amount`) are dropped unless `includeHidden` is set — the panel's
+ * "advanced" toggle. They are always counted into `hiddenCount` so the toggle
+ * stays available even while they're hidden.
  */
 export function groupParams(
   manifest: Record<string, ParamDesc> | undefined,
   nodes: NodeInfo[],
+  includeHidden = false,
 ): ParamGroups {
   const nodeIds = new Set(nodes.map((n) => n.id));
   const parentOf = new Map<string, string | null>(nodes.map((n) => [n.id, n.parent]));
   const flat: ParamEntry[] = [];
   const groups = new Map<string, ParamEntry[]>();
+  let hiddenCount = 0;
   for (const [path, p] of Object.entries(manifest ?? {})) {
     if (isFxPath(path)) continue; // chain knobs render inside the FX CHAIN section
     if (p.channelOf != null) continue; // color channels render inside their color widget (R7.4)
+    if (p.hidden) {
+      hiddenCount++;
+      if (!includeHidden) continue; // revealed only by the panel's advanced toggle
+    }
     const dot = path.indexOf(".");
     if (dot < 0 || path === PALETTE_SOURCE_PATH) {
       flat.push([path, p]);
@@ -53,7 +68,7 @@ export function groupParams(
     }
   }
   for (const id of nodeIds) if (!groups.has(id)) groups.set(id, []);
-  return { flat, groups, nodeIds, parentOf };
+  return { flat, groups, nodeIds, parentOf, hiddenCount };
 }
 
 /**

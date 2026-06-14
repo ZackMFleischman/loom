@@ -1240,3 +1240,42 @@ Phase 5's `groupParams`).
   `window.__loom` throttle, Phase 6 TSL seam) is captured in that same ticket.
 - Cleared shipped feature-requests: `param-modulators.md`, `panic-scene.md`.
 - Gates after merge: typecheck + `pnpm test` (755) + `pnpm lint` green.
+
+## Hide the auto per-instance input trim from the default params box (2026-06-13)
+
+- **What the param is.** When a scene calls `ctx.input("bass")`, `BuildCtx.input`
+  auto-declares a per-instance float `input.<name>.amount` (default 1, range 0..2)
+  on that instance's manifest and returns `channel × trim`. It's a *per-instance*
+  scale on the named rack channel — distinct from the *global* `inputs.<name>.gain`
+  (which the rack already exposes on the "globals" pseudo-instance and which scales
+  the channel for every consumer + its meter/detection). In the Console it surfaced
+  as an `input` accordion with one slider per consumed channel — a knob the scene
+  author never wrote, appearing on every audio-reactive scene. The owner found this
+  distracting and asked whether it should "just be managed by the audio rack."
+- **Options weighed.** (a) Remove the auto-trim entirely and rely on global gain —
+  rejected as too destructive for a conservative pass: it silently changes the value
+  every scene reads (currently `channel × trim`), drops a real capability (per-
+  instance scaling, which global gain can't express), and would orphan any persisted/
+  MIDI-bound/modulated `input.*.amount` in `content/state/`. (b) Keep the engine
+  behavior but flag the param so the default params box omits it — chosen. (c) special-
+  case `input.*` paths in the Console — rejected in favor of a general flag.
+- **Decision + why.** Added a generic, reusable `hidden` param-meta flag (param.ts
+  `RangedSpec`, serialized via the existing `specMeta`/`toJSON` spread) and set it on
+  the auto-trim in `BuildCtx.input`. The Console's `groupParams` drops hidden params
+  by default and reports `hiddenCount`; `ParamPanel` shows a persisted "▸ advanced (n)"
+  toggle that reveals them. This removes the clutter (the actual complaint) while the
+  value path is **byte-for-byte unchanged** — at the default trim=1 nothing moves on
+  screen, persisted tunings still apply, and the knob stays fully `set_param`-able,
+  MIDI-bindable and modulatable. Fully reversible, non-breaking.
+- **Touched.** runtime: `param.ts` (flag + schema), `buildctx.ts` (set flag + doc).
+  sidecar: `protocol.ts` (`hidden` on `ParamDescriptor`; `looseObject` already passed
+  it). engine-app: `engine-link.ts` (`ParamDesc.hidden`), `param-groups.ts` (filter +
+  count), `ParamPanel.tsx` (advanced toggle). Docs: `.claude/CLAUDE.md` rule 7. Tests:
+  `param.test.ts`, `inputs.test.ts`, `console-logic.test.ts`.
+- **Generality.** `hidden` is now available to any future auto-machinery param, not
+  just the input trim. It is a UI-default-visibility hint only — it changes nothing
+  about clamping, persistence, MIDI, or modulation.
+- Gates: typecheck + `pnpm lint` (no new errors; pre-existing advisory warnings only)
+  + `pnpm test` green (runtime 239 · sidecar 35 · engine-app 39 · content 434 ·
+  scripts 11). validate suites not run (sandbox egress blocks Playwright chromium;
+  CI/preview is the eyes-on check, per prior entries).
