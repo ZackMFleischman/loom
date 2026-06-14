@@ -1747,3 +1747,23 @@ path and never-go-black are untouched, NFR-4):
   this session. validate:stdlib 87/87 non-black; new modules lum≈18.
 - Gates: `pnpm typecheck` (86 modules, 43 scenes), `pnpm test`,
   `pnpm test:content` (508), `pnpm validate:stdlib` (87/87) all green.
+
+## 2026-06-14 — SHIPPED: family 4 — GPU particle "silk"
+- **`particleState` + `additiveDeposit`** (`content/modules/_shared.ts`, append-only) —
+  the reusable GPU particle-pool primitive that generalizes physarum's inline
+  machinery: pos/vel in a ping-ponged HalfFloat √count² texture (NearestFilter),
+  in-shader seeded (no Math.random), frame-clocked `phase`; `load(idx)` reads a
+  particle via `textureLoad(vertexIndex)`. `additiveDeposit` splats instanced
+  `Points` additively into a HalfFloat accum buffer (+ optional trail bleed) →
+  soft `1-exp(-d)` tone-map. Carries the WebGL2/WebGPU RT Y-flip.
+- **`silk`** source + **`silk-flow`** scene — curl-of-fbm flow OR de Jong
+  attractor; bass surges force, kick breathes curl scale, palette-ramped + bloom.
+- Finishing an inherited half-done draft: fixed (1) a seed-hash that exceeded
+  WebGL2/ANGLE `sin` precision → sparse-grid collapse (lum 0.13), now bounded
+  integer-texel ids + pre-`fract` hash; (2) too-small advection step + too-faint
+  splats → dense flowing silk (lum 82). Reverted an out-of-scope `live.scene.ts`
+  edit the prior agent left.
+- Verified WebGL2 only (headless + shoot.mjs); real-WebGPU (float-tex additive
+  blend + position `textureLoad`) needs a human eyeball — `navigator.gpu` undefined.
+- Gates: `pnpm typecheck` (87 modules, 44 scenes), `pnpm test`, `pnpm test:content`
+  (513), `pnpm validate:stdlib` (88/88 non-black, silk lum 82) all green.

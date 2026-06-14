@@ -1,15 +1,40 @@
 # Particle & agent systems — flow, flocking, attractors, slime mold (post-v1 candidates)
 
-**Status:** MOSTLY SHIPPED. CPU-side agent systems (drawn through `render3d` +
+**Status:** SHIPPED. CPU-side agent systems (drawn through `render3d` +
 `InstancedMesh`, seeded + frame-clocked): **`strangeAttractor`** (scene
 `attractor-cloud`), **`flock`** (boids, scene `flock-swarm`), **`flowParticles`**
 (ABC-flow advection, scene `flow-field`). **`physarum` ✅ SHIPPED** the GPU route
 (2026-06-14): agents in a ping-ponged position texture, additive deposit via
 instanced points reading that texture, diffuse+decay in a second ping-pong —
-the diffusing trail field. Scene `slime-veins`. Still open: a reusable
-`particleState`/additive-accumulation primitive for the million-point "silk"
-looks (physarum owns its passes inline rather than via a shared primitive).
+the diffusing trail field. Scene `slime-veins`. **`particleState` +
+`additiveDeposit` + `silk` ✅ SHIPPED** (2026-06-14): the reusable GPU
+particle-pool primitive + the million-point "silk" payoff. Scene `silk-flow`.
 Sibling family to `gpu-field-simulations.md`.
+
+## DECISIONS SHIPPED (2026-06-14) — family 4: GPU particles "silk"
+- `_shared.ts`: `particleState(ctx, {count, spawn, update, respawn, reseed, seed})`
+  — pos/vel in a ping-ponged HalfFloat √count² texture (NearestFilter), seeded
+  in-shader (no Math.random), frame-clocked; `load(idx)` reads a particle via
+  `textureLoad(vertexIndex)`. `additiveDeposit(ctx, {particles, positionUv,
+  color, exposure, persistence, ...})` — instanced `Points` additive splat into a
+  HalfFloat accum buffer (+ optional trail bleed) → soft `1-exp(-d)` tone-map.
+  Generalizes physarum's inline machinery incl. the WebGL2/WebGPU RT Y-flip.
+- `silk` source: curl-of-fbm flow OR de Jong attractor field; bass surges force,
+  kick breathes curl scale (scene `silk-flow`). Params expose count, field,
+  force, curlScale, evolve, churn, persistence, exposure, glow (per-splat
+  brightness), size, reseed, seed. Existing `_shared` consumers
+  (reactionDiffusion/waveField/automata/physarum/fluid2d) untouched + still green.
+- Fixes finishing the inherited draft: (1) the per-particle seed hash blew past
+  WebGL2/ANGLE `sin` precision (uv*side*salt → 10^5), collapsing the pool onto a
+  sparse grid (lum 0.13) — reworked to bounded integer-texel ids + a
+  pre-`fract`-reduced hash; (2) advection step was ~0.0002/frame (particles never
+  spread) and per-splat deposit ~0.02 with low persistence (density never built)
+  — retuned to a proper finite-difference curl velocity, ~1px/frame step, glowing
+  splat + 0.82 trail persistence. Result: dense flowing silk (lum 82).
+- Gates: typecheck + `pnpm test` (513 content + 442 pkg) green; `validate:stdlib`
+  88/88 WebGL2-verified non-black (silk lum 82). Real-WebGPU (float-tex additive
+  blend + `textureLoad` position-tex) needs a human eyeball — `navigator.gpu`
+  undefined on this host.
 
 ## The opportunity
 
