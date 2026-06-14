@@ -95,6 +95,8 @@ const CONTROL_OPTS = {
 const MIN_LUM = {
   fireflies: 0.2,
   spriteSwarm: 0.2,
+  sprinkles: 0.2, // a handful of small candy rods, mostly transparent at any single frame
+
   image: 0.2,
   noodles: 0.2,
   flyby: 0.5,

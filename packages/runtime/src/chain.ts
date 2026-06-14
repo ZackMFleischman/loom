@@ -1,4 +1,4 @@
-import { mix, vec4 } from "three/tsl";
+import { mix, vec4 } from "./tsl";
 import type { BuildCtx } from "./buildctx";
 import type { Events } from "./events";
 import type { ChainParamSpec, ModuleFactory } from "./module";

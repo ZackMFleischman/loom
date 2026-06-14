@@ -1,6 +1,5 @@
-import { uniform } from "three/tsl";
-import { Color } from "three/webgpu";
-import type { Node } from "three/webgpu";
+import { Color, uniform } from "./tsl";
+import type { Node } from "./tsl";
 import type { FrameCtx } from "./frame";
 import type { AudioBusLike } from "./inputbus/audio";
 import type { TimeBus } from "./inputbus/time";

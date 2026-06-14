@@ -20,7 +20,10 @@ const PORT = 5199;
 // Isolated sidecar port: a live Claude Code session may hold the default 7341.
 const WS_PORT = 7342;
 // state=off: persisted tunings (M5) must never skew validation assertions.
-const URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off${resQuery}`;
+// agentCommit=0: boot UNARMED so the batch's commit hits the human-gate (the
+// 8c check asserts an unarmed agent commit is gated inside a batch); the engine
+// otherwise defaults to armed, which would short-circuit on "nothing staged".
+const URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off&agentCommit=0${resQuery}`;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];

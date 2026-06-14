@@ -1,34 +1,22 @@
 import {
   AudioBus,
   BindingStore,
-  buildInstance,
   BuildCtx,
   ChainHost,
   Clock,
-  Events,
-  FixtureDataSchema,
-  FixturePlayer,
   InputRegistry,
   isFxPath,
-  isModBinding,
-  isPalettePath,
-  modTarget,
   Instance,
   MidiBus,
   ModulatorHost,
   PaletteRegistry,
-  Signal,
   Stage,
   texNode,
   TimeBus,
-  type AudioBusLike,
-  type FixtureData,
-  type FrameCtx,
   type InputsDef,
-  type Param,
   type SceneDef,
 } from "@loom/runtime";
-import { DEFAULT_WS_PORT, type InstanceStatus, type ScreenshotResult } from "@loom/sidecar/protocol";
+import { DEFAULT_WS_PORT } from "@loom/sidecar/protocol";
 import { texture, vec4 } from "three/tsl";
 import { RenderTarget, WebGPURenderer } from "three/webgpu";
 import inputsDef from "../../../content/inputs";
@@ -36,63 +24,21 @@ import liveScene from "../../../content/scenes/live.scene";
 import panicScene from "../../../content/scenes/panic.scene";
 import { startBridge } from "./bridge";
 import { Compositor } from "./compositor";
-import { assertProjectName, ProjectStore, type ProjectData } from "./projects";
+import { DebugSurface } from "./debug-surface";
+import { ProjectsController } from "./projects-controller";
 import { readTargetToDataUrl } from "./readback";
 import { startConsoleChannel } from "./console-channel";
 import { EngineApi } from "./engine-api";
 import { FpsMeter } from "./fps";
 import { getEffectLibrary } from "./effects";
+import { FixtureService } from "./fixture-service";
+import { MidiRouter } from "./midi-router";
+import { PanicController } from "./panic-controller";
+import { RenderService } from "./render-service";
 import { getScenes } from "./scenes";
-import { entryStatus, PREVIEW_H, PREVIEW_W, SessionStore } from "./session";
-import { fixtureKey, projectKey, repoStatePath, StateClient, StateDir, StateKey } from "./state";
+import { SessionStore } from "./session";
+import { StateClient, StateKey } from "./state";
 import { workerInterval } from "./worker-clock";
-
-declare global {
-  interface Window {
-    __loom?: {
-      sceneName: string | null;
-      audioMode: string;
-      bpm: number;
-      rms: number;
-      onsetCount: number;
-      instanceError: string | null;
-      frame: number;
-      fps: number;
-      /** Which clock drove the last frame: rAF (visible) or the worker fallback (hidden tab). */
-      clockSource?: "raf" | "worker";
-      live: string | null;
-      staged: string | null;
-      mix: number | null;
-      panicked: boolean;
-      /** Armed PANIC behavior ("hold" | "scene"). */
-      panicMode: "hold" | "scene";
-      /** Active PANIC mode, or null when not panicked. */
-      panicActive: "hold" | "scene" | null;
-      /** Designated Panic Scene name + build health. */
-      panicScene: { name: string; status: "ok" | "error"; error: string | null };
-      agentCommitArmed: boolean;
-      instances: Array<{
-        id: string;
-        scene: string;
-        status: InstanceStatus;
-        builds: number;
-        pinned: "panic" | null;
-        modulators: Array<{ path: string; type: string; error: string | null; enabled: boolean }>;
-        chain: Array<{ id: string; effect: string; kind: string; mix: number; enabled: boolean }>;
-        /** Costliest CPU signals (smoothed ms, desc) — per-signal cost attribution. */
-        slowSignals: Array<{ label: string; ms: number }>;
-      }>;
-      /** Input-rack channel values (rack meters / validation). */
-      inputs: Record<string, number>;
-      /** Global palette tunings (R7) — palette.<source>.<i> → "#rrggbb". */
-      palettes: Record<string, number | boolean | string>;
-      /** Mocked-hardware hook: feeds the same path as a real CC message. */
-      midiInject: (cc: number, ch: number, value01: number) => void;
-      /** Console (parent frame) forwards its click gesture here to unsuspend audio. */
-      resumeAudio: () => void;
-    };
-  }
-}
 
 const qs = new URLSearchParams(location.search);
 
@@ -228,72 +174,11 @@ const persist = {
     state.save(StateKey.sceneColorSpaces(sceneName), () => tunedColorSpaces.get(sceneName) ?? {});
   },
   bindings: () => state.save(StateKey.bindings, () => bindings.toJSON()),
-  panicScene: () => state.save(StateKey.panic, () => ({ scene: panicSceneName })),
+  panicScene: () => state.save(StateKey.panic, () => ({ scene: panicController.sceneName })),
 };
 
-// MIDI routing: a CC completes a pending learn, then drives its bindings.
-// Absolute writes ride the same Manifest path as set_param; button modes
-// (set/cycle) fire per press; the "actions" pseudo-scene steps LIVE through
-// the tiles (wired to the EngineApi below once it exists — CCs can arrive
-// during the boot awaits, hence the late-bound holder).
-const ACTIONS = "actions";
-let onAction: (path: string) => void = () => {};
-
-function writeParam(scene: string, path: string, apply: (p: Param<unknown>) => void): void {
-  if (scene === "globals") {
-    const isPalette = isPalettePath(path);
-    const param = (isPalette ? palettes.manifest : inputs.manifest).get(path);
-    if (!param) return;
-    apply(param);
-    if (isPalette) persist.palettes();
-    else persist.globals();
-    return;
-  }
-  let touched = false;
-  for (const entry of session.entries.values()) {
-    if (entry.sceneName !== scene) continue;
-    const param = entry.instance.manifest.get(path);
-    if (param) {
-      apply(param);
-      touched = true;
-    }
-  }
-  if (touched) persist.scene(scene);
-}
-
-// "mod:<paramPath>" bindings pause/resume that param's modulator on every
-// instance of the scene (toggleEnabled is a safe no-op when none is attached).
-function setModEnabled(scene: string, paramPath: string, to: "toggle" | boolean): void {
-  if (scene === "globals") {
-    if (to === "toggle") globalsModulators.toggleEnabled(paramPath);
-    else if (globalsModulators.get(paramPath) != null) globalsModulators.setEnabled(paramPath, to);
-    persist.palettes();
-    return;
-  }
-  for (const entry of session.entries.values()) {
-    if (entry.sceneName !== scene) continue;
-    if (to === "toggle") entry.modulators.toggleEnabled(paramPath);
-    else if (entry.modulators.get(paramPath) != null) entry.modulators.setEnabled(paramPath, to);
-  }
-}
-
-midi.onCc((e) => {
-  const { learned } = bindings.handleCc(e, {
-    write: (scene, path, v01) => writeParam(scene, path, (p) => p.setNormalized(v01)),
-    setValue: (scene, path, value) => {
-      if (scene === ACTIONS) return onAction(path);
-      if (value === undefined) return; // a set binding without a target is inert
-      if (isModBinding(path)) return setModEnabled(scene, modTarget(path), value >= 0.5);
-      writeParam(scene, path, (p) => p.set(value));
-    },
-    cycle: (scene, path) => {
-      if (scene === ACTIONS) return onAction(path);
-      if (isModBinding(path)) return setModEnabled(scene, modTarget(path), "toggle");
-      writeParam(scene, path, (p) => p.cycle());
-    },
-  });
-  if (learned) persist.bindings();
-});
+// MIDI routing lives in MidiRouter (writeParam / setModEnabled / onCc) —
+// constructed and started below, once `session` exists.
 
 // The chainable-effect library (M6). Re-cached on an `./effects` hot-update so a
 // saved chain or an edited effect appears in the picker without a reload.
@@ -319,6 +204,11 @@ const session = new SessionStore(
   (scene) => tunedColorSpaces.get(scene),
 );
 
+// CC handling (writeParam / setModEnabled / actions). `onAction` is late-bound
+// after the EngineApi exists; the CC subscription is live immediately.
+const midiRouter = new MidiRouter({ midi, session, inputs, palettes, globalsModulators, bindings, persist });
+midiRouter.start();
+
 // Effect-picker previews: fold a candidate effect over an instance's CURRENT
 // output (its already-rendered preview target — no extra scene render, so a live
 // instance's stateful passes are never disturbed) into a throwaway instance,
@@ -327,7 +217,6 @@ const session = new SessionStore(
 const PREVIEW2_W = 256;
 const PREVIEW2_H = 144;
 const PREVIEW2_FRAMES = 8; // lets stateful candidates (feedback) settle over the still source
-const pendingPreviews: Array<{ run: (f: FrameCtx) => void; done: () => void }> = [];
 
 async function previewEffect(instanceId: string, effect: string): Promise<string> {
   const e = session.require(instanceId);
@@ -346,7 +235,7 @@ async function previewEffect(instanceId: string, effect: string): Promise<string
   }
   try {
     await new Promise<void>((resolve) => {
-      pendingPreviews.push({
+      renderService.queuePreview({
         run: (f) => {
           for (let i = 0; i < PREVIEW2_FRAMES; i++) preview.renderFrame(renderer, f, outRT);
         },
@@ -366,197 +255,24 @@ const stage = new Stage();
 const compositor = new Compositor(RENDER_W, RENDER_H);
 
 // ---- Projects: set lists (serialized instance sets in content/state/projects/) ----
-// Save/load are explicit user actions, so they work regardless of ?state=off
-// (which only disables AMBIENT persistence).
-const projectStore = new ProjectStore(session, stage, () => currentScenes());
-let projectNames: string[] = [];
-async function refreshProjects(): Promise<string[]> {
-  try {
-    const res = await fetch(`/loom/state-list/${StateDir.projects}`);
-    if (res.ok) projectNames = (await res.json()) as string[];
-  } catch {
-    // listing is a convenience, never a blocker
-  }
-  return projectNames;
-}
-
-// Deferred cull: after a load the pre-load instances keep running until a
-// commit from the loaded set LANDS (fade complete) — then they cull. Loading
-// alone never changes what the audience sees (audience-safe trust model).
-let pendingCull: { loaded: Set<string>; stale: Set<string> } | null = null;
+// ProjectsController owns the fetch/persist plumbing + deferred-cull bookkeeping
+// over the tested ProjectStore. Save/load are explicit user actions, so they
+// work regardless of ?state=off (which only disables AMBIENT persistence).
+const projectsController = new ProjectsController({ session, stage, scenes: () => currentScenes() });
 
 // ---- Fixtures: deterministic input traces (content/state/fixtures/) ----
+// FixtureService owns recording the live rack (record + the per-frame
+// recordFrame hook) and the deterministic offline pass (shots).
+const fixtureService = new FixtureService({
+  session,
+  renderer,
+  inputs,
+  palettes,
+  timeBus,
+  readTargetToDataUrl,
+});
 
-/** A pending rack recording; frameTick appends one row per frame. */
-let recording: {
-  name: string;
-  channels: string[];
-  rows: number[][];
-  remaining: number;
-  resolve: (r: { saved: string; path: string; frames: number; channels: string[]; bpm: number }) => void;
-  reject: (e: Error) => void;
-} | null = null;
-
-const fixturesApi = {
-  record(name: string, frames: number) {
-    if (recording != null) throw new Error("a fixture recording is already in flight");
-    const channels = Object.keys(inputs.values());
-    if (channels.length === 0) throw new Error("the input rack has no channels to record");
-    return new Promise<{ saved: string; path: string; frames: number; channels: string[]; bpm: number }>(
-      (resolve, reject) => {
-        recording = { name, channels, rows: [], remaining: frames, resolve, reject };
-      },
-    );
-  },
-  async load(name: string): Promise<FixtureData> {
-    const res = await fetch(`/loom/state/${StateDir.fixtures}/${encodeURIComponent(name)}`);
-    if (!res.ok) throw new Error(`unknown fixture "${name}" — record one with record_fixture`);
-    const parsed = FixtureDataSchema.safeParse(await res.json());
-    if (!parsed.success) throw new Error(`fixture "${name}" is corrupt: ${parsed.error.message}`);
-    return parsed.data;
-  },
-  /**
-   * Deterministic offline pass: rebuild the entry's scene against its trace on
-   * a virtual clock (frame 0, dt 1/60, own TimeBus at the trace's BPM, silent
-   * audio), mirror its tuned values + chains + modulators, step to each
-   * requested frame and read the pixels back. Same fixture + frames →
-   * identical bytes, independent of wall time and the live loop.
-   */
-  async shots(entryId: string, frameList: number[]) {
-    const e = session.require(entryId);
-    if (e.fixture == null) throw new Error(`"${entryId}" replays no fixture`);
-    const data = e.fixture.data;
-    const player = new FixturePlayer(data, 0);
-    const vTime = new TimeBus(data.bpm);
-    const silentAudio: AudioBusLike = {
-      rms: new Signal(() => 0),
-      band: () => new Signal(() => 0),
-      onset: () => new Events(() => []),
-    };
-    // Mirror the entry's current chain knobs into the chain data, then fold the
-    // same chains into the throwaway build.
-    e.chain.captureValues(e.instance.manifest);
-    for (const h of e.nodeChains.values()) h.captureValues(e.instance.manifest);
-    const throwaway = buildInstance(
-      e.def,
-      { audio: silentAudio, time: vTime, inputs: player, palettes },
-      (ctx, tex) => e.chain.fold(ctx, tex),
-      { foldNode: (ctx, node, tex) => e.nodeChains.get(node)?.fold(ctx, tex) ?? tex },
-    );
-    const mods = new ModulatorHost({ bpm: () => vTime.bpm, audio: silentAudio });
-    try {
-      // Mirror live values (incl. chain knobs) and modulator specs.
-      for (const [path, v] of Object.entries(e.instance.manifest.values())) {
-        try {
-          throwaway.manifest.get(path)?.set(v);
-        } catch {
-          // value doesn't fit (shouldn't happen — same def) — keep default
-        }
-      }
-      for (const m of e.modulators.list()) {
-        if (m.error != null) continue;
-        try {
-          mods.attach(throwaway.manifest, m.path, m.spec);
-        } catch {
-          // spec no longer fits — skip for the offline pass
-        }
-      }
-      const want = [...new Set(frameList)].sort((a, b) => a - b);
-      const rts = new Map(want.map((i) => [i, new RenderTarget(PREVIEW_W, PREVIEW_H)]));
-      const scratch = new RenderTarget(PREVIEW_W, PREVIEW_H);
-      try {
-        const DT = 1 / 60;
-        const liveTarget = renderer.getRenderTarget();
-        for (let i = 0; i <= want[want.length - 1]!; i++) {
-          const f: FrameCtx = { frame: i, now: i * DT, dt: DT };
-          vTime.tick(f);
-          mods.tick(throwaway.manifest, f);
-          // Bind the destination BEFORE the passes run: destination-sized
-          // stateful passes (render3d, transform, layer rigs) read the current
-          // target to size their buffers — leaving the live loop's last target
-          // bound made that size (and the pixels) nondeterministic.
-          const dest = rts.get(i) ?? scratch;
-          renderer.setRenderTarget(dest);
-          throwaway.renderFrame(renderer, f, dest);
-          if (throwaway.error != null) {
-            throw new Error(`offline render froze at frame ${i}: ${String(throwaway.error)}`);
-          }
-        }
-        renderer.setRenderTarget(liveTarget);
-        const shots = [];
-        for (const i of want) {
-          const url = await readTargetToDataUrl(renderer, rts.get(i)!, PREVIEW_W, PREVIEW_H, {
-            mime: "image/png",
-          });
-          shots.push({
-            frame: i,
-            mime: "image/png" as const,
-            base64: url.slice(url.indexOf(",") + 1),
-            width: PREVIEW_W,
-            height: PREVIEW_H,
-          });
-        }
-        return shots;
-      } finally {
-        for (const rt of rts.values()) rt.dispose();
-        scratch.dispose();
-      }
-    } finally {
-      throwaway.dispose();
-    }
-  },
-};
-
-async function finishRecording(r: NonNullable<typeof recording>): Promise<void> {
-  const data: FixtureData = { name: r.name, bpm: timeBus.bpm, channels: r.channels, frames: r.rows };
-  try {
-    const res = await fetch(`/loom/state/${StateDir.fixtures}/${encodeURIComponent(r.name)}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) throw new Error(`fixture save failed (${res.status})`);
-    r.resolve({
-      saved: r.name,
-      path: repoStatePath(fixtureKey(r.name)),
-      frames: r.rows.length,
-      channels: r.channels,
-      bpm: data.bpm,
-    });
-  } catch (err) {
-    r.reject(err instanceof Error ? err : new Error(String(err)));
-  }
-}
-
-const projectsApi = {
-  list: () => refreshProjects(),
-  cached: () => projectNames,
-  async save(name: string, tileOrder?: string[]) {
-    assertProjectName(name);
-    const data = projectStore.serialize(name, new Date().toISOString(), tileOrder);
-    if (data.instances.length === 0) throw new Error("nothing to save — no instances");
-    const res = await fetch(`/loom/state/${StateDir.projects}/${encodeURIComponent(name)}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(data, null, 2),
-    });
-    if (!res.ok) throw new Error(`project save failed (${res.status})`);
-    await refreshProjects();
-    return { saved: name, path: repoStatePath(projectKey(name)), instances: data.instances.length };
-  },
-  async load(name: string) {
-    assertProjectName(name);
-    const res = await fetch(`/loom/state/${StateDir.projects}/${encodeURIComponent(name)}`);
-    if (!res.ok) {
-      throw new Error(`unknown project "${name}" — saved projects: ${projectNames.join(", ") || "(none)"}`);
-    }
-    const data = (await res.json()) as ProjectData;
-    const out = projectStore.load(data);
-    pendingCull = { loaded: new Set(out.created), stale: new Set(out.replaced) };
-    return out;
-  },
-};
-void refreshProjects();
+void projectsController.list();
 
 // The barrel binding goes stale when ./scenes hot-updates; HMR swaps it below.
 let currentScenes = getScenes;
@@ -567,13 +283,6 @@ let currentScenes = getScenes;
  * "live" is an alias for whatever the Stage routes to output, not an id.
  */
 let bootId = "boot";
-
-/**
- * The always-warm Panic Scene instance (FR-3). Built at boot next to the boot
- * instance, rebuilt through HMR when panic.scene.ts changes, never disposed —
- * PANIC must never wait on (or risk) a build. Its id is "panic".
- */
-const PANIC_ID = "panic";
 
 /**
  * NFR-5 for the boot instance: build the new one first; a failed
@@ -591,71 +300,14 @@ function trySwapLive(def: SceneDef): boolean {
   }
 }
 
-// Panic Scene build health (FR-7): the last build error, surfaced even when a
-// previous good instance still runs. Null once a usable instance exists.
-let panicSceneName = panicScene?.name ?? "panic";
-let panicBuildError: string | null = "panic instance not built yet";
-
-/**
- * Build (or HMR-rebuild) the warm panic instance, same NFR-5 semantics as the
- * boot instance: a failed rebuild keeps the previous one running and only
- * flags health. FR-7's hold-fallback triggers only if there has *never* been a
- * healthy build (no instance exists).
- */
-function tryBuildPanic(def: SceneDef): boolean {
-  panicSceneName = def?.name ?? panicSceneName;
-  if (session.get(PANIC_ID)) {
-    const ok = session.rebuild(PANIC_ID, def);
-    panicBuildError = ok ? null : `panic scene "${def?.name ?? "?"}" update rejected (see console)`;
-    return ok;
-  }
-  try {
-    const e = session.create(def, PANIC_ID);
-    e.pinned = "panic";
-    panicBuildError = null;
-    return true;
-  } catch (err) {
-    panicBuildError = `panic scene "${def?.name ?? "?"}" failed to build: ${String(err)}`;
-    console.error(`[loom] ${panicBuildError}; PANIC will hold`, err);
-    return false;
-  }
-}
-
-/** The instance currently bearing the SAFE designation, if any. */
-function pinnedPanicEntry() {
-  for (const e of session.entries.values()) if (e.pinned === "panic") return e;
-  return undefined;
-}
-
-/** A usable safe-target instance exists → scene-panic is available (FR-7). */
-function panicInstanceId(): string | null {
-  return pinnedPanicEntry()?.id ?? (session.get(PANIC_ID) ? PANIC_ID : null);
-}
-function panicSceneInfo(): { name: string; status: "ok" | "error"; error: string | null } {
-  const e = pinnedPanicEntry();
-  return {
-    name: e?.sceneName ?? panicSceneName,
-    status: e ? "ok" : "error",
-    error: e ? null : panicBuildError,
-  };
-}
-
-/**
- * Designate an existing, already-warm instance as the SAFE SCENE target (the
- * Console picker). The ⛑ SAFE marker — and what scene-panic cuts to — moves to
- * the chosen instance; no build, no gap. The boot default ("panic", from
- * panic.scene.ts) is just the initial designation. Persists the target's scene
- * so the default reflects it across a restart (instance ids are ephemeral).
- */
-function setPanicInstance(id: string): void {
-  const target = session.require(id);
-  if (target.pinned === "panic") return;
-  for (const e of session.entries.values()) if (e.pinned === "panic") delete e.pinned;
-  target.pinned = "panic";
-  panicSceneName = target.sceneName;
-  panicBuildError = null;
-  persist.panicScene();
-}
+// The always-warm Panic Scene instance (FR-3/FR-7): built at boot next to the
+// boot instance, rebuilt through HMR, never disposed. PanicController owns the
+// warm-instance lifecycle, the SAFE designation, and build-health reporting.
+const panicController = new PanicController({
+  session,
+  persistPanicScene: () => persist.panicScene(),
+  initialSceneName: panicScene?.name ?? "panic",
+});
 
 async function startAudio(): Promise<void> {
   if (qs.get("audio") === "test") {
@@ -670,15 +322,15 @@ async function startAudio(): Promise<void> {
   }
 }
 
-await renderer.init();
-// updateStyle=false: CSS owns the canvas's on-screen size (object-fit: cover).
-renderer.setSize(RENDER_W, RENDER_H, false);
-await startAudio();
-
-// Tuned state (R6.2): globals tunings, MIDI bindings, and per-scene values
-// load before the boot instance builds so it comes up already tuned.
-let savedPanicScene: string | null = null;
-if (state.enabled) {
+/**
+ * Load persisted tuned state (R6.2) into the registries/maps. Returns the
+ * persisted Panic Scene pick (or null). The intra-step ordering is load-bearing
+ * and documented inline: ranges before values, color decompositions before
+ * palette values, channel modulators last (their targets must exist first).
+ */
+async function loadPersistedState(): Promise<string | null> {
+  if (!state.enabled) return null;
+  let savedPanicScene: string | null = null;
   // Range overrides load BEFORE values so a widened bound is in place to hold a
   // value persisted outside the declared range.
   const savedInputRanges = await state.load(StateKey.inputRanges);
@@ -742,7 +394,23 @@ if (state.enabled) {
   const savedPanic = await state.load(StateKey.panic);
   const name = (savedPanic as { scene?: unknown } | null)?.scene;
   if (typeof name === "string") savedPanicScene = name;
+  return savedPanicScene;
 }
+
+// ============================ BOOT SEQUENCE ============================
+// Explicit, ordered boot — each phase depends on the prior. Everything above is
+// construction (surfaces, buses, registries, services, the persist/HMR wiring);
+// from here the engine comes online in a fixed order.
+
+// Boot 1 — bring the renderer + audio online.
+await renderer.init();
+// updateStyle=false: CSS owns the canvas's on-screen size (object-fit: cover).
+renderer.setSize(RENDER_W, RENDER_H, false);
+await startAudio();
+
+// Boot 2 — load tuned state BEFORE the boot instance builds, so it comes up
+// already tuned (and the persisted Panic Scene pick is known).
+const savedPanicScene = await loadPersistedState();
 
 // Audio input devices, cached for the (synchronous) session snapshot.
 let audioDevices: Array<{ id: string; label: string }> = [];
@@ -753,53 +421,67 @@ async function refreshAudioDevices(): Promise<void> {
 void refreshAudioDevices();
 navigator.mediaDevices?.addEventListener("devicechange", () => void refreshAudioDevices());
 
+// Boot 3 — install the debug surface, then build the boot + warm-panic instances.
 const debugOnsets = audio.onset({ band: "bass", threshold: 0.22 });
-let onsetCount = 0;
-let latestFrame: FrameCtx = { frame: 0, now: 0, dt: 0 };
-let currentMix: number | null = null;
-let lastDirectiveHold = false;
 
-// Screenshot requests for the canvas resolve inside the render loop: the
-// drawing buffer is only readable in the same task that rendered it.
-const pendingShots: Array<{
-  resolve: (s: ScreenshotResult) => void;
-  reject: (e: Error) => void;
-}> = [];
-
-window.__loom = {
-  sceneName: null,
-  audioMode: audio.mode,
-  bpm: timeBus.bpm,
-  rms: 0,
-  onsetCount: 0,
-  instanceError: null,
-  frame: 0,
-  fps: 0,
-  live: null,
-  staged: null,
-  mix: null,
-  panicked: false,
-  panicMode: "hold",
-  panicActive: null,
-  panicScene: { name: panicSceneName, status: "error", error: panicBuildError },
-  agentCommitArmed: false,
-  instances: [],
-  inputs: {},
-  palettes: {},
-  midiInject: (cc, ch, value01) => midi.inject(cc, ch, value01),
-  resumeAudio: () => audio.resume(),
-};
+// The window.__loom debug surface validators read; built + installed here,
+// refreshed each frame by debug.update() (the heavy instances array throttled).
+// `armed` reads the EngineApi, constructed just below — a getter, called only
+// in-frame (after `api` exists).
+const debug = new DebugSurface({
+  audio,
+  timeBus,
+  fps,
+  stage,
+  session,
+  inputs,
+  palettes,
+  midi,
+  panicInfo: () => panicController.info(),
+  armed: () => ({ panicMode: api.armedPanicMode, agentCommitArmed: api.agentCommitArmed }),
+});
 
 trySwapLive(liveScene);
 // Build the warm panic instance alongside boot. A throw here leaves it in
 // hold-fallback (FR-7) rather than failing the engine.
-tryBuildPanic(panicScene);
+panicController.tryBuild(panicScene);
 // A persisted runtime pick overrides the panic.scene.ts boot default.
-if (savedPanicScene && savedPanicScene !== panicSceneName && currentScenes().has(savedPanicScene)) {
-  tryBuildPanic(currentScenes().get(savedPanicScene)!);
+if (savedPanicScene && savedPanicScene !== panicController.sceneName && currentScenes().has(savedPanicScene)) {
+  panicController.tryBuild(currentScenes().get(savedPanicScene)!);
 }
 
-const api = new EngineApi(
+// Boot 4 — the render loop, the EngineApi, and the transports (bridge + console).
+// The render loop owns the frame tick + loop-local state (latest frame, mix,
+// onset count, screenshot/preview queues). Its api hooks (captureLiveMirror /
+// tickPreview) read `api`, constructed just below — closures, called only
+// in-frame. Started in Boot 5.
+const renderService = new RenderService({
+  renderer,
+  canvas,
+  clock,
+  timeBus,
+  audio,
+  inputs,
+  debugOnsets,
+  fixtures: fixtureService,
+  stage,
+  projects: projectsController,
+  session,
+  globalsModulators,
+  palettes,
+  compositor,
+  fps,
+  debug,
+  captureLiveMirror: (mode) => api.captureLiveMirror(mode),
+  tickPreview: (mode, currentFps) => api.tickPreview(mode, currentFps),
+  previewRoute: () => api.previewRoute(),
+  mirrorPreviewCanvas: () => api.mirrorPreviewCanvas(),
+  workerInterval,
+});
+
+// Explicitly typed to break the renderService ↔ api ↔ debug closure cycle
+// (each references the others; one anchor type lets the rest infer).
+const api: EngineApi = new EngineApi(
   {
     renderer,
     canvas,
@@ -812,22 +494,15 @@ const api = new EngineApi(
     availableEffects: () => effectsLib.describe(),
     saveEffectChain,
     previewEffect,
-    latestFrame: () => latestFrame,
-    captureCanvas: () =>
-      new Promise((resolve, reject) => {
-        if (lastDirectiveHold) {
-          reject(new Error("output is held (PANIC) — resume before taking a live screenshot"));
-          return;
-        }
-        pendingShots.push({ resolve, reject });
-      }),
+    latestFrame: () => renderService.latestFrame,
+    captureCanvas: () => renderService.captureCanvas(),
     fps: () => fps.current,
     rms: () => window.__loom?.rms ?? 0,
-    onsetCount: () => onsetCount,
-    currentMix: () => currentMix,
-    panicInstanceId,
-    panicScene: panicSceneInfo,
-    setPanicInstance,
+    onsetCount: () => renderService.onsetCount,
+    currentMix: () => renderService.currentMix,
+    panicInstanceId: () => panicController.instanceId(),
+    panicScene: () => panicController.info(),
+    setPanicInstance: (id) => panicController.setInstance(id),
     audioDevices: () => audioDevices,
     refreshAudioDevices: () => void refreshAudioDevices(),
     inputs,
@@ -838,8 +513,8 @@ const api = new EngineApi(
     midiDevices: () => midi.devices,
     midiRecent: () => midi.recent,
     persist,
-    projects: projectsApi,
-    fixtures: fixturesApi,
+    projects: projectsController,
+    fixtures: fixtureService,
     // live.scene.ts hot-swaps must keep landing on the boot instance even
     // after the human renames its tile.
     onInstanceRenamed: (from, to) => {
@@ -854,7 +529,7 @@ const api = new EngineApi(
 
 // MIDI action bindings step LIVE through the tiles — a physical button press
 // is a human gesture, so this rides the human trust tier (no agent arming).
-onAction = (path) => {
+midiRouter.onAction = (path) => {
   if (path === "live.next") api.liveStep(1);
   else if (path === "live.prev") api.liveStep(-1);
 };
@@ -866,161 +541,16 @@ const stopBridge = startBridge(`ws://localhost:${Number(qs.get("ws")) || DEFAULT
 // ?embedded=1 marks the Console's hidden-iframe engine (solo mode, no Output
 // window). It stands down completely if a real Output engine appears.
 const embedded = qs.get("embedded") === "1";
-let yielded = false;
 startConsoleChannel(api, {
   embedded,
   onYield: () => {
-    yielded = true;
-    renderer.setAnimationLoop(null);
-    stopHiddenClock();
+    renderService.stop();
     stopBridge();
   },
 });
 
-const frameTick = (tMs: number): void => {
-  if (yielded) return;
-  const f = clock.tick(tMs);
-  latestFrame = f;
-  timeBus.tick(f);
-  audio.update(f);
-  inputs.update(f); // every channel advances even with zero consumers (R6.4)
-  onsetCount += debugOnsets.poll(f).length;
-
-  // Fixtures: append this frame's rack values to a pending recording.
-  if (recording != null) {
-    const vals = inputs.values();
-    recording.rows.push(recording.channels.map((c) => vals[c] ?? 0));
-    if (--recording.remaining <= 0) {
-      const done = recording;
-      recording = null;
-      void finishRecording(done);
-    }
-  }
-
-  const directive = stage.tick(f);
-  currentMix = directive.mode === "crossfade" ? directive.mix : null;
-  lastDirectiveHold = directive.mode === "hold";
-
-  // Projects: a commit from the loaded set has landed (live, fade done) —
-  // cull the replaced instances. Before the render, so a culled instance is
-  // never referenced by this frame's directive (it can't be: it isn't live).
-  if (pendingCull != null && !stage.fading && stage.live != null && pendingCull.loaded.has(stage.live)) {
-    let culled = 0;
-    for (const id of pendingCull.stale) {
-      const e = session.get(id);
-      if (!e || e.id === stage.live || e.pinned != null) continue;
-      stage.onInstanceDestroyed(id);
-      session.destroy(id);
-      culled++;
-    }
-    if (culled > 0) console.info(`[loom] project set committed — culled ${culled} replaced instance(s)`);
-    pendingCull = null;
-  }
-  // Modulators write CPU-side before any leg renders. Hold pauses them all;
-  // scene-panic pauses only the suspended live instance (FR-5/FR-10).
-  if (directive.mode === "panic-scene") session.tickModulators(f, directive.live);
-  else if (directive.mode !== "hold") session.tickModulators(f);
-  // Global palette color-channel modulators (R7.4) write the stops before any
-  // leg reads them; hold freezes their phase like instance modulators (FR-10).
-  if (directive.mode !== "hold") globalsModulators.tick(palettes.manifest, f);
-  // Full-res preview overlay: decide the route (which previewed sandbox renders
-  // into the fixed full-res preview target) and run the fps ladder BEFORE the
-  // render, so the route takes effect this frame.
-  api.tickPreview(directive.mode, fps.current);
-  compositor.render(renderer, f, directive, session, api.previewRoute());
-  api.captureLiveMirror(directive.mode); // same-task canvas read for the live tile
-  // Mirror the live canvas into the preview source when the LIVE instance is the
-  // one being previewed (must follow the render — the canvas is readable here).
-  api.mirrorPreviewCanvas();
-  fps.tick();
-
-  if (pendingShots.length > 0) {
-    const waiting = pendingShots.splice(0);
-    if (directive.mode === "hold") {
-      const e = new Error("output is held (PANIC)");
-      for (const w of waiting) w.reject(e);
-    } else {
-      try {
-        const url = canvas.toDataURL("image/png");
-        const shot: ScreenshotResult = {
-          mime: "image/png",
-          base64: url.slice(url.indexOf(",") + 1),
-          width: canvas.width,
-          height: canvas.height,
-          frame: f.frame,
-          fps: fps.current,
-        };
-        for (const w of waiting) w.resolve(shot);
-      } catch (err) {
-        const e = err instanceof Error ? err : new Error(String(err));
-        for (const w of waiting) w.reject(e);
-      }
-    }
-  }
-
-  // One effect-picker preview per frame (bounds cost), AFTER the live screenshot
-  // read so it never disturbs the canvas: the candidate effect is folded over the
-  // instance's preview target, which the compositor just refreshed, then rendered
-  // to its own offscreen RT.
-  if (pendingPreviews.length > 0) {
-    const job = pendingPreviews.shift()!;
-    try {
-      job.run(f);
-    } catch {
-      // a bad preview render must never break the live loop
-    }
-    job.done();
-  }
-
-  const liveEntry = stage.live != null ? session.get(stage.live) : undefined;
-  const dbg = window.__loom!;
-  dbg.sceneName = liveEntry?.sceneName ?? null;
-  dbg.audioMode = audio.mode;
-  dbg.bpm = timeBus.bpm;
-  dbg.rms = audio.rms.get(f);
-  dbg.onsetCount = onsetCount;
-  dbg.instanceError = liveEntry?.instance.error != null ? String(liveEntry.instance.error) : null;
-  dbg.frame = f.frame;
-  dbg.fps = fps.current;
-  dbg.clockSource = document.hidden ? "worker" : "raf"; // which clock drove this frame
-  dbg.live = stage.live;
-  dbg.staged = stage.staged;
-  dbg.mix = currentMix;
-  dbg.panicked = stage.panicked;
-  dbg.panicMode = api.armedPanicMode;
-  dbg.panicActive = stage.panicActive;
-  dbg.panicScene = panicSceneInfo();
-  dbg.agentCommitArmed = api.agentCommitArmed;
-  dbg.inputs = inputs.values();
-  dbg.palettes = palettes.manifest.values();
-  dbg.instances = [...session.entries.values()].map((e) => ({
-    id: e.id,
-    scene: e.sceneName,
-    status: entryStatus(e),
-    builds: e.builds,
-    pinned: e.pinned ?? null,
-    modulators: e.modulators
-      .list()
-      .map((m) => ({ path: m.path, type: m.spec.type, error: m.error, enabled: m.enabled })),
-    chain: e.chain.list(),
-    slowSignals: e.instance.slowSignals(),
-  }));
-};
-
-let lastRafAt = performance.now();
-renderer.setAnimationLoop((tMs) => {
-  lastRafAt = performance.now();
-  frameTick(tMs);
-});
-
-// Browsers freeze rAF in hidden tabs (and starve it for offscreen iframes),
-// which used to freeze every Console preview whenever the Output tab wasn't
-// showing. A worker clock (exempt from background timer throttling) keeps the
-// engine ticking at ~30 fps whenever rAF isn't delivering; the moment rAF
-// resumes, the starvation guard backs off so the two never double-step.
-const stopHiddenClock = workerInterval(() => {
-  if (document.hidden || performance.now() - lastRafAt > 150) frameTick(performance.now());
-}, 33);
+// Boot 5 — start the frame loop (rAF + the hidden-tab worker-clock fallback).
+renderService.start();
 
 // Tap tempo on "t"; any click also unblocks a suspended AudioContext.
 window.addEventListener("keydown", (e) => {
@@ -1078,9 +608,7 @@ if (import.meta.hot) {
         session.destroy(entry.id);
       } else if (def !== entry.def) {
         const ok = session.rebuild(entry.id, def);
-        if (entry.pinned === "panic") {
-          panicBuildError = ok ? null : `safe scene "${def.name}" update rejected (see console)`;
-        }
+        if (entry.pinned === "panic") panicController.noteSafeRebuild(ok, def);
         console.info(
           ok
             ? `[loom] instance "${entry.id}" rebuilt (${def.name})`

@@ -1241,6 +1241,63 @@ Phase 5's `groupParams`).
 - Cleared shipped feature-requests: `param-modulators.md`, `panic-scene.md`.
 - Gates after merge: typecheck + `pnpm test` (755) + `pnpm lint` green.
 
+## Architecture refactor — Phase 6: TSL/WebGPU adapter seam (2026-06-14)
+
+The last two deferred phases (from `feature-requests/architecture-refactor-
+render-path.md`) shipped — they touch the never-go-black render path, so on this
+sandbox they're gated on typecheck + `pnpm test` + lint, with a real-GPU
+`pnpm validate` left as the human eyes-on check (egress blocks Playwright
+chromium, as for every prior phase).
+
+Phase 6 routes every kernel-side `three/tsl` + `three/webgpu` import through one
+`packages/runtime/src/tsl.ts` module, so the coupling to the **exact-pinned**
+`three` is visible and swappable in a single file (a major bump lands here first
+instead of across texnode/instance/buildctx/chain/layer/palette/geo).
+- **Not an abstraction layer** (deliberate, per the ticket): symbols re-exported
+  verbatim — same names, same types — zero-cost and behaviour-identical. The
+  value is the single chokepoint, not insulation; the payoff only fully lands on
+  an actual upgrade, and over-abstracting risks more than it saves.
+- **Kernel-scoped**: `content/` still imports `three/tsl` directly by contract
+  (`TexNode.color` is a TSL `vec4` node), so scenes/modules aren't routed through
+  the seam — the exact pin is what this protects in `packages/`.
+
+## Architecture refactor — Phase 3: main.ts decomposition (2026-06-14)
+
+The riskiest phase: `packages/engine-app/src/main.ts` (~1100 lines, ~57
+top-level bindings, ~7 responsibilities, almost no unit tests) decomposed into a
+thin composition root (~615 lines) + testable units, extracted **one per commit**
+(typecheck + `pnpm test` + lint green at each step):
+- **MidiRouter** — `writeParam`/`setModEnabled`/`onCc` routing (+8 tests).
+- **PanicController** — warm safe-scene lifecycle, SAFE designation, build health
+  (`tryBuild`/`setInstance`/`instanceId`/`info`) (+8 tests).
+- **ProjectsController** — set-list fetch/persist glue + deferred-cull over the
+  tested ProjectStore (+3 tests).
+- **FixtureService** — recording (`record` + the per-frame `recordFrame` hook) +
+  the ~110-line deterministic offline `shots` pass (+7 tests; the GPU offline
+  render stays the `validate:fixtures` check).
+- **DebugSurface** — the `window.__loom` assembler. **Behaviour change** (per the
+  ticket): the allocation-heavy `instances` array (`[...entries].map()` with
+  nested `.list().map()`) rebuilds on frame 0 then only every 6th frame (~100 ms)
+  instead of every frame; all scalar fields stay per-frame fresh. Safe because
+  the Console reads only `__loom.resumeAudio` and validators poll
+  `__loom.instances` through multi-second `waitFor` loops (+4 tests pin the
+  throttle + scalar freshness).
+- **RenderService** — owns `{ renderer, session, stage, compositor }` + the frame
+  loop, the rAF/worker-clock lifecycle, and the loop-local state the EngineApi
+  reads back (latest frame, mix, onset count, screenshot/preview queues). The
+  per-frame **statement order was moved verbatim** and the never-go-black ordering
+  is documented on the class + pinned by a test (cull → render → mirror →
+  screenshot → preview; modulators frozen + screenshots rejected under hold while
+  the compositor still ticks) (+5 tests). main.ts pins `const api: EngineApi` to
+  break the renderService ↔ api ↔ debug closure-inference cycle.
+- **Explicit boot sequence** — the inline tuned-state load became a named
+  `loadPersistedState()` (verbatim, preserving the ranges-before-values ordering)
+  and the boot is marked in 5 ordered phases (renderer/audio → load state → debug
+  surface + build instances → render loop/api/transports → start loop).
+- Cleared shipped feature-request: `architecture-refactor-render-path.md`.
+- Gates: typecheck + `pnpm test` (771) + `pnpm lint` green; `pnpm validate` not
+  run (sandbox egress) — real-GPU validate is the remaining eyes-on check.
+
 ## Hide the auto per-instance input trim from the default params box (2026-06-13)
 
 - **What the param is.** When a scene calls `ctx.input("bass")`, `BuildCtx.input`
