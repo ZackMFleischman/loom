@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.local
+*.log
+.DS_Store
+# Local scratch screenshot dir at the repo root (anchored so preview/screenshots/ stays committable).
+/screenshots/
+.claude/worktrees/
+.claude/settings.local.json
+# Validator screenshots/evidence — local scratch, regenerable by any validate:m* run.
+artifacts/
+# CI-generated preview comment body (built fresh each run by scripts/preview-comment.mjs).
+preview-comment.md

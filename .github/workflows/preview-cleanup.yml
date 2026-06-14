@@ -1,0 +1,61 @@
+name: LOOM preview cleanup
+
+# Cloudflare Pages never deletes preview deployments on its own, so each PR's
+# preview URL would otherwise live forever. When a PR closes (merged or not),
+# delete every preview deployment the loom project holds for that PR's branch.
+# Also manually dispatchable with a branch name to clean up older previews.
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch whose preview deployments to delete"
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  cleanup:
+    name: delete Cloudflare preview deployments
+    runs-on: ubuntu-latest
+    env:
+      # Same credentials as the deploy in ci.yml; skip gracefully without them.
+      CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || vars.CLOUDFLARE_ACCOUNT_ID }}
+      BRANCH: ${{ inputs.branch || github.head_ref }}
+    steps:
+      - name: delete this branch's preview deployments
+        if: env.CF_API_TOKEN != '' && env.CF_ACCOUNT_ID != ''
+        run: |
+          api="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/pages/projects/loom/deployments"
+
+          # Gather ids first, delete after — deleting while paginating shifts pages.
+          ids=""
+          for page in $(seq 1 20); do
+            body=$(curl -sf -H "Authorization: Bearer $CF_API_TOKEN" "$api?page=$page&per_page=25")
+            page_ids=$(jq -r --arg b "$BRANCH" \
+              '.result[] | select(.environment == "preview" and .deployment_trigger.metadata.branch == $b) | .id' \
+              <<<"$body")
+            ids="$ids $page_ids"
+            [ "$(jq '.result | length' <<<"$body")" -lt 25 ] && break
+          done
+
+          count=0
+          for id in $ids; do
+            # force=true: branch-alias deployments (the live preview URL) refuse
+            # plain deletes.
+            res=$(curl -s -X DELETE -H "Authorization: Bearer $CF_API_TOKEN" "$api/$id?force=true")
+            if [ "$(jq -r '.success' <<<"$res")" = "true" ]; then
+              echo "deleted $id"
+              count=$((count + 1))
+            else
+              echo "::warning::failed to delete $id: $(jq -c '.errors' <<<"$res")"
+            fi
+          done
+          echo "Deleted $count preview deployment(s) for branch '$BRANCH'."
+      - name: notice when Cloudflare secrets are missing
+        if: env.CF_API_TOKEN == '' || env.CF_ACCOUNT_ID == ''
+        run: echo "::notice::Cloudflare secrets not set — nothing to clean up. See docs/ci-and-preview.md."

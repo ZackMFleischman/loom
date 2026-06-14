@@ -1,0 +1,2 @@
+# Committed scene screenshots referenced from PR bodies via raw.githubusercontent URLs.
+# Generate with: node scripts/shoot.mjs <scene...>   (see docs/ci-and-preview.md)

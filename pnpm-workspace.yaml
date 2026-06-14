@@ -1,0 +1,10 @@
+packages:
+  - packages/*
+# pnpm 10 read this from package.json's pnpm.onlyBuiltDependencies; pnpm 11 reads
+# it here. tsx needs esbuild's native binary, so its install script must run.
+allowBuilds:
+  esbuild: true
+  # wrangler (Cloudflare Pages deploy) pulls workerd, whose install script pnpm 11
+  # otherwise blocks — failing the preview deploy. The CI deploy uses npm anyway
+  # (packageManager: npm on wrangler-action); this keeps pnpm paths happy too.
+  workerd: true

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>LOOM — Output</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #000;
+        overflow: hidden;
+      }
+      #out {
+        display: block;
+        width: 100%;
+        height: 100%;
+        /* R9.2: fixed-resolution render scaled to fill — never warped, never
+           letterboxed; overflow on the smaller-aspect axis is cropped. */
+        object-fit: cover;
+        object-position: center;
+      }
+      /* Pure output (R9.1): fps stays in the DOM (validators read its text)
+         but is invisible unless ?hud=1 adds .show. */
+      #fps {
+        position: fixed;
+        top: 8px;
+        right: 10px;
+        color: #6f6;
+        font: 12px monospace;
+        opacity: 0.8;
+        pointer-events: none;
+        z-index: 10;
+        visibility: hidden;
+      }
+      #fps.show {
+        visibility: visible;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="out"></canvas>
+    <div id="fps"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
