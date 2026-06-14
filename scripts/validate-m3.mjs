@@ -334,6 +334,67 @@ try {
     pickedSession.instances.map((i) => i.id).join(", "),
   );
 
+  // 9c. screenshot_console: the agent's eyes on the COCKPIT UI (console-screenshot).
+  // The Console self-captures its own DOM (SVG-foreignObject) and replies over the
+  // reverse envelope; assert a non-blank PNG with plausible dims, and gross
+  // agreement with Playwright's OWN screenshot of the same Console.
+  const lumOfPng = (png) => {
+    let l = 0;
+    for (let i = 0; i < png.data.length; i += 4) l += (png.data[i] + png.data[i + 1] + png.data[i + 2]) / 3;
+    return l / (png.width * png.height);
+  };
+  const consoleShotRes = await callOk(client, "screenshot_console", { maxWidth: 800 });
+  const consoleImg = consoleShotRes.content.find((c) => c.type === "image");
+  const consoleMeta = JSON.parse(consoleShotRes.content.find((c) => c.type === "text")?.text ?? "{}");
+  check(
+    "screenshot_console returns a PNG with a consoleId and plausible dims",
+    consoleImg != null &&
+      typeof consoleMeta.consoleId === "string" &&
+      consoleMeta.width > 0 &&
+      consoleMeta.width <= 800 &&
+      consoleMeta.height > 0,
+    JSON.stringify(consoleMeta),
+  );
+  const consolePng = PNG.sync.read(Buffer.from(consoleImg.data, "base64"));
+  writeFileSync(join(ARTIFACTS, "m3-5-console-capture.png"), PNG.sync.write(consolePng));
+  const selfLum = lumOfPng(consolePng);
+  check("screenshot_console PNG is non-blank (cockpit pixels)", selfLum > 2, `lum ${selfLum.toFixed(1)}`);
+
+  // Playwright's own screenshot of the SAME Console page — gross agreement: both
+  // show the populated cockpit (non-black), with closely matching aspect ratios.
+  const pwBuf = await consolePage.screenshot({ path: join(ARTIFACTS, "m3-5-console-playwright.png") });
+  const pwPng = PNG.sync.read(pwBuf);
+  const pwLum = lumOfPng(pwPng);
+  const selfAspect = consolePng.width / consolePng.height;
+  const pwAspect = pwPng.width / pwPng.height;
+  check(
+    "screenshot_console grossly agrees with Playwright's own capture (both alive, matching aspect)",
+    selfLum > 2 && pwLum > 2 && Math.abs(selfAspect - pwAspect) < 0.2,
+    `self lum=${selfLum.toFixed(1)} aspect=${selfAspect.toFixed(2)} · pw lum=${pwLum.toFixed(1)} aspect=${pwAspect.toFixed(2)}`,
+  );
+
+  // 9d. No Console connected → the clean structured error (FR-3). Close the
+  // Console page and let its presence beacon lapse (>5s), then the tool errors.
+  await consolePage.close();
+  // The engine's presence window (~5s) must lapse before it reports the Console
+  // gone; until then a request to the just-closed page reads as "console did not
+  // answer" (also a clean structured error, never a hang). Wait specifically for
+  // the no-Console message.
+  const noConsole = await waitFor(
+    async () => {
+      const res = await client.callTool({ name: "screenshot_console", arguments: {} });
+      const text = res.content?.[0]?.text ?? "";
+      return res.isError && /no Console connected/i.test(text) ? res : null;
+    },
+    15_000,
+    "screenshot_console to report no Console once the presence window lapses",
+  );
+  check(
+    "screenshot_console errors cleanly with no Console connected",
+    /no Console connected/i.test(noConsole.content?.[0]?.text ?? ""),
+    noConsole.content?.[0]?.text,
+  );
+
   // 10. ?agentCommit=0 restores the human gate (boot override)...
   await output.goto(`${OUTPUT_URL}&agentCommit=0`);
   await output.waitForFunction(
