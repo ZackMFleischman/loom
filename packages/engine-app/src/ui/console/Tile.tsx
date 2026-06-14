@@ -2,14 +2,9 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Box, Button, Card, IconButton, Stack, Typography } from "@mui/material";
 import { alpha, type Theme } from "@mui/material/styles";
-import {
-  useEffect,
-  useState,
-  type ChangeEvent,
-  type KeyboardEvent,
-  type MouseEvent,
-} from "react";
+import { useEffect, useState, type ChangeEvent, type KeyboardEvent, type MouseEvent } from "react";
 import type { InstanceInfo } from "@loom/sidecar/protocol";
+import { tileFps } from "../fps-meter";
 import { useEngine, useThumb } from "../hooks";
 import { snapshotScene } from "../scene-thumbs";
 import { fail } from "../util";
@@ -20,6 +15,8 @@ type Props = {
   isStaged: boolean;
   selected: boolean;
   solo: boolean;
+  /** Output window render rate — the ceiling each tile's per-frame throughput hits. */
+  engineFps: number;
   onSelect: (id: string) => void;
   onSolo: (id: string) => void;
   /** The engine accepted a rename — keep order/selection pointing at the new id. */
@@ -49,11 +46,10 @@ const badgeSx = {
  * green halo offset past a gap, plus a tinted name row — a selected live tile
  * reads as "red ring inside a green halo".
  */
-export function Tile({
-  inst, isLive, isStaged, selected, solo, onSelect, onSolo, onRenamed,
-}: Props) {
+export function Tile({ inst, isLive, isStaged, selected, solo, engineFps, onSelect, onSolo, onRenamed }: Props) {
   const link = useEngine();
   const thumb = useThumb(inst.id);
+  const fps = tileFps(inst.frameMs, engineFps, inst.status !== "ok");
   // Every rendering instance keeps its scene's snapshot fresh — the scene
   // picker shows these as "last time it ran".
   useEffect(() => snapshotScene(inst.scene, thumb), [inst.scene, thumb]);
@@ -110,13 +106,7 @@ export function Tile({
         opacity: isDragging ? 0.6 : 1,
         zIndex: isDragging ? 2 : undefined,
         bgcolor: "background.paper",
-        borderColor: isLive
-          ? "error.main"
-          : isStaged
-            ? "warning.main"
-            : selected
-              ? "primary.main"
-              : "divider",
+        borderColor: isLive ? "error.main" : isStaged ? "warning.main" : selected ? "primary.main" : "divider",
         boxShadow: ring(t),
         gridColumn: solo ? "1 / -1" : undefined,
         "&:hover .destroybtn": { opacity: 1, pointerEvents: "auto" },
@@ -138,7 +128,13 @@ export function Tile({
       <Box
         component="span"
         className={`badge staged-badge${isStaged ? " show" : ""}`}
-        sx={{ ...badgeSx, left: isLive ? 44 : 6, bgcolor: "warning.main", color: "#000", display: isStaged ? "inline-block" : "none" }}
+        sx={{
+          ...badgeSx,
+          left: isLive ? 44 : 6,
+          bgcolor: "warning.main",
+          color: "#000",
+          display: isStaged ? "inline-block" : "none",
+        }}
       >
         STAGED
       </Box>
@@ -238,6 +234,20 @@ export function Tile({
           </Typography>
         )}
         <Typography
+          className="tilefps"
+          data-fps={fps}
+          variant="caption"
+          title="per-tile render rate — engine fps, capped by this tile's CPU budget (0 = frozen)"
+          sx={{
+            fontSize: 10,
+            fontWeight: 700,
+            color: inst.status !== "ok" ? "error.main" : fps < 30 ? "warning.main" : "primary.main",
+            flex: "0 0 auto",
+          }}
+        >
+          {fps.toFixed(0)}fps
+        </Typography>
+        <Typography
           className="framems"
           data-ms={inst.frameMs}
           variant="caption"
@@ -256,9 +266,7 @@ export function Tile({
           disabled={isLive}
           onClick={(e) => {
             e.stopPropagation();
-            void link
-              .req(isStaged ? "unstage" : "stage", isStaged ? {} : { instance: inst.id })
-              .catch(fail);
+            void link.req(isStaged ? "unstage" : "stage", isStaged ? {} : { instance: inst.id }).catch(fail);
           }}
           sx={{ px: 0.75, py: 0, fontSize: 11 }}
         >
