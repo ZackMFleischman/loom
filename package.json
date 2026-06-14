@@ -9,6 +9,8 @@
     "lint": "biome lint .",
     "format": "biome format --write .",
     "catalog": "node scripts/build-catalog.mjs",
+    "pack:add": "node scripts/pack.mjs add",
+    "pack:update": "node scripts/pack.mjs update",
     "test": "pnpm -r --if-present test && pnpm test:content && pnpm test:scripts",
     "test:content": "vitest run --config vitest.config.ts",
     "test:scripts": "vitest run --config vitest.scripts.config.ts",

@@ -123,6 +123,10 @@ export type ModuleFolder = "control" | "sources" | "effects" | "geo";
 
 export interface DiscoveredModule {
   name: string;
+  /** Owning pack name, or null for local content/. */
+  pack: string | null;
+  /** Bare (un-namespaced) module name — the key into the owning CASES registry. */
+  bareName: string;
   file: string;
   folder: ModuleFolder;
   /** Module factories are heterogeneous; tests narrow per kind. */
@@ -133,13 +137,29 @@ const moduleFiles = import.meta.glob("../modules/{control,sources,effects,geo}/*
   eager: true,
 }) as Record<string, Record<string, unknown>>;
 
+// Pack modules (packs/<name>/modules/…) merge into the SAME completeness sweep:
+// a pack's quality is enforced identically to local content (the static glob
+// matches any installed pack; absent until `pnpm pack:add`).
+const packModuleFiles = import.meta.glob("../../packs/*/modules/{control,sources,effects,geo}/*.ts", {
+  eager: true,
+}) as Record<string, Record<string, unknown>>;
+
 const moduleSources = import.meta.glob("../modules/{control,sources,effects,geo}/*.ts", {
   eager: true,
   query: "?raw",
   import: "default",
 }) as Record<string, string>;
+const packModuleSources = import.meta.glob(
+  "../../packs/*/modules/{control,sources,effects,geo}/*.ts",
+  { eager: true, query: "?raw", import: "default" },
+) as Record<string, string>;
 
 const sceneSources = import.meta.glob("../scenes/*.scene.ts", {
+  eager: true,
+  query: "?raw",
+  import: "default",
+}) as Record<string, string>;
+const packSceneSources = import.meta.glob("../../packs/*/scenes/*.scene.ts", {
   eager: true,
   query: "?raw",
   import: "default",
@@ -152,25 +172,48 @@ function isFactory(v: unknown): v is ModuleFactory<unknown, never, unknown> {
   );
 }
 
-/** Every defineModule export under content/modules — new files are swept automatically. */
+/** "packs/<name>/…" → "<name>", else null. */
+function packOf(file: string): string | null {
+  return /\/packs\/([^/]+)\//.exec(file)?.[1] ?? null;
+}
+
+/**
+ * Every defineModule export under content/modules AND any installed pack — new
+ * files are swept automatically. Pack modules carry their pack + a namespaced
+ * `name` ("<pack>/<module>"); local modules keep the bare name.
+ */
 export function discoverModules(): DiscoveredModule[] {
   const out: DiscoveredModule[] = [];
-  for (const [file, mod] of Object.entries(moduleFiles)) {
-    const folder = /\/modules\/(control|sources|effects|geo)\//.exec(file)?.[1] as
-      | ModuleFolder
-      | undefined;
-    if (!folder) continue;
-    for (const v of Object.values(mod)) {
-      if (isFactory(v)) out.push({ name: v.meta.name, file, folder, factory: v });
+  const collect = (files: Record<string, Record<string, unknown>>) => {
+    for (const [file, mod] of Object.entries(files)) {
+      const folder = /\/modules\/(control|sources|effects|geo)\//.exec(file)?.[1] as
+        | ModuleFolder
+        | undefined;
+      if (!folder) continue;
+      const pack = packOf(file);
+      for (const v of Object.values(mod)) {
+        if (!isFactory(v)) continue;
+        const bareName = v.meta.name;
+        out.push({
+          name: pack ? `${pack}/${bareName}` : bareName,
+          pack,
+          bareName,
+          file,
+          folder,
+          factory: v,
+        });
+      }
     }
-  }
+  };
+  collect(moduleFiles);
+  collect(packModuleFiles);
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Raw sources for the golden-pattern scans (modules and scenes). */
+/** Raw sources for the golden-pattern scans (modules and scenes, local + pack). */
 export function rawModuleSources(): Record<string, string> {
-  return moduleSources;
+  return { ...moduleSources, ...packModuleSources };
 }
 export function rawSceneSources(): Record<string, string> {
-  return sceneSources;
+  return { ...sceneSources, ...packSceneSources };
 }

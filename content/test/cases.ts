@@ -165,6 +165,31 @@ export const CASES: Record<string, ModuleCase> = {
   neon: (ctx, input) => neon(ctx, { input, intensity: ctx.input("kick") }),
 };
 
+/**
+ * Pack test cases merge into the same completeness sweep. A pack ships
+ * packs/<name>/test/cases.ts exporting a `CASES` (or default) Record<string,
+ * ModuleCase> keyed by its BARE module names — exactly the local contract. We
+ * glob those, key each pack's registry by pack name, and resolve per module in
+ * buildCase. (Static glob → matches any installed pack; absent until pack:add.)
+ */
+const packCaseModules = import.meta.glob("../../packs/*/test/cases.ts", { eager: true }) as Record<
+  string,
+  { CASES?: Record<string, ModuleCase>; default?: Record<string, ModuleCase> }
+>;
+
+const PACK_CASES: Record<string, Record<string, ModuleCase>> = {};
+for (const [file, mod] of Object.entries(packCaseModules)) {
+  const pack = /\/packs\/([^/]+)\//.exec(file)?.[1];
+  if (!pack) continue;
+  const cases = mod.CASES ?? mod.default;
+  if (cases) PACK_CASES[pack] = cases;
+}
+
+/** Look up the build case for a discovered module (local or pack), or undefined. */
+export function caseFor(d: DiscoveredModule): ModuleCase | undefined {
+  return d.pack ? PACK_CASES[d.pack]?.[d.bareName] : CASES[d.bareName];
+}
+
 export interface BuiltCase {
   h: Harness;
   out: unknown;
@@ -174,8 +199,13 @@ export interface BuiltCase {
 
 /** Build a discovered module through its registry case on a fresh harness. */
 export function buildCase(d: DiscoveredModule): BuiltCase {
-  const make = CASES[d.name];
-  if (!make) throw new Error(`no test case for module "${d.name}" — add it to content/test/cases.ts`);
+  const make = caseFor(d);
+  if (!make) {
+    const where = d.pack
+      ? `packs/${d.pack}/test/cases.ts (key "${d.bareName}")`
+      : `content/test/cases.ts`;
+    throw new Error(`no test case for module "${d.name}" — add it to ${where}`);
+  }
   const h = makeCtx();
   const { input, marker } = markerInput();
   const out = make(h.ctx, input);

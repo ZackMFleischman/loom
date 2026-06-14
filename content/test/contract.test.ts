@@ -1,6 +1,6 @@
 import { isCamNode, isGeoNode, Signal, type TexNode } from "@loom/runtime";
 import { describe, expect, it } from "vitest";
-import { buildCase, CASES } from "./cases";
+import { buildCase, caseFor, CASES } from "./cases";
 import { discoverModules, preservesInputPasses, type ModuleFolder } from "./harness";
 
 /**
@@ -23,13 +23,15 @@ describe("stdlib discovery", () => {
   });
 
   it("every module on disk has a test case (new modules merge with tests)", () => {
-    const missing = modules.filter((m) => CASES[m.name] == null).map((m) => m.name);
-    expect(missing, `add cases to content/test/cases.ts for: ${missing.join(", ")}`).toEqual([]);
+    // caseFor resolves local CASES by bare name and each pack's own cases.ts —
+    // a pack module without a case fails here exactly like a local one.
+    const missing = modules.filter((m) => caseFor(m) == null).map((m) => m.name);
+    expect(missing, `add cases for: ${missing.join(", ")}`).toEqual([]);
   });
 
-  it("every test case corresponds to a module on disk (no stale cases)", () => {
-    const names = new Set(modules.map((m) => m.name));
-    const stale = Object.keys(CASES).filter((n) => !names.has(n));
+  it("every LOCAL test case corresponds to a module on disk (no stale cases)", () => {
+    const localNames = new Set(modules.filter((m) => !m.pack).map((m) => m.bareName));
+    const stale = Object.keys(CASES).filter((n) => !localNames.has(n));
     expect(stale).toEqual([]);
   });
 

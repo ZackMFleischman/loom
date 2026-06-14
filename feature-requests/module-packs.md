@@ -1,8 +1,10 @@
 # Module packs — third-party repositories of modules & scenes
 
-**Status:** post-v1 candidate (design sketch, 2026-06-12). Goal: anyone can
-maintain their own repo of LOOM modules/scenes and import it into a project —
-the library stops being a monorepo-only artifact.
+**Status:** v1 IMPLEMENTED (2026-06-13) — see `DECISIONS.md` "Module packs (v1)"
+and the "Module packs" section of `docs/architecture.md`. The notes below are the
+original design sketch (2026-06-12); the shipped schema/precedence rules live in
+DECISIONS. Goal: anyone can maintain their own repo of LOOM modules/scenes and
+import it into a project — the library stops being a monorepo-only artifact.
 
 ## Shape of a pack
 
