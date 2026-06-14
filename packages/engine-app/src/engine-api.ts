@@ -967,6 +967,7 @@ export class EngineApi {
       frameMs: Math.round(e.instance.frameMs * 100) / 100,
       slowSignals: e.instance.slowSignals(),
     }));
+    const renderer = this.rendererInfo();
     return {
       fps: this.deps.fps(),
       clockSource: this.deps.clockSource(),
@@ -974,7 +975,7 @@ export class EngineApi {
       frame: this.deps.latestFrame().frame,
       instances,
       worstFrameMsRecent: Math.round(this.deps.worstFrameMsRecent() * 100) / 100,
-      ...(this.rendererInfo() != null ? { renderer: this.rendererInfo()! } : {}),
+      ...(renderer != null ? { renderer } : {}),
     };
   }
 

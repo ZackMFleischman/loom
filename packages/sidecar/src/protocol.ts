@@ -660,7 +660,7 @@ export const SessionSnapshot = z.object({
    * Engine-health rollup (app-instrumentation FR-5): fps/clockSource/frameBudget,
    * per-instance frameMs+slowSignals, worst recent frame, best-effort renderer
    * counts. The at-a-glance perf read; the event TIMELINE is `get_diagnostics`.
-   * `.default()` so an older engine snapshot (pre-instrumentation) still parses.
+   * `.optional()` so an older engine snapshot (pre-instrumentation) still parses.
    */
   perf: PerfSnapshot.optional(),
 });
