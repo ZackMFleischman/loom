@@ -239,6 +239,12 @@ export class ChainHost {
       if (raw.mix != null) params.mix = clamp(raw.mix, 0, 1);
       if (params.mix == null) params.mix = 1;
       // Carry input bindings forward by surviving id, with this edit's overrides.
+      // This is a per-SLOT merge: `raw.inputs` overrides a carried slot but does
+      // NOT clear one it omits. The Console always sends the full reduced map
+      // (so removing a slot there works), but an agent calling set_chain who
+      // wants to CLEAR a slot must send the desired full `inputs` map for the
+      // surviving id — sending `inputs: {}` keeps the carried bindings, it does
+      // not drop them. (Reorder/insert never loses a binding, by design.)
       const merged: Record<string, SourceRef> = {
         ...(carried?.inputs ?? {}),
         ...(raw.inputs ?? {}),

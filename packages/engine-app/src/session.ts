@@ -187,6 +187,14 @@ export class SessionStore {
    * instance is excluded — an instance tapping ITSELF as a source is rejected
    * (that's a feedback case, not a multi-input overlay), as is a missing one.
    * Returning null makes the fold throw, so NFR-5 keeps the previous chain.
+   *
+   * Resolution is by-reference to the source entry's render target, captured at
+   * FOLD time. If the source instance is later destroyed while a consumer that
+   * built against it is NOT rebuilt, the consumer keeps sampling the disposed
+   * target until its own next rebuild — at which point resolution fails (the
+   * source is gone from `entries`) and that edit is rejected, previous chain
+   * kept. This never throws in the render loop (never-go-black holds), but the
+   * overlay region can show stale pixels in that window. Acceptable degradation.
    */
   private makeResolver(ownerId: string): SourceResolver {
     return {
