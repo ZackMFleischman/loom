@@ -118,6 +118,7 @@ snapshot/restore across reload stays M9.
 - Every milestone merges with: typecheck green, the previous milestones’ demos still passing (keep them as scripted checks where possible), and CLAUDE.md/skills updated to match reality — stale conventions poison every future agent session.
 - `runtime/` changes get human review; `content/` is agent territory.
 - Log non-obvious decisions and ≤6-line SHIPPED entries in `DECISIONS.md`; grep it when touching an unfamiliar subsystem.
+- When a milestone lands in the Shipped table above, **graduate its plan+spec pair** from `docs/superpowers/` to `docs/history/superpowers/` (`git mv`, never delete) — see `docs/superpowers/README.md`. The rationale lives in the SHIPPED entry; the plan is the archived record.
 
 ## Risks & mitigations
 
@@ -139,5 +140,5 @@ snapshot/restore across reload stays M9.
 1. Generative-video source module (Mirage-class / StreamDiffusion as a TexNode source)
 1. Pop-out OS-window panes; multi-display layouts
 1. Embeddings over the catalog when flat JSON stops scaling
-1. PANIC safe-scene mode (`feature-requests/panic-scene.md`)
+1. PANIC safe-scene mode (`feature-requests/panic-safe-scene-redesign.md`)
 1. Console screenshot for agents (`feature-requests/console-screenshot.md`)

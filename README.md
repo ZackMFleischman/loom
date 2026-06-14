@@ -6,8 +6,10 @@ TypeScript into a repo; the engine hot-renders it the moment it's saved; you ste
 with words, mouse, and MIDI until it feels right; you save it, and the library
 grows.
 
-**Status:** M0–M6 (palette half) shipped. Remaining to v1: M6 chains, M7 library
-buildout, M8 geo/particles, M9 gig hardening — see [the roadmap](./docs/roadmap.md).
+**Status:** M0–M11 shipped (incl. param modulators, palettes, M6 chains, Layers,
+Projects, M9 video, Fixtures, M7 geo, M8 particles, the stdlib library). Remaining
+to v1: M10 asset explorer, panels & save-as, M12 gig hardening — see
+[the roadmap](./docs/roadmap.md).
 
 ## Quickstart
 
@@ -42,4 +44,4 @@ checks. The full command list is in the root `CLAUDE.md`.
 | [DECISIONS.md](./DECISIONS.md) | Why — append-only decision log; grep it when touching an unfamiliar subsystem |
 | [.claude/CLAUDE.md](./.claude/CLAUDE.md) | The in-session visuals-agent guide (MCP tools, rules, workflow) |
 | [content/CATALOG.md](./content/CATALOG.md) | Generated index of every module and scene |
-| docs/history/ | Archived originals: the v1 implementation plan, the M0–M6 build diary |
+| docs/history/ | Archived originals: the v1 implementation plan, the M0–M6 build diary, completed checklists, and shipped plan/spec pairs (`superpowers/`) |
