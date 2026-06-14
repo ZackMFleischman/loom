@@ -5,157 +5,55 @@
 // edits retint consumers within a frame, the Console exposes color swatches +
 // a stage-strip source selector, and tunings persist to palettes.json. Runs
 // with state persistence ON — content/state/ is snapshotted and restored.
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { execSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { PNG } from "pngjs";
-import { chromium } from "playwright";
-import { glArgs, forceWebGL2, resQuery } from "./_browser.mjs";
+import { join } from "node:path";
+import {
+  ROOT,
+  ARTIFACTS,
+  STATE_DIR,
+  bootStack,
+  makeResults,
+  sleep,
+  toolJson,
+  callOk,
+  waitFor,
+  waitForFps,
+  avgColor,
+  dist,
+  backupState,
+  restoreState,
+} from "./_harness.mjs";
+import { writeFileSync, rmSync } from "node:fs";
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const ARTIFACTS = join(ROOT, "artifacts");
-const SCENE = join(ROOT, "content", "scenes", "live.scene.ts");
-const STATE_DIR = join(ROOT, "content", "state");
 const TMP_CHAIN = join(ROOT, "content", "modules", "effects", "chains", "validatorTmp.chain.json");
 const PORT = 5203;
 const WS_PORT = 7346;
 // State persistence stays ON here (no state=off) — palette persistence is under test.
-const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}${resQuery}`;
+const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}`;
 // embed=0: validator consoles must never spawn an embedded engine (it would dial the default sidecar port).
 const CONSOLE_URL = `http://localhost:${PORT}/console.html?embed=0`;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const results = [];
-function check(name, ok, detail = "") {
-  results.push({ name, ok });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
-}
+const { results, check } = makeResults();
 
-async function waitForServer(url, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {}
-    await sleep(250);
-  }
-  throw new Error(`dev server did not come up at ${url}`);
-}
+// Palette persistence is under test → snapshot content/state/ and run pristine.
+const stateBackup = backupState();
+restoreState(new Map());
 
-function toolJson(res) {
-  const text = res.content?.find((c) => c.type === "text")?.text ?? "";
-  return JSON.parse(text);
-}
-
-async function callOk(client, name, args = {}) {
-  const res = await client.callTool({ name, arguments: args });
-  if (res.isError) throw new Error(`${name} failed: ${res.content?.[0]?.text}`);
-  return res;
-}
-
-async function waitFor(fn, timeoutMs = 10_000, label = "condition") {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(100);
-  }
-  throw new Error(`timed out waiting for ${label}`);
-}
-
-const waitForFps = (page) =>
-  page.waitForFunction(
-    () => /\d+ fps/.test(document.querySelector("#fps")?.textContent ?? ""),
-    null,
-    { timeout: 20_000 },
-  );
-
-/** Decode an MCP screenshot tool result (base64 in its image block) and average its RGB. */
-function avgColor(res) {
-  const img = res.content?.find((c) => c.type === "image");
-  if (!img?.data) throw new Error("screenshot result carried no image data");
-  const png = PNG.sync.read(Buffer.from(img.data, "base64"));
-  let r = 0, g = 0, b = 0;
-  const n = png.width * png.height;
-  for (let i = 0; i < n; i++) {
-    r += png.data[i * 4]; g += png.data[i * 4 + 1]; b += png.data[i * 4 + 2];
-  }
-  return { r: r / n, g: g / n, b: b / n };
-}
-const dist = (a, b) => Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b);
-
-// ---- pin the scene, snapshot tuned state, keep originals for restore ----
-const PULSE_PIN = `export { default } from "./pulse.scene";\n`;
-const originalScene = readFileSync(SCENE, "utf8");
-writeFileSync(SCENE, PULSE_PIN);
-
-const stateBackup = new Map();
-if (existsSync(STATE_DIR)) {
-  for (const rel of readdirSync(STATE_DIR, { recursive: true })) {
-    const file = join(STATE_DIR, String(rel));
-    if (file.endsWith(".json")) stateBackup.set(String(rel), readFileSync(file, "utf8"));
-  }
-}
-rmSync(STATE_DIR, { recursive: true, force: true }); // pristine state for the run
-mkdirSync(ARTIFACTS, { recursive: true });
-
-const vite = spawn("pnpm", ["exec", "vite", "--port", String(PORT), "--strictPort"], {
-  cwd: join(ROOT, "packages", "engine-app"),
-  shell: true,
-  stdio: ["ignore", "pipe", "pipe"],
-  windowsHide: true,
-});
-vite.stdout.on("data", (d) => process.stdout.write(`[vite] ${d}`));
-vite.stderr.on("data", (d) => process.stderr.write(`[vite] ${d}`));
-let viteExit = null;
-vite.on("exit", (code) => {
-  viteExit = code ?? -1;
-});
-
-let browser;
-let client;
+const T_START = Date.now();
+let tChecks = T_START;
+let teardown = async () => {};
+let booted;
 try {
-  await Promise.race([
-    waitForServer(`http://localhost:${PORT}/`),
-    (async () => {
-      while (viteExit === null) await sleep(200);
-      throw new Error(`vite exited early (code ${viteExit}) — is port ${PORT} already in use?`);
-    })(),
-  ]);
-
-  client = new Client({ name: "validate-m6", version: "0.0.0" });
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: ["--import", "tsx", "packages/sidecar/src/index.ts"],
-    cwd: ROOT,
-    env: { ...process.env, LOOM_WS_PORT: String(WS_PORT) },
-    stderr: "pipe",
+  booted = await bootStack({
+    name: "validate-m6",
+    port: PORT,
+    wsPort: WS_PORT,
+    url: OUTPUT_URL,
+    stateMode: "on",
+    fakeMedia: true,
   });
-  await client.connect(transport);
-  transport.stderr?.on("data", (d) => process.stderr.write(`[sidecar] ${d}`));
-
-  browser = await chromium.launch({
-    headless: true,
-    args: [
-      ...glArgs,
-      "--autoplay-policy=no-user-gesture-required",
-      "--use-fake-device-for-media-stream",
-      "--use-fake-ui-for-media-stream",
-    ],
-  });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  await forceWebGL2(context);
-  const output = await context.newPage();
-  await output.goto(OUTPUT_URL);
-  await waitForFps(output);
-  await waitFor(async () => {
-    const res = await client.callTool({ name: "get_session", arguments: {} });
-    return res.isError ? null : toolJson(res);
-  }, 15_000, "engine to connect to sidecar");
+  teardown = booted.teardown;
+  const { client, context, output } = booted;
+  tChecks = Date.now();
 
   // 1. Globals manifest carries both palettes as color params.
   const globals = toolJson(await callOk(client, "get_manifest", { instance: "globals" }));
@@ -395,23 +293,14 @@ try {
 } catch (err) {
   check("validation run completed", false, String(err));
 } finally {
-  // Kill the engine BEFORE restoring state: a still-alive page can flush a
-  // late debounced save and recreate files after the restore.
-  if (client) await client.close().catch(() => {});
-  if (browser) await browser.close();
-  if (process.platform === "win32") {
-    try { execSync(`taskkill /pid ${vite.pid} /T /F`, { stdio: "ignore" }); } catch {}
-  } else {
-    vite.kill("SIGTERM");
-  }
-  writeFileSync(SCENE, originalScene);
+  console.log(
+    `[timing] m6 boot=${((tChecks - T_START) / 1000).toFixed(1)}s checks=${((Date.now() - tChecks) / 1000).toFixed(1)}s`,
+  );
+  // teardown() closes the engine page + sidecar + vite and restores the pinned
+  // scene BEFORE we restore state (a live page could flush a late debounced save).
+  await teardown();
   rmSync(TMP_CHAIN, { force: true }); // the save_chain test artifact
-  rmSync(STATE_DIR, { recursive: true, force: true });
-  for (const [rel, content] of stateBackup) {
-    const file = join(STATE_DIR, rel);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, content);
-  }
+  restoreState(stateBackup);
 }
 
 const failed = results.filter((r) => !r.ok);
