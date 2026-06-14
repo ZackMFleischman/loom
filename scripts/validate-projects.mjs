@@ -16,9 +16,35 @@ import {
   callOk,
   waitFor,
   waitForFps,
+  sleep,
   backupState,
   restoreState,
 } from "./_harness.mjs";
+
+/**
+ * Open the PANIC ▾ menu and click a menu item until the engine reflects it.
+ * The Console drives the human-only panic verbs (set_panic_instance, arm) — an
+ * MCP client is agent-tier and can't. MUI re-renders on every state broadcast,
+ * and the menu closes on each item click, so we re-open + re-click ~1s apart
+ * until the predicate holds (no-op once it already does). Mirrors the helper in
+ * validate-panic.mjs. A menu item only exists in the DOM while the menu is open.
+ */
+async function menuClickUntil(page, itemSelector, pred, label, timeoutMs = 12_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await page.click("#panicmenu").catch(() => {});
+    await page.waitForSelector(itemSelector, { state: "visible", timeout: 1500 }).catch(() => {});
+    await page.click(itemSelector).catch(() => {});
+    for (let i = 0; i < 8; i++) {
+      if (await pred()) {
+        await page.keyboard.press("Escape").catch(() => {});
+        return;
+      }
+      await sleep(120);
+    }
+  }
+  throw new Error(`timed out clicking ${itemSelector} for ${label}`);
+}
 
 const PORT = 5206;
 const WS_PORT = 7351;
@@ -82,6 +108,33 @@ try {
   check(
     "project file exists on disk",
     existsSync(join(STATE_DIR, "projects", `${PROJECT}.json`)),
+  );
+
+  // ---- designate a SAFE (panic) target (opt-in model: panic-safe-scene-
+  //      redesign removed the boot-default warm "panic" instance — PANIC now
+  //      defaults to HOLD and scene-panic is opt-in). The deferred project-load
+  //      cull must protect a designated `pinned:"panic"` target; to assert that,
+  //      we first DESIGNATE one. set_panic_instance is human-only, so (like
+  //      validate-panic.mjs) we drive the Console PANIC ▾ menu, not the agent
+  //      MCP client. The target is created AFTER the save so it isn't part of
+  //      the project (it's a genuine pre-load instance the cull would otherwise
+  //      sweep but for its pin) and stays warm across the load/commit below. ----
+  const safe = toolJson(await callOk(client, "create_instance", { scene: "gradient" })).instance;
+  const consolePage = await context.newPage();
+  await consolePage.goto(CONSOLE_URL);
+  await consolePage.waitForSelector(`.tile[data-id="${safe}"]`, { timeout: 10_000 });
+  await menuClickUntil(
+    consolePage,
+    `[data-panictarget="${safe}"]`,
+    async () => (await session()).instances.find((i) => i.pinned === "panic")?.id === safe,
+    "designate SAFE target via Console",
+  );
+  const designated = await session();
+  check(
+    "a SAFE (panic) target is designated via the Console (human tier, no rebuild)",
+    designated.instances.find((i) => i.id === safe)?.pinned === "panic" &&
+      designated.panicScene.status === "ok",
+    `pinned=${designated.instances.find((i) => i.id === safe)?.pinned} status=${designated.panicScene.status}`,
   );
 
   // ---- mutate the session ----
@@ -151,8 +204,9 @@ try {
   }, 15_000, "replaced instances to cull after the commit lands");
   check("commit from the loaded set culls the replaced instances", true, culled.instances.map((i) => i.id).join(" · "));
   check(
-    "the warm panic instance survives the cull",
-    culled.instances.some((i) => i.pinned === "panic"),
+    "the designated SAFE (panic-pinned) target survives the cull",
+    culled.instances.some((i) => i.id === safe && i.pinned === "panic"),
+    culled.instances.map((i) => `${i.id}:${i.pinned ?? "-"}`).join(" · "),
   );
 
   // ---- restart: projects survive ----
@@ -184,7 +238,8 @@ try {
   check("agent load_project stays ungated (audience-safe)", ungatedLoad.isError !== true);
 
   // ---- Console: switcher + human save dialog (ungated) ----
-  const consolePage = await context.newPage();
+  // Reuse the console page opened for the SAFE designation above; re-goto so it
+  // reflects the engine state after the restart + agentCommit navigation.
   await consolePage.goto(CONSOLE_URL);
   await consolePage.waitForSelector("#projects", { timeout: 10_000 });
   const options = await consolePage.$$eval("#projects option", (os) => os.map((o) => o.value));
