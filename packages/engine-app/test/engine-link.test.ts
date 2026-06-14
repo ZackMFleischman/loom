@@ -296,6 +296,136 @@ describe("EngineLink", () => {
     expect(onState).toHaveBeenCalledTimes(1); // no further calls
   });
 
+  // ── Narrow selector stores (FR-1: kill the re-render storm) ───────────────
+  describe("selector stores", () => {
+    // A fuller session with two instances; `mk` lets a test tweak one field.
+    const inst = (id: string, frameMs: number, slowSignals: Array<{ label: string; ms: number }> = []) =>
+      ({
+        id,
+        scene: id.split("-")[0],
+        status: "ok",
+        error: null,
+        frameMs,
+        slowSignals,
+        nodes: [],
+        builds: 1,
+        pinned: null,
+      }) as never;
+    const sess = (overrides: Record<string, unknown> = {}, instances = [inst("a-1", 1), inst("b-1", 2)]) =>
+      ({ live: "a-1", staged: null, panicked: false, fps: 60, frame: 1, availableScenes: [], instances, ...overrides }) as never;
+
+    it("keeps a stable instance-slice reference while that instance is unchanged", () => {
+      engine.postMessage({ kind: "state", session: sess({ frame: 1 }), manifests: {} });
+      const first = link.instance("a-1");
+      // A new state tick that only bumps the frame counter must NOT churn a-1's slice.
+      engine.postMessage({ kind: "state", session: sess({ frame: 2 }), manifests: {} });
+      expect(link.instance("a-1")).toBe(first); // same identity → no Tile re-render
+    });
+
+    it("isolates the tile slice from slowSignals churn (FR-1: no per-tick storm)", () => {
+      engine.postMessage({
+        kind: "state",
+        session: sess({}, [inst("a-1", 1, [{ label: "speed", ms: 0.01 }])]),
+        manifests: {},
+      });
+      const tile0 = link.tile("a-1");
+      const onTile = vi.fn();
+      link.subscribeTile("a-1")(onTile);
+      // Only slowSignals wiggled (the per-tick EMA flicker a tile never shows) +
+      // a sub-0.1 frameMs nudge → the tile's DISPLAY is unchanged → no wake.
+      engine.postMessage({
+        kind: "state",
+        session: sess({ frame: 2 }, [inst("a-1", 1.04, [{ label: "speed", ms: 0.07 }])]),
+        manifests: {},
+      });
+      expect(onTile).not.toHaveBeenCalled();
+      expect(link.tile("a-1")).toBe(tile0);
+      // A frameMs change across the 0.1 boundary DOES wake it (the .framems moved).
+      engine.postMessage({
+        kind: "state",
+        session: sess({ frame: 3 }, [inst("a-1", 1.4, [{ label: "speed", ms: 0.07 }])]),
+        manifests: {},
+      });
+      expect(onTile).toHaveBeenCalledTimes(1);
+      expect(link.tile("a-1")?.frameMs).toBe(1.4);
+    });
+
+    it("wakes only the instance whose slice changed, not the others", () => {
+      engine.postMessage({ kind: "state", session: sess(), manifests: {} });
+      const onA = vi.fn();
+      const onB = vi.fn();
+      link.subscribeInstance("a-1")(onA);
+      link.subscribeInstance("b-1")(onB);
+      // Change only a-1's frameMs; b-1 is byte-identical.
+      engine.postMessage({
+        kind: "state",
+        session: sess({ frame: 2 }, [inst("a-1", 99), inst("b-1", 2)]),
+        manifests: {},
+      });
+      expect(onA).toHaveBeenCalledTimes(1);
+      expect(onB).not.toHaveBeenCalled();
+      expect(link.instance("a-1")?.frameMs).toBe(99);
+    });
+
+    it("exposes a stable id list that wakes only on add/remove/reorder", () => {
+      engine.postMessage({ kind: "state", session: sess(), manifests: {} });
+      const onIds = vi.fn();
+      link.subscribeInstanceIds(onIds);
+      // Same membership, only frame bump → ids unchanged, no wake.
+      engine.postMessage({ kind: "state", session: sess({ frame: 2 }), manifests: {} });
+      expect(onIds).not.toHaveBeenCalled();
+      // Add an instance → ids change.
+      engine.postMessage({
+        kind: "state",
+        session: sess({ frame: 3 }, [inst("a-1", 1), inst("b-1", 2), inst("c-1", 3)]),
+        manifests: {},
+      });
+      expect(onIds).toHaveBeenCalledTimes(1);
+      expect(link.ids()).toEqual(["a-1", "b-1", "c-1"]);
+    });
+
+    it("isolates stage pointers from the frame-counter churn", () => {
+      engine.postMessage({ kind: "state", session: sess(), manifests: {} });
+      const onStage = vi.fn();
+      link.subscribeStagePointers(onStage);
+      engine.postMessage({ kind: "state", session: sess({ frame: 2 }), manifests: {} });
+      expect(onStage).not.toHaveBeenCalled(); // pointers unchanged
+      engine.postMessage({ kind: "state", session: sess({ frame: 3, staged: "b-1" }), manifests: {} });
+      expect(onStage).toHaveBeenCalledTimes(1);
+      expect(link.pointers()).toEqual({ live: "a-1", staged: "b-1", panicked: false });
+    });
+
+    it("rounds engine fps so a tile re-renders at most ~1 Hz on fps wobble", () => {
+      engine.postMessage({ kind: "state", session: sess({ fps: 59.6 }), manifests: {} });
+      const onFps = vi.fn();
+      link.subscribeEngineFps(onFps);
+      engine.postMessage({ kind: "state", session: sess({ fps: 59.8, frame: 2 }), manifests: {} });
+      expect(onFps).not.toHaveBeenCalled(); // both round to 60
+      expect(link.fps()).toBe(60);
+      engine.postMessage({ kind: "state", session: sess({ fps: 48.2, frame: 3 }), manifests: {} });
+      expect(onFps).toHaveBeenCalledTimes(1);
+      expect(link.fps()).toBe(48);
+    });
+
+    it("prunes a destroyed instance's slice + thumbnail", () => {
+      engine.postMessage({ kind: "state", session: sess(), manifests: { "a-1": {}, "b-1": {} } });
+      engine.postMessage({ kind: "thumbs", thumbs: { "a-1": "data:x", "b-1": "data:y" } });
+      expect(link.thumb("b-1")).toBe("data:y");
+      // b-1 destroyed: gone from the next snapshot.
+      engine.postMessage({ kind: "state", session: sess({ frame: 2 }, [inst("a-1", 1)]), manifests: { "a-1": {} } });
+      expect(link.instance("b-1")).toBeUndefined();
+      expect(link.thumb("b-1")).toBeUndefined();
+      expect(link.manifest("b-1")).toBeUndefined();
+    });
+
+    it("keeps a stable manifest-slice reference while unchanged", () => {
+      engine.postMessage({ kind: "state", session: sess(), manifests: { "a-1": { speed: { type: "float", value: 1, default: 1 } } } });
+      const first = link.manifest("a-1");
+      engine.postMessage({ kind: "state", session: sess({ frame: 2 }), manifests: { "a-1": { speed: { type: "float", value: 1, default: 1 } } } });
+      expect(link.manifest("a-1")).toBe(first);
+    });
+  });
+
   it("dispose clears timers and closes the channel", () => {
     const closed = vi.fn();
     page.close = closed;
