@@ -485,18 +485,9 @@ try {
     JSON.stringify(bindingsJson2),
   );
 
-  // 14. The agent tool surface is unchanged: MIDI-learn (like set_audio)
-  // is a Console-only, human-only affair.
-  const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-  check(
-    "MCP tool surface unchanged (no midi tools for agents)",
-    [
-        "clear_modulation", "commit", "create_instance", "destroy_instance", "get_manifest",
-        "get_session", "list_projects", "load_project", "modulate_param", "record_fixture", "save_chain",
-        "save_project", "screenshot", "set_chain", "set_modulation_enabled", "set_param", "stage", "unstage",
-      ].every((t) => tools.includes(t)) && !tools.includes("set_audio"),
-    tools.join(", "),
-  );
+  // 14. (The agent tool-surface assertion — MIDI-learn is a Console-only,
+  // human-only affair with no MCP tool, like set_audio — moved to the shared
+  // boot-smoke suite validate-core.mjs, FR-5: asserted once, not in every suite.)
 } catch (err) {
   check("validation run completed", false, String(err));
 } finally {

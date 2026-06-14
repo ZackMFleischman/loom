@@ -33,6 +33,7 @@ pnpm catalog            # regenerate content/CATALOG.md alone (--check exits 1 i
 pnpm test               # package unit tests (runtime/sidecar/engine-app) + content stdlib tests
 pnpm test:content       # stdlib module tests alone: tier-1 contract, tier-2 extremes, golden patterns
 pnpm validate           # ALL acceptance suites below in order (stops on first failure)
+pnpm validate:core      # Boot smoke + the single canonical MCP tool-surface check (shared by all full-stack suites)
 pnpm validate:m0        # M0 acceptance: Playwright + headless Chromium HMR checks
 pnpm validate:m1        # M1 acceptance: signals/audio-reactivity/containment checks
 pnpm validate:m2        # M2 acceptance: MCP client e2e (agent tools + latency)
@@ -46,7 +47,9 @@ pnpm validate:m9        # M9 acceptance: video sources play/freeze/scrub/loop li
 pnpm validate:fixtures  # Fixtures acceptance: record/replay input traces, byte-identical screenshot({frames})
 pnpm validate:m7        # M7 acceptance: geo path — gltf/FBX models, orbitCam, render3d bridge, frame-time HUD
 pnpm validate:m8        # M8 acceptance: particles off mesh surfaces, turbulence, chain commit, fixture determinism
+pnpm validate:m11       # M11 acceptance: catalog columns, hot-register a module mid-run, parallel sandboxes
 pnpm validate:modulators # param-modulator acceptance: attach/clear via MCP, FR-4/5/7/10 behavior
+pnpm validate:panic     # PANIC acceptance: arm/hold/scene paths (split out of the m3 family)
 pnpm validate:stdlib    # tier-3 smoke render: every module hot-swapped in, non-black + clean console
 ```
 

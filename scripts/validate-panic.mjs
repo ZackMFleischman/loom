@@ -232,16 +232,10 @@ try {
   const badgeAtBoot = await consolePage.$(".tile .safe-badge");
   check("console shows NO ⛑ SAFE tile at boot (scene-panic is opt-in)", badgeAtBoot === null);
 
-  // 3. The agent can observe but never touch the panic path (human-only).
-  const toolNames = (await client.listTools()).tools.map((t) => t.name);
-  check(
-    "MCP exposes no panic/arm/designate tools (human-only)",
-    !toolNames.includes("panic") &&
-      !toolNames.includes("resume") &&
-      !toolNames.includes("arm_panic_mode") &&
-      !toolNames.includes("set_panic_instance"),
-    toolNames.join(", "),
-  );
+  // 3. (The agent-can-observe-but-never-touch-panic tool-surface assertion —
+  // no panic/resume/arm/designate MCP tools — moved to the shared boot-smoke
+  // suite validate-core.mjs, FR-5. The panic suite keeps every behavioral check
+  // of the panic path below; only the redundant tool-list moved.)
 
   // 4. The scene arm is DISABLED until a SAFE target is designated (FR-4/Q4).
   await consolePage.click("#panicmenu");

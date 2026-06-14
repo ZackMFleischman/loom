@@ -325,8 +325,12 @@ behavior. That's layer 4.
 ### 4. Acceptance validators (`pnpm validate`, ~6 min; or any `pnpm validate:<x>` alone)
 
 Playwright + headless Chromium scripts in `scripts/validate-*.mjs`, each booting
-its own Vite (and, where needed, its own sidecar) — the eyes-on layer. One suite
-per shipped milestone, kept green forever: `m0` (HMR/never-go-black), `m1`
+its own Vite (and, where needed, its own sidecar) — the eyes-on layer. A shared
+helper module (`scripts/_harness.mjs`) holds the boot block (`bootStack`) and the
+assertion/teardown primitives so the suites don't re-fork them. One suite per
+shipped milestone, kept green forever, plus `core` (the boot smoke + the SINGLE
+canonical MCP tool-surface assertion, run first so the others don't re-prove it):
+`m0` (HMR/never-go-black), `m1`
 (signals/audio/containment), `m2` (MCP e2e), `m3` (stage/commit/PANIC + Console),
 `m4` (pure output/staging UX), `m5` (input rack/persistence/MIDI-learn), `m6`
 (palettes), `layers` (named nodes: rig rides with no rebuild, per-node chains,
@@ -338,7 +342,9 @@ rebuild, cover scaling on a video source, media middleware), `fixtures`
 instances), `m7` (geo: gltf sandbox → orbit → post chain → commit, frame-time
 HUD; FBX checks where the local asset exists), `m8` (particles: surface
 emission, turbulence whip, chain commit, byte-identical fixture replay),
-`modulators`, and `stdlib` — the tier-3 smoke render: every module is
+`m11` (catalog columns, hot-register a module mid-run, parallel sandboxes),
+`modulators`, `panic` (arm/hold/scene paths, split out of the m3 family),
+and `stdlib` — the tier-3 smoke render: every module is
 mounted in a generated sandbox scene (sources direct, effects over an `osc`,
 controls driving an osc param), hot-swapped in via the `live.scene.ts` pin, and
 must render non-black with a clean console and no NFR-2 freeze.

@@ -182,17 +182,9 @@ try {
   const manifestVal = async (instance, path) =>
     toolJson(await callOk(client, "get_manifest", { instance })).params[path].value;
 
-  // 1. Tool surface gained the modulator tools (and still no set_audio).
-  const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-  check(
-    "MCP tool surface includes the modulator tools, no set_audio",
-    [
-        "clear_modulation", "commit", "create_instance", "destroy_instance", "get_manifest",
-        "get_session", "list_projects", "load_project", "modulate_param", "record_fixture", "save_chain",
-        "save_project", "screenshot", "set_chain", "set_modulation_enabled", "set_param", "stage", "unstage",
-      ].every((t) => tools.includes(t)) && !tools.includes("set_audio"),
-    tools.join(", "),
-  );
+  // 1. (The MCP tool-surface assertion — the modulator tools are present and
+  // set_audio is absent — moved to the shared boot-smoke suite validate-core.mjs,
+  // FR-5: one canonical tool-list instead of six divergent copies.)
 
   // 2. A sine animates the param within its range, visible in get_manifest +
   // get_session, and the returned config carries the parsed defaults.

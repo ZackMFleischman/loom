@@ -9,7 +9,6 @@ import { join } from "node:path";
 import {
   ROOT,
   ARTIFACTS,
-  STATE_DIR,
   bootStack,
   makeResults,
   sleep,
@@ -22,7 +21,7 @@ import {
   backupState,
   restoreState,
 } from "./_harness.mjs";
-import { writeFileSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 
 const TMP_CHAIN = join(ROOT, "content", "modules", "effects", "chains", "validatorTmp.chain.json");
 const PORT = 5203;

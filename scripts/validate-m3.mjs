@@ -141,17 +141,8 @@ try {
   const consolePage = await context.newPage();
   await consolePage.goto(CONSOLE_URL);
 
-  // 1. Tools + session shape.
-  const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-  check(
-    "MCP exposes the M3 tools (+ modulators, chains, projects)",
-    [
-        "clear_modulation", "commit", "create_instance", "destroy_instance", "get_manifest",
-        "get_session", "list_projects", "load_project", "modulate_param", "record_fixture", "save_chain",
-        "save_project", "screenshot", "set_chain", "set_modulation_enabled", "set_param", "stage", "unstage",
-      ].every((t) => tools.includes(t)) && !tools.includes("set_audio"),
-    tools.join(", "),
-  );
+  // 1. Session shape. (The canonical MCP tool-surface assertion moved to the
+  // shared boot-smoke suite, validate-core.mjs — FR-5, asserted once not six times.)
   const session0 = await waitFor(async () => {
     const res = await client.callTool({ name: "get_session", arguments: {} });
     return res.isError ? null : toolJson(res);
