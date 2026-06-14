@@ -322,15 +322,15 @@ async function startAudio(): Promise<void> {
   }
 }
 
-await renderer.init();
-// updateStyle=false: CSS owns the canvas's on-screen size (object-fit: cover).
-renderer.setSize(RENDER_W, RENDER_H, false);
-await startAudio();
-
-// Tuned state (R6.2): globals tunings, MIDI bindings, and per-scene values
-// load before the boot instance builds so it comes up already tuned.
-let savedPanicScene: string | null = null;
-if (state.enabled) {
+/**
+ * Load persisted tuned state (R6.2) into the registries/maps. Returns the
+ * persisted Panic Scene pick (or null). The intra-step ordering is load-bearing
+ * and documented inline: ranges before values, color decompositions before
+ * palette values, channel modulators last (their targets must exist first).
+ */
+async function loadPersistedState(): Promise<string | null> {
+  if (!state.enabled) return null;
+  let savedPanicScene: string | null = null;
   // Range overrides load BEFORE values so a widened bound is in place to hold a
   // value persisted outside the declared range.
   const savedInputRanges = await state.load(StateKey.inputRanges);
@@ -394,7 +394,23 @@ if (state.enabled) {
   const savedPanic = await state.load(StateKey.panic);
   const name = (savedPanic as { scene?: unknown } | null)?.scene;
   if (typeof name === "string") savedPanicScene = name;
+  return savedPanicScene;
 }
+
+// ============================ BOOT SEQUENCE ============================
+// Explicit, ordered boot — each phase depends on the prior. Everything above is
+// construction (surfaces, buses, registries, services, the persist/HMR wiring);
+// from here the engine comes online in a fixed order.
+
+// Boot 1 — bring the renderer + audio online.
+await renderer.init();
+// updateStyle=false: CSS owns the canvas's on-screen size (object-fit: cover).
+renderer.setSize(RENDER_W, RENDER_H, false);
+await startAudio();
+
+// Boot 2 — load tuned state BEFORE the boot instance builds, so it comes up
+// already tuned (and the persisted Panic Scene pick is known).
+const savedPanicScene = await loadPersistedState();
 
 // Audio input devices, cached for the (synchronous) session snapshot.
 let audioDevices: Array<{ id: string; label: string }> = [];
@@ -405,6 +421,7 @@ async function refreshAudioDevices(): Promise<void> {
 void refreshAudioDevices();
 navigator.mediaDevices?.addEventListener("devicechange", () => void refreshAudioDevices());
 
+// Boot 3 — install the debug surface, then build the boot + warm-panic instances.
 const debugOnsets = audio.onset({ band: "bass", threshold: 0.22 });
 
 // The window.__loom debug surface validators read; built + installed here,
@@ -433,10 +450,11 @@ if (savedPanicScene && savedPanicScene !== panicController.sceneName && currentS
   panicController.tryBuild(currentScenes().get(savedPanicScene)!);
 }
 
-// The render loop. Owns the frame tick + loop-local state (latest frame, mix,
+// Boot 4 — the render loop, the EngineApi, and the transports (bridge + console).
+// The render loop owns the frame tick + loop-local state (latest frame, mix,
 // onset count, screenshot/preview queues). Its api hooks (captureLiveMirror /
 // tickPreview) read `api`, constructed just below — closures, called only
-// in-frame. Started at the end of boot.
+// in-frame. Started in Boot 5.
 const renderService = new RenderService({
   renderer,
   canvas,
@@ -528,7 +546,7 @@ startConsoleChannel(api, {
   },
 });
 
-// Start the frame loop (rAF + the hidden-tab worker-clock fallback).
+// Boot 5 — start the frame loop (rAF + the hidden-tab worker-clock fallback).
 renderService.start();
 
 // Tap tempo on "t"; any click also unblocks a suspended AudioContext.
