@@ -50,6 +50,7 @@ export const RequestType = z.enum([
   "save_project",
   "load_project",
   "record_fixture",
+  "get_diagnostics",
   "batch",
 ]);
 export type RequestType = z.infer<typeof RequestType>;
@@ -580,6 +581,44 @@ export const PanicSceneInfo = z.object({
 });
 export type PanicSceneInfo = z.infer<typeof PanicSceneInfo>;
 
+/**
+ * The at-a-glance "is the engine healthy" rollup (FR-5). Folded onto
+ * `get_session` (the `perf` block) AND returned standalone by `get_diagnostics`
+ * — distinct from the event timeline. `renderer` resource counts are best-effort
+ * (FR-7; absent when the backend doesn't expose them cheaply).
+ */
+export const PerfSnapshot = z.object({
+  fps: z.number(),
+  /** Which clock drove the last frame: "raf" (visible) or "worker" (hidden tab). */
+  clockSource: z.enum(["raf", "worker"]),
+  /** The frame-time budget in ms (1000/60 ≈ 16.7) the threshold events fire against. */
+  frameBudgetMs: z.number(),
+  frame: z.number().int(),
+  /** Per-instance frame cost + costliest signals (reused from get_session). */
+  instances: z.array(
+    z.object({
+      id: z.string(),
+      frameMs: z.number(),
+      slowSignals: z.array(z.object({ label: z.string(), ms: z.number() })),
+    }),
+  ),
+  /** The worst single-instance frameMs seen across the recent sampling window. */
+  worstFrameMsRecent: z.number(),
+  /**
+   * three's renderer.info counters (geometries/textures/draw calls), best-effort
+   * (FR-7) — the early-warning meter for texture/geometry leaks across rebuilds.
+   * Absent when the active backend doesn't expose them.
+   */
+  renderer: z
+    .object({
+      geometries: z.number().int(),
+      textures: z.number().int(),
+      drawCalls: z.number().int(),
+    })
+    .optional(),
+});
+export type PerfSnapshot = z.infer<typeof PerfSnapshot>;
+
 export const SessionSnapshot = z.object({
   // Live-instance views (kept flat for M2 compatibility and quick reads).
   scene: z.string().nullable(),
@@ -617,6 +656,13 @@ export const SessionSnapshot = z.object({
   onsetCount: z.number(),
   fps: z.number(),
   frame: z.number(),
+  /**
+   * Engine-health rollup (app-instrumentation FR-5): fps/clockSource/frameBudget,
+   * per-instance frameMs+slowSignals, worst recent frame, best-effort renderer
+   * counts. The at-a-glance perf read; the event TIMELINE is `get_diagnostics`.
+   * `.optional()` so an older engine snapshot (pre-instrumentation) still parses.
+   */
+  perf: PerfSnapshot.optional(),
 });
 export type SessionSnapshot = z.infer<typeof SessionSnapshot>;
 
@@ -714,3 +760,93 @@ export const ScreenshotResult = z.object({
   fps: z.number().default(0),
 });
 export type ScreenshotResult = z.infer<typeof ScreenshotResult>;
+
+// ---- Diagnostics (app-instrumentation): the structured, queryable event log ----
+
+/** Severity of a diagnostics event. */
+export const DiagLevel = z.enum(["info", "warn", "error"]);
+export type DiagLevel = z.infer<typeof DiagLevel>;
+
+/**
+ * One structured diagnostics event from the engine's in-process ring
+ * (packages/engine-app/src/diagnostics.ts). The agent pages forward with the
+ * `seq` cursor and correlates cause→effect on `frame`.
+ *
+ * `kind` is an OPEN string (not an enum) on purpose (NFR-5): the engine emits
+ * new dotted domain kinds — `scene.swapped`, `scene.rejected`, `instance.rebuilt`,
+ * `instance.frozen`, `loopguard.tripped`, `perf.sample`, `perf.fps.low`,
+ * `sidecar.tool`, … — without a protocol bump. Validators type-narrow on the
+ * specific kinds they assert.
+ */
+export const DiagEvent = z.object({
+  /** Monotonic sequence number — the agent's `since` cursor. */
+  seq: z.number().int(),
+  /** Engine frame at emit time (the causal anchor). */
+  frame: z.number().int(),
+  /** performance.now() ms at emit time. */
+  t: z.number(),
+  level: DiagLevel,
+  /** Open dotted domain name, e.g. "scene.rejected". */
+  kind: z.string().min(1),
+  /** The instance this event is about, if any. */
+  instance: z.string().optional(),
+  /** Short English summary (reuses the existing `[loom]` log strings). */
+  msg: z.string(),
+  /** Optional structured payload (error text, fps, frameMs, …). */
+  data: z.record(z.string(), z.unknown()).optional(),
+});
+export type DiagEvent = z.infer<typeof DiagEvent>;
+
+/** Per-tool sidecar call latency/outcome row (FR-6). */
+export const SidecarToolStat = z.object({
+  tool: z.string(),
+  count: z.number().int(),
+  ok: z.number().int(),
+  error: z.number().int(),
+  timeout: z.number().int(),
+  /** Latency percentiles in ms over the observed calls. */
+  p50: z.number(),
+  p95: z.number(),
+  /** Slowest observed call in ms. */
+  max: z.number(),
+  /** Last error message for this tool, or null. */
+  lastError: z.string().nullable(),
+});
+export type SidecarToolStat = z.infer<typeof SidecarToolStat>;
+
+/**
+ * `get_diagnostics` args. `since` is a `seq` cursor (page forward from the last
+ * read); the other fields filter. `scope:"sidecar"` returns the sidecar's own
+ * per-tool latency table instead of the engine ring (FR-6) — the one telemetry
+ * layer the engine can't see.
+ */
+export const GetDiagnosticsArgs = z.object({
+  scope: z.enum(["engine", "sidecar"]).default("engine"),
+  since: z.number().int().optional(),
+  kinds: z.array(z.string()).optional(),
+  instance: z.string().optional(),
+  level: DiagLevel.optional(),
+  limit: z.number().int().min(1).max(512).optional(),
+});
+export type GetDiagnosticsArgs = z.infer<typeof GetDiagnosticsArgs>;
+
+/** `get_diagnostics { scope:"engine" }` result — the event timeline. */
+export const GetDiagnosticsResult = z.object({
+  scope: z.literal("engine"),
+  events: z.array(DiagEvent),
+  /** Events evicted from the ring since the requested `since` (missed-events flag). */
+  dropped: z.number().int(),
+  /** The current cursor + health, so the agent's next `since` is one read away. */
+  now: z.object({ frame: z.number().int(), fps: z.number(), seq: z.number().int() }),
+  perf: PerfSnapshot,
+});
+export type GetDiagnosticsResult = z.infer<typeof GetDiagnosticsResult>;
+
+/** `get_diagnostics { scope:"sidecar" }` result — the MCP-call latency table. */
+export const GetSidecarDiagnosticsResult = z.object({
+  scope: z.literal("sidecar"),
+  /** Whether the engine WS bridge is currently attached. */
+  engineConnected: z.boolean(),
+  tools: z.array(SidecarToolStat),
+});
+export type GetSidecarDiagnosticsResult = z.infer<typeof GetSidecarDiagnosticsResult>;

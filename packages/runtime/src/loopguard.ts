@@ -1,4 +1,7 @@
 import ts from "typescript";
+import { LOOP_GUARD_PREFIX } from "./loopguard-prefix";
+
+export { LOOP_GUARD_PREFIX } from "./loopguard-prefix";
 
 /**
  * Loop-guard transform: a build-time AST pass that injects an iteration budget
@@ -17,9 +20,6 @@ import ts from "typescript";
  * fine, nested loops each get a fresh budget, and a loop re-entered every frame
  * never accumulates across frames. Only genuinely unbounded iteration trips it.
  */
-
-/** Message prefix on the thrown Error, so the engine/tests can recognize it. */
-export const LOOP_GUARD_PREFIX = "[loom] loop guard: ";
 
 /**
  * Default iterations a single loop entry may run before the guard throws. High

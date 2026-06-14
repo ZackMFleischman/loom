@@ -97,4 +97,45 @@ describe("Broker", () => {
     broker.handleMessage(JSON.stringify({ id: "ghost", kind: "res", ok: true, result: 1 }));
     expect(broker.connected).toBe(true);
   });
+
+  it("reports each settled request to onSettle with tool, duration, and outcome (FR-6)", async () => {
+    const broker = new Broker();
+    const sock = fakeSocket();
+    const settled: Array<{ tool: string; outcome: string; error?: string }> = [];
+    broker.onSettle = (tool, _ms, outcome, error) => settled.push({ tool, outcome, ...(error != null ? { error } : {}) });
+    broker.attach(sock);
+
+    // ok
+    const p1 = broker.request("get_session", {});
+    broker.handleMessage(JSON.stringify({ id: JSON.parse(sock.sent[0]!).id, kind: "res", ok: true, result: 1 }));
+    await p1;
+    // error
+    const p2 = broker.request("set_param", { path: "x", value: 1 });
+    broker.handleMessage(
+      JSON.stringify({ id: JSON.parse(sock.sent[1]!).id, kind: "res", ok: false, error: "bad" }),
+    );
+    await expect(p2).rejects.toThrow("bad");
+    // timeout
+    const p3 = broker.request("screenshot", {}, 1000);
+    const a3 = expect(p3).rejects.toThrow(/timed out/i);
+    await vi.advanceTimersByTimeAsync(1001);
+    await a3;
+
+    expect(settled).toEqual([
+      { tool: "get_session", outcome: "ok" },
+      { tool: "set_param", outcome: "error", error: "bad" },
+      { tool: "screenshot", outcome: "timeout", error: "timed out after 1000 ms" },
+    ]);
+  });
+
+  it("settles in-flight requests as errors when the engine detaches", async () => {
+    const broker = new Broker();
+    const settled: string[] = [];
+    broker.onSettle = (tool, _ms, outcome) => settled.push(`${tool}:${outcome}`);
+    broker.attach(fakeSocket());
+    const p = broker.request("get_session", {});
+    broker.attach(null);
+    await expect(p).rejects.toThrow(/disconnected/i);
+    expect(settled).toEqual(["get_session:error"]);
+  });
 });
