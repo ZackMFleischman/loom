@@ -6,7 +6,12 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Divider,
+  ListItemText,
+  Menu,
+  MenuItem,
   NativeSelect,
+  Radio,
   Stack,
   TextField,
   Typography,
@@ -226,18 +231,30 @@ function ProjectsControl({ session: s }: { session: SessionSnapshot }) {
 const PANIC_MODE_KEY = "loom.panicMode";
 
 /**
- * The big red button (one click, executes the armed mode) plus the
- * arm-in-advance HOLD | SAFE SCENE control. Arming is human-only and persisted
- * in localStorage so a reload never silently re-arms a different behavior. The
- * armed mode reflects the engine snapshot; flipping the arm WHILE panicked also
- * re-executes it, which is the hold→scene escalation path (Stage ignores a
- * scene→hold downgrade). FR-7: the SCENE option shows a warning when the panic
- * instance is in build-fallback.
+ * PANIC as a split button (panic-safe-scene-redesign FR-5). The big red primary
+ * (`#panic`, one click executes the armed mode / RESUME while panicked) plus an
+ * attached `▾` (`#panicmenu`) that opens the only place mode/target live:
+ *
+ * - **Arm: Hold** (`#panic-arm-hold`) — the resting default.
+ * - **Arm: Safe scene** (`#panic-arm-scene`) — DISABLED until a SAFE target is
+ *   designated (FR-4/Q4: disable + inline picker, never silently degrade). The
+ *   inline target list (`[data-panictarget="<id>"]`) designates any existing
+ *   instance via `set_panic_instance`; choosing one and arming scene is one flow.
+ *
+ * Arming is human-only and the armed MODE is persisted in localStorage so a
+ * reload re-arms the same behavior (the SAFE *target* is not persisted, NFR-2 —
+ * a fresh boot has none and scene-panic stays unavailable until re-designated).
+ * The armed mode reflects the engine snapshot; flipping the arm WHILE panicked
+ * re-executes it — the hold→scene escalation (Stage no-ops a scene→hold
+ * downgrade). FR-7: scene-panic distinguishes "none" (pick a target) from
+ * "error" (designated target broke → ⚠).
  */
 function PanicControls({ session: s }: { session: SessionSnapshot }) {
   const link = useEngine();
   const mode = s.panicMode; // engine is the source of truth
   const synced = useRef(false);
+  const groupRef = useRef<HTMLDivElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // On first connect, re-arm the engine from the persisted choice (the engine
   // boots in "hold"); thereafter the snapshot drives the UI.
@@ -257,59 +274,125 @@ function PanicControls({ session: s }: { session: SessionSnapshot }) {
     if (s.panicked) void link.req("panic", { mode: next }).catch(fail);
   };
 
-  const sceneBroken = s.panicScene.status === "error";
+  const designate = (id: string) => {
+    void link
+      .req("set_panic_instance", { instance: id })
+      .then(() => arm("scene")) // choosing a target + arming scene is one gesture
+      .catch(fail);
+  };
+
+  // status: "none" (no target → scene-panic unavailable) vs "error" (designated
+  // target broke) vs "ok". `safeId` is the currently designated instance, if any.
+  const sceneStatus = s.panicScene.status;
+  const sceneAvailable = sceneStatus === "ok";
+  const sceneBroken = sceneStatus === "error";
   const safeId = s.instances.find((i) => i.pinned === "panic")?.id ?? null;
+  // Candidates: any instance can be designated (matches LIVE/STAGED pointers).
+  const candidates = s.instances;
+
   return (
-    <Stack direction="row" spacing={1} alignItems="center">
-      <ButtonGroup id="panicmode" size="small" variant="outlined" disableElevation>
-        <Button
-          id="panicmode-hold"
-          variant={mode === "hold" ? "contained" : "outlined"}
-          onClick={() => arm("hold")}
-          sx={{ fontSize: 11, lineHeight: 1.1, px: 1 }}
-        >
-          HOLD
-        </Button>
-        <Button
-          id="panicmode-scene"
-          color={sceneBroken ? "warning" : "primary"}
-          variant={mode === "scene" ? "contained" : "outlined"}
-          onClick={() => arm("scene")}
-          title={
-            sceneBroken
-              ? `safe scene unavailable — PANIC will hold (${s.panicScene.error ?? "build failed"})`
-              : `cut to safe scene "${s.panicScene.name}"`
-          }
-          sx={{ fontSize: 11, lineHeight: 1.1, px: 1, textTransform: "none" }}
-        >
-          {sceneBroken ? "⚠ " : ""}SAFE SCENE
-        </Button>
-      </ButtonGroup>
-      <NativeSelect
-        value={safeId ?? ""}
-        inputProps={{ id: "panicscene", title: "SAFE target — the instance scene-panic cuts to" }}
-        onChange={(e) => void link.req("set_panic_instance", { instance: e.target.value }).catch(fail)}
-        sx={{ fontSize: 12, color: sceneBroken ? "warning.main" : "text.primary" }}
-      >
-        {/* Pick any existing instance as the safe target; its scene is what
-            scene-panic cuts to. Spawn + tune a tile, then designate it here. */}
-        {safeId == null && <option value="">(none)</option>}
-        {s.instances.map((i) => (
-          <option key={i.id} value={i.id}>
-            {i.id} · {i.scene}
-          </option>
-        ))}
-      </NativeSelect>
+    <ButtonGroup
+      ref={groupRef}
+      variant="outlined"
+      disableElevation
+      sx={{ "& .MuiButtonGroup-grouped": { minWidth: "unset" } }}
+    >
       <Button
         id="panic"
         color="error"
         variant={s.panicked ? "contained" : "outlined"}
         onClick={() => void link.req(s.panicked ? "resume" : "panic", s.panicked ? {} : { mode }).catch(fail)}
+        title={
+          s.panicked
+            ? "RESUME — return to the live output"
+            : mode === "scene"
+              ? sceneAvailable
+                ? `PANIC → cut to safe scene "${s.panicScene.name}"`
+                : "PANIC → will hold (no usable SAFE target)"
+              : "PANIC → freeze the last frame (hold)"
+        }
         sx={{ fontWeight: 700, fontSize: 15, px: 2.5 }}
       >
         {s.panicked ? "RESUME" : "PANIC"}
       </Button>
-    </Stack>
+      <Button
+        id="panicmenu"
+        color="error"
+        variant={s.panicked ? "contained" : "outlined"}
+        size="small"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        title="PANIC mode & SAFE target"
+        onClick={() => setMenuOpen((o) => !o)}
+        sx={{ px: 0.5, fontSize: 12, lineHeight: 1 }}
+      >
+        ▾
+      </Button>
+      <Menu
+        id="panic-menu"
+        anchorEl={groupRef.current}
+        open={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+        transformOrigin={{ vertical: "top", horizontal: "right" }}
+        slotProps={{ paper: { sx: { minWidth: 240 } } }}
+      >
+        <Typography variant="caption" sx={{ px: 2, py: 0.5, display: "block", color: "text.secondary" }}>
+          PANIC mode
+        </Typography>
+        <MenuItem id="panic-arm-hold" onClick={() => arm("hold")} sx={{ py: 0.25 }}>
+          <Radio checked={mode === "hold"} size="small" sx={{ p: 0.5, mr: 1 }} />
+          <ListItemText primary="Hold" secondary="freeze the last frame" />
+        </MenuItem>
+        <MenuItem
+          id="panic-arm-scene"
+          disabled={!sceneAvailable}
+          onClick={() => arm("scene")}
+          sx={{ py: 0.25 }}
+        >
+          <Radio checked={mode === "scene"} disabled={!sceneAvailable} size="small" sx={{ p: 0.5, mr: 1 }} />
+          <ListItemText
+            primary={
+              <Box component="span" sx={{ color: sceneBroken ? "warning.main" : undefined }}>
+                {sceneBroken ? "⚠ Safe scene" : "Safe scene"}
+              </Box>
+            }
+            secondary={
+              sceneAvailable
+                ? `cut to "${s.panicScene.name}"`
+                : sceneBroken
+                  ? `target broke — ${s.panicScene.error ?? "build failed"}`
+                  : "pick a SAFE target below"
+            }
+          />
+        </MenuItem>
+        <Divider />
+        <Typography variant="caption" sx={{ px: 2, py: 0.5, display: "block", color: "text.secondary" }}>
+          SAFE target {safeId == null ? "(none — scene-panic unavailable)" : null}
+        </Typography>
+        {candidates.length === 0 && (
+          <MenuItem disabled sx={{ py: 0.25 }}>
+            <ListItemText secondary="spawn an instance to designate one" />
+          </MenuItem>
+        )}
+        {candidates.map((i) => (
+          <MenuItem
+            key={i.id}
+            data-panictarget={i.id}
+            selected={i.id === safeId}
+            onClick={() => designate(i.id)}
+            sx={{ py: 0.25 }}
+          >
+            <Radio checked={i.id === safeId} size="small" sx={{ p: 0.5, mr: 1 }} />
+            <ListItemText
+              primary={i.id}
+              secondary={i.scene}
+              slotProps={{ primary: { sx: { fontFamily: mono, fontSize: 13 } } }}
+            />
+          </MenuItem>
+        ))}
+      </Menu>
+    </ButtonGroup>
   );
 }
 
