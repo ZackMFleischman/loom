@@ -26,6 +26,26 @@ export const ChainParamSpec = z
 export type ChainParamSpec = z.infer<typeof ChainParamSpec>;
 export type ChainParamInput = z.input<typeof ChainParamSpec>;
 
+/**
+ * A typed *extra input slot* an effect declares for chain use (multi-input
+ * chain steps). The piped `input` is always slot-0 and implicit; `chainInputs`
+ * names the ADDITIONAL TexNode sources the effect needs (e.g. `over`'s
+ * `overlay`). Each slot is bound — via `ChainStep.inputs[name]` — to a
+ * `SourceRef` the human/agent picks (another instance, an earlier step, or —
+ * once M10 lands — an asset). The fold resolves each ref to a TexNode and feeds
+ * it into the factory opt of the same name. `kind: "tex"` is the only kind for
+ * now (Geo/Cam slots are a later milestone).
+ */
+export const ChainInputSpec = z.object({
+  name: z
+    .string()
+    .regex(/^[a-z][a-zA-Z0-9]*$/, "chain input names are lowerCamelCase identifiers"),
+  kind: z.literal("tex").default("tex"),
+  description: z.string().optional(),
+});
+export type ChainInputSpec = z.infer<typeof ChainInputSpec>;
+export type ChainInputInput = z.input<typeof ChainInputSpec>;
+
 export const ModuleMetaSchema = z.object({
   name: z
     .string()
@@ -36,6 +56,12 @@ export const ModuleMetaSchema = z.object({
   example: z.string().optional(),
   /** Effects opt into chain use by declaring the knobs `set_chain` should expose. */
   chainParams: z.array(ChainParamSpec).optional(),
+  /**
+   * Extra typed input slots (beyond the piped `input`) this effect needs to be
+   * usable as a chain step (multi-input chain steps) — e.g. `over`'s overlay.
+   * Each slot is bound to a SourceRef per ChainStep and resolved in the fold.
+   */
+  chainInputs: z.array(ChainInputSpec).optional(),
 });
 
 export type ModuleMeta = z.infer<typeof ModuleMetaSchema>;

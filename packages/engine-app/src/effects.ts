@@ -1,5 +1,6 @@
 import {
   type ChainableEffect,
+  type ChainInputSpec,
   type CompositeEffectEntry,
   type EffectEntry,
   type EffectRegistry,
@@ -20,7 +21,7 @@ import { packNameFromPath } from "./packs";
  */
 
 type AnyFactory = ModuleFactory<unknown, unknown, unknown> & {
-  meta: { name: string; kind: string; description?: string; chainParams?: unknown[] };
+  meta: { name: string; kind: string; description?: string; chainParams?: unknown[]; chainInputs?: unknown[] };
 };
 
 const codeMods = import.meta.glob("../../../content/modules/effects/*.ts", { eager: true });
@@ -52,6 +53,8 @@ export interface EffectDescriptor {
   name: string;
   kind: "primitive" | "composite";
   description?: string;
+  /** Extra input slots (multi-input chain steps); absent/[] = single-input. */
+  chainInputs?: ChainInputSpec[];
 }
 
 export interface EffectLibrary extends EffectRegistry {
@@ -69,13 +72,20 @@ function build(): EffectLibrary {
       const ns = namespaceFor(path);
       for (const exp of Object.values(mod as Record<string, unknown>)) {
         const f = exp as AnyFactory;
-        if (typeof f !== "function" || f.meta?.kind !== "effect" || !f.meta.chainParams) continue;
+        // An effect joins the chain library if it declares chain knobs OR extra
+        // input slots (multi-input chain steps like `over`). Plain effects with
+        // neither stay out of the picker (single-piped-input only by default).
+        if (typeof f !== "function" || f.meta?.kind !== "effect") continue;
+        if (!f.meta.chainParams && !f.meta.chainInputs) continue;
         const name = ns ? `${ns}/${f.meta.name}` : f.meta.name;
         const entry: PrimitiveEffectEntry = {
           name,
           kind: "primitive",
-          chainParams: f.meta.chainParams as PrimitiveEffectEntry["chainParams"],
+          chainParams: (f.meta.chainParams ?? []) as PrimitiveEffectEntry["chainParams"],
           factory: f as unknown as ChainableEffect,
+          ...(f.meta.chainInputs != null
+            ? { chainInputs: f.meta.chainInputs as NonNullable<PrimitiveEffectEntry["chainInputs"]> }
+            : {}),
           ...(f.meta.description != null ? { description: f.meta.description } : {}),
         };
         map.set(entry.name, entry);
@@ -118,6 +128,9 @@ function build(): EffectLibrary {
         name: e.name,
         kind: e.kind,
         ...(e.description != null ? { description: e.description } : {}),
+        ...(e.kind === "primitive" && e.chainInputs != null && e.chainInputs.length > 0
+          ? { chainInputs: e.chainInputs }
+          : {}),
       })),
   };
 }

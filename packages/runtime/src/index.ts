@@ -17,9 +17,11 @@ export {
   defineModule,
   ModuleMetaSchema,
   ChainParamSpec,
+  ChainInputSpec,
   type ModuleMeta,
   type ModuleFactory,
   type ChainParamInput,
+  type ChainInputInput,
 } from "./module";
 export {
   ChainHost,
@@ -34,6 +36,8 @@ export {
   type ChainStep,
   type ChainStepInput,
   type ChainStepInfo,
+  type SourceRef,
+  type SourceResolver,
 } from "./chain";
 export { lagSignal, lfoSignal, envelopeSignal, integrateSignal, type LfoShape, type LfoOpts } from "./control";
 export { texNode, type TexNode, type Pass, type ColorNode } from "./texnode";

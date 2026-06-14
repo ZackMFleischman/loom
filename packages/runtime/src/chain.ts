@@ -1,7 +1,7 @@
 import { mix, vec4 } from "./tsl";
 import type { BuildCtx } from "./buildctx";
 import type { Events } from "./events";
-import type { ChainParamSpec, ModuleFactory } from "./module";
+import type { ChainInputSpec, ChainParamSpec, ModuleFactory } from "./module";
 import type { Manifest, Param } from "./param";
 import { fxStepPath, ROOT_FX_PREFIX } from "./paths";
 import { Signal } from "./signal";
@@ -40,6 +40,12 @@ export interface PrimitiveEffectEntry {
   kind: "primitive";
   description?: string;
   chainParams: ChainParamSpec[];
+  /**
+   * Extra typed input slots beyond the piped `input` (multi-input chain steps).
+   * Empty/absent = the classic single-input effect. Composites can't (yet)
+   * declare slots, so they stay single-input.
+   */
+  chainInputs?: ChainInputSpec[];
   factory: ChainableEffect;
 }
 
@@ -68,6 +74,32 @@ export interface EffectRegistry {
   names(): string[];
 }
 
+/**
+ * Where a chain step's extra input slot reads its TexNode from (multi-input
+ * chain steps). Exactly one key is set:
+ *  - `{ instance }` — another live tile's output, sampled as a texture.
+ *  - `{ step }` — an EARLIER step's folded output (turns the linear chain into a
+ *    small DAG; a cycle/ordering guard rejects forward/self references).
+ *  - `{ asset }` — **DEFERRED, not yet wired.** Needs the M10 asset explorer to
+ *    resolve a path to an image/video source. The schema carries it now so it's
+ *    forward-compatible, but the fold throws `asset source not yet supported`
+ *    until M10 lands. `flyby` (wants asset urls) stays out of the picker too.
+ */
+export type SourceRef =
+  | { instance: string }
+  | { step: string }
+  | { asset: string };
+
+/** Resolve a SourceRef to a TexNode at fold time (instance sources, etc.). */
+export interface SourceResolver {
+  /**
+   * Turn a live instance's current output into a TexNode (a texture sample of
+   * its render target). Returns null when the instance doesn't exist / can't be
+   * sampled — the fold then throws so NFR-5 keeps the previous chain + pixels.
+   */
+  instance(id: string, ctx: BuildCtx): TexNode | null;
+}
+
 /** A folded chain step on an instance. */
 export interface ChainStep {
   id: string;
@@ -78,6 +110,12 @@ export interface ChainStep {
    * truth for chain knobs across rebuilds/reorders (disk persistence is M9).
    */
   params: Record<string, number | boolean>;
+  /**
+   * Extra input-slot bindings (multi-input chain steps): slot name → SourceRef.
+   * Additive/optional — a classic single-input step has none. The fold resolves
+   * each ref to a TexNode and feeds it to the matching factory opt.
+   */
+  inputs?: Record<string, SourceRef>;
 }
 
 /** Wire/scene input for a step — `id` optional (assigned when absent). */
@@ -86,6 +124,8 @@ export interface ChainStepInput {
   effect: string;
   params?: Record<string, number | boolean> | undefined;
   mix?: number | undefined;
+  /** Extra input-slot bindings (multi-input chain steps); omitted = carry forward. */
+  inputs?: Record<string, SourceRef> | undefined;
 }
 
 /** Public view of a step for `get_session`. */
@@ -96,6 +136,8 @@ export interface ChainStepInfo {
   mix: number;
   /** The step's on/off toggle (`fx.<id>.enabled`) — off fades to bypass. */
   enabled: boolean;
+  /** Bound extra input slots (multi-input chain steps); empty for single-input. */
+  inputs?: Record<string, SourceRef>;
 }
 
 const MAX_DEPTH = 2; // composites are one level deep (primitives only) — guards cycles.
@@ -146,6 +188,12 @@ export class ChainHost {
      * M6 `fx` prefix; a layer node's chain uses `<node>.fx` (Layers).
      */
     readonly prefix: string = ROOT_FX_PREFIX,
+    /**
+     * Resolves `{instance}` SourceRefs to TexNodes (multi-input chain steps).
+     * Optional — a host without one rejects any `{instance}` source (and the
+     * unsupported `{asset}` source) at fold time, so NFR-5 keeps prior pixels.
+     */
+    private readonly resolver?: SourceResolver,
   ) {}
 
   /** Seed from a scene's declared default chain (at instance create). */
@@ -170,6 +218,10 @@ export class ChainHost {
     const prev = new Map(this.steps.map((s) => [s.id, s]));
     const used = new Set<string>();
     const out: ChainStep[] = [];
+    // Ids of steps planned SO FAR — a `{step}` source may only tap one of these
+    // (an earlier step), so a forward/self reference is rejected up front
+    // (ordering guard; the linear chain becomes a DAG with no cycles).
+    const earlier = new Set<string>();
     for (const raw of input) {
       const entry = reg.get(raw.effect);
       if (!entry) {
@@ -186,9 +238,79 @@ export class ChainHost {
       };
       if (raw.mix != null) params.mix = clamp(raw.mix, 0, 1);
       if (params.mix == null) params.mix = 1;
-      out.push({ id, effect: raw.effect, params });
+      // Carry input bindings forward by surviving id, with this edit's overrides.
+      const merged: Record<string, SourceRef> = {
+        ...(carried?.inputs ?? {}),
+        ...(raw.inputs ?? {}),
+      };
+      const inputs = this.validateInputs(entry, id, merged, earlier);
+      const step: ChainStep = { id, effect: raw.effect, params };
+      if (Object.keys(inputs).length > 0) step.inputs = inputs;
+      out.push(step);
+      earlier.add(id);
     }
     return out;
+  }
+
+  /**
+   * Validate a step's extra input bindings against the effect's declared slots,
+   * normalize each SourceRef, and enforce the ordering guard for `{step}` refs.
+   * Throws on any problem so the whole edit is rejected (chain unchanged).
+   */
+  private validateInputs(
+    entry: EffectEntry,
+    stepId: string,
+    bindings: Record<string, SourceRef>,
+    earlier: ReadonlySet<string>,
+  ): Record<string, SourceRef> {
+    const slots = entry.kind === "primitive" ? (entry.chainInputs ?? []) : [];
+    const slotNames = new Set(slots.map((s) => s.name));
+    const out: Record<string, SourceRef> = {};
+    for (const [slot, ref] of Object.entries(bindings)) {
+      if (!slotNames.has(slot)) {
+        const have = [...slotNames].join(", ") || "(none)";
+        throw new Error(
+          `effect "${entry.name}" has no input slot "${slot}" — slots: ${have}`,
+        );
+      }
+      out[slot] = this.normalizeRef(entry.name, slot, ref, stepId, earlier);
+    }
+    return out;
+  }
+
+  /** Normalize/validate one SourceRef (without resolving it to a TexNode yet). */
+  private normalizeRef(
+    effect: string,
+    slot: string,
+    ref: SourceRef,
+    stepId: string,
+    earlier: ReadonlySet<string>,
+  ): SourceRef {
+    if ("instance" in ref && typeof ref.instance === "string" && ref.instance.length > 0) {
+      return { instance: ref.instance };
+    }
+    if ("step" in ref && typeof ref.step === "string" && ref.step.length > 0) {
+      if (ref.step === stepId) {
+        throw new Error(`"${effect}".${slot}: a step cannot tap itself ("${stepId}")`);
+      }
+      if (!earlier.has(ref.step)) {
+        const have = [...earlier].join(", ") || "(none yet)";
+        throw new Error(
+          `"${effect}".${slot}: step "${ref.step}" is not an EARLIER step — earlier: ${have}`,
+        );
+      }
+      return { step: ref.step };
+    }
+    if ("asset" in ref) {
+      // Forward-compatible, intentionally NOT wired (needs the M10 asset
+      // explorer). Reject the EDIT so we never half-build an asset source.
+      throw new Error(
+        `"${effect}".${slot}: asset source is not yet supported (needs the M10 asset explorer)`,
+      );
+    }
+    throw new Error(
+      `"${effect}".${slot}: invalid source — expected { instance } | { step } (asset is M10)`,
+    );
   }
 
   /** Reset to the scene's declared default chain. */
@@ -207,10 +329,61 @@ export class ChainHost {
   /** Fold the chain over a base TexNode, declaring `fx.<id>.*` params on `ctx`. */
   fold(ctx: BuildCtx, base: TexNode): TexNode {
     let tex = base;
+    // Earlier steps' folded outputs, keyed by step id — a `{step}` SourceRef
+    // resolves against this (only earlier steps are present, by plan ordering).
+    const stepOutputs = new Map<string, TexNode>();
     for (const step of this.steps) {
-      tex = this.foldStep(ctx, tex, step.id, step.effect, step.params, 1);
+      const extra = this.resolveInputs(ctx, step, stepOutputs);
+      tex = this.foldStep(ctx, tex, step.id, step.effect, step.params, 1, extra);
+      stepOutputs.set(step.id, tex);
     }
     return tex;
+  }
+
+  /**
+   * Resolve a step's extra input bindings to TexNodes for the factory. Throws
+   * if any ref can't resolve (missing instance, dangling step, asset/M10) — the
+   * fold throws, the build is rejected, NFR-5 keeps the previous chain + pixels.
+   */
+  private resolveInputs(
+    ctx: BuildCtx,
+    step: ChainStep,
+    stepOutputs: ReadonlyMap<string, TexNode>,
+  ): Record<string, TexNode> {
+    const out: Record<string, TexNode> = {};
+    for (const [slot, ref] of Object.entries(step.inputs ?? {})) {
+      out[slot] = this.resolveRef(ctx, step.effect, slot, ref, stepOutputs);
+    }
+    return out;
+  }
+
+  private resolveRef(
+    ctx: BuildCtx,
+    effect: string,
+    slot: string,
+    ref: SourceRef,
+    stepOutputs: ReadonlyMap<string, TexNode>,
+  ): TexNode {
+    if ("instance" in ref) {
+      const tex = this.resolver?.instance(ref.instance, ctx) ?? null;
+      if (!tex) {
+        throw new Error(
+          `"${effect}".${slot}: cannot resolve instance source "${ref.instance}"`,
+        );
+      }
+      return tex;
+    }
+    if ("step" in ref) {
+      const tex = stepOutputs.get(ref.step);
+      if (!tex) {
+        throw new Error(`"${effect}".${slot}: dangling step source "${ref.step}"`);
+      }
+      return tex;
+    }
+    // asset → not wired (M10); plan() already rejects it, but be defensive.
+    throw new Error(
+      `"${effect}".${slot}: asset source is not yet supported (needs the M10 asset explorer)`,
+    );
   }
 
   private foldStep(
@@ -220,6 +393,7 @@ export class ChainHost {
     effectName: string,
     params: Record<string, number | boolean>,
     depth: number,
+    extraInputs: Record<string, TexNode> = {},
   ): TexNode {
     const entry = this.registry().get(effectName);
     if (!entry) throw new Error(`unknown effect "${effectName}" in chain`);
@@ -251,6 +425,17 @@ export class ChainHost {
           throw new Error(`effect "${effectName}" declares reserved chain param "${cp.name}"`);
         }
         opts[cp.name] = declareChainParam(ctx, `${prefix}.${cp.name}`, cp).signal();
+      }
+      // Multi-input chain steps: every declared extra slot must be bound (an
+      // unbound slot would build the effect with an undefined input → throw).
+      for (const cs of entry.chainInputs ?? []) {
+        const tex = extraInputs[cs.name];
+        if (!tex) {
+          throw new Error(
+            `effect "${effectName}" needs input slot "${cs.name}" bound — set inputs.${cs.name}`,
+          );
+        }
+        opts[cs.name] = tex;
       }
       out = entry.factory(ctx, opts);
     } else {
@@ -311,13 +496,15 @@ export class ChainHost {
   list(): ChainStepInfo[] {
     return this.steps.map((s) => {
       const entry = this.registry().get(s.effect);
-      return {
+      const info: ChainStepInfo = {
         id: s.id,
         effect: s.effect,
         kind: entry?.kind ?? "primitive",
         mix: typeof s.params.mix === "number" ? s.params.mix : 1,
         enabled: s.params.enabled !== false,
       };
+      if (s.inputs && Object.keys(s.inputs).length > 0) info.inputs = { ...s.inputs };
+      return info;
     });
   }
 
@@ -334,6 +521,11 @@ export class ChainHost {
             `cannot save "${s.effect}": saved chains may contain only primitive effects`,
           );
         }
+        if (s.inputs && Object.keys(s.inputs).length > 0) {
+          throw new Error(
+            `cannot save "${s.effect}": multi-input chain steps (instance/step sources) aren't yet saveable as composites`,
+          );
+        }
         const { mix: m, ...rest } = s.params;
         return {
           id: s.id,
@@ -347,7 +539,9 @@ export class ChainHost {
 }
 
 function cloneStep(s: ChainStep): ChainStep {
-  return { id: s.id, effect: s.effect, params: { ...s.params } };
+  const out: ChainStep = { id: s.id, effect: s.effect, params: { ...s.params } };
+  if (s.inputs) out.inputs = { ...s.inputs };
+  return out;
 }
 
 /** Merge a composite's stored inner defaults with any live `<innerId>.*` overrides. */
