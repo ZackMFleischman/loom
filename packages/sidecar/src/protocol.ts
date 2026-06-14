@@ -97,6 +97,22 @@ export const ResponseMsg = z.discriminatedUnion("ok", [
 ]);
 export type ResponseMsg = z.infer<typeof ResponseMsg>;
 
+/**
+ * `search_content` args (content-sharing-marketplace FR-2). NOT in RequestType:
+ * this tool reads the SHAREABLE marketplace index and needs nothing from the
+ * engine (it pulls nothing), so the sidecar answers it locally — like
+ * get_diagnostics { scope:"sidecar" }. Read-only, agent-allowed, no arming.
+ */
+export const SearchContentArgs = z
+  .object({
+    query: z.string().default(""),
+    tags: z.array(z.string()).optional(),
+  })
+  .refine((a) => a.query.trim().length > 0 || (a.tags?.length ?? 0) > 0, {
+    message: "search_content needs a query or at least one tag",
+  });
+export type SearchContentArgs = z.infer<typeof SearchContentArgs>;
+
 // ---- per-request args (validated engine-side; M2 has a single "live" instance) ----
 
 export const InstanceArgs = z.object({ instance: z.string().default("live") });
@@ -317,9 +333,7 @@ export type PreviewEffectArgs = z.infer<typeof PreviewEffectArgs>;
 /** Save the instance's current chain as a reusable composite effect (data file). */
 export const SaveChainArgs = z.object({
   instance: z.string().default("live"),
-  name: z
-    .string()
-    .regex(/^[a-z][a-zA-Z0-9]*$/, "saved-chain names are lowerCamelCase identifiers"),
+  name: z.string().regex(/^[a-z][a-zA-Z0-9]*$/, "saved-chain names are lowerCamelCase identifiers"),
   description: z.string().optional(),
 });
 export type SaveChainArgs = z.infer<typeof SaveChainArgs>;
@@ -451,7 +465,6 @@ export const SetPreviewArgs = z.object({
 });
 export type SetPreviewArgs = z.infer<typeof SetPreviewArgs>;
 
-
 export const BindingModeZ = z.enum(["absolute", "set", "cycle"]);
 export type BindingModeZ = z.infer<typeof BindingModeZ>;
 
@@ -575,9 +588,7 @@ export const InstanceInfo = z.object({
    * per-signal attribution of frameMs. Labelled by param path / "palette" /
    * "input.<name>" (else "uniform#<i>"). Empty when profiling is off.
    */
-  slowSignals: z
-    .array(z.object({ label: z.string(), ms: z.number() }))
-    .default([]),
+  slowSignals: z.array(z.object({ label: z.string(), ms: z.number() })).default([]),
   /** Successful builds (1 on create, ++ per rebuild) — validators assert "no rebuild". */
   builds: z.number().int(),
   /** Pinned role, if any: "panic" = the designated SAFE target for scene-panic. */

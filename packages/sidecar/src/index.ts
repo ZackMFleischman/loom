@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { Broker } from "./broker";
+import { searchContent } from "./marketplace";
 import { ToolMetrics } from "./metrics";
 import {
   BatchArgs,
@@ -23,6 +24,7 @@ import {
   SaveChainArgs,
   SaveProjectArgs,
   ScreenshotArgs,
+  SearchContentArgs,
   ScreenshotConsoleArgs,
   ScreenshotConsoleResult,
   ScreenshotFramesResult,
@@ -90,9 +92,7 @@ wss.on("error", (err) => {
   log(`WebSocket server failed on port ${port}:`, err.message);
   process.exit(1);
 });
-wss.on("listening", () =>
-  log(`listening for the engine on ws://localhost:${port} (protocol v${PROTOCOL_VERSION})`),
-);
+wss.on("listening", () => log(`listening for the engine on ws://localhost:${port} (protocol v${PROTOCOL_VERSION})`));
 
 // ---- MCP server ----
 
@@ -134,7 +134,7 @@ const TOOLS = [
       type: "object",
       properties: {
         ...INSTANCE_PROP,
-        path: { type: "string", description: "Param path as listed in the manifest, e.g. \"trail\"." },
+        path: { type: "string", description: 'Param path as listed in the manifest, e.g. "trail".' },
         value: {
           type: ["number", "boolean"],
           description: "New value. Numbers clamp to [min, max]; ints round.",
@@ -151,15 +151,14 @@ const TOOLS = [
       "engine step so they all land on the SAME frame (no tearing) and one round-trip replaces N. " +
       "Prefer this over multiple set_param calls whenever you change more than one knob. Each value " +
       "clamps to its param's range. Partial success: a bad/unknown/modulated path is reported in " +
-      "the result's `errors[]` without dropping the others. Works on \"globals\" too (rack + palette stops).",
+      'the result\'s `errors[]` without dropping the others. Works on "globals" too (rack + palette stops).',
     inputSchema: {
       type: "object",
       properties: {
         ...INSTANCE_PROP,
         values: {
           type: "object",
-          description:
-            "Map of param path → new value. Numbers clamp to [min, max] (ints round); bools/colors as-is.",
+          description: "Map of param path → new value. Numbers clamp to [min, max] (ints round); bools/colors as-is.",
           additionalProperties: { type: ["number", "boolean", "string"] },
         },
       },
@@ -217,8 +216,7 @@ const TOOLS = [
   },
   {
     name: "clear_modulation",
-    description:
-      "Detach the modulator from a param (no-op success if none). The param holds its last value.",
+    description: "Detach the modulator from a param (no-op success if none). The param holds its last value.",
     inputSchema: {
       type: "object",
       properties: {
@@ -247,9 +245,9 @@ const TOOLS = [
   {
     name: "set_color_space",
     description:
-      "Decompose a color param into channel sliders, or collapse it back. space:\"hsv\" exposes " +
-      "<path>.h/.s/.v, space:\"rgb\" exposes <path>.r/.g/.b — each an ordinary 0..1 float you can " +
-      "modulate_param or MIDI-bind to retint live. space:\"hex\" removes the channels (clearing " +
+      'Decompose a color param into channel sliders, or collapse it back. space:"hsv" exposes ' +
+      '<path>.h/.s/.v, space:"rgb" exposes <path>.r/.g/.b — each an ordinary 0..1 float you can ' +
+      'modulate_param or MIDI-bind to retint live. space:"hex" removes the channels (clearing ' +
       "their modulators/bindings) and restores a plain color. Works on instance color params and " +
       'the "globals" palette stops (palette.primary.<i> / palette.secondary.<i>).',
     inputSchema: {
@@ -347,7 +345,7 @@ const TOOLS = [
       "Capture an instance's output as a PNG — your eyes on what is actually rendering. " +
       "The live instance captures the Output canvas; others capture their preview target. " +
       "Returns the image plus width/height/frame metadata. Pass frames:[…] on a FIXTURE " +
-      "instance (created with inputs:\"fixture:<name>\") for a deterministic offline pass: " +
+      'instance (created with inputs:"fixture:<name>") for a deterministic offline pass: ' +
       "the scene is re-stepped from frame 0 on a virtual clock against the trace, so the " +
       "same fixture + frame list returns bit-identical images every call.",
     inputSchema: {
@@ -389,7 +387,7 @@ const TOOLS = [
     description:
       "Build a sandbox instance of a scene (by catalog name) so it renders in a Console tile " +
       "without touching the live output. Returns the new instance id and its param paths. " +
-      "Pass inputs:\"fixture:<name>\" to replay a recorded input trace instead of the live " +
+      'Pass inputs:"fixture:<name>" to replay a recorded input trace instead of the live ' +
       "rack — deterministic audio-reactivity for development and validation.",
     inputSchema: {
       type: "object",
@@ -406,7 +404,7 @@ const TOOLS = [
     description:
       "Record the live input rack (every channel's value, every frame) for N frames into " +
       "content/state/fixtures/<name>.json — a deterministic trace that create_instance " +
-      "can replay via inputs:\"fixture:<name>\". Records whatever is playing (mic or the " +
+      'can replay via inputs:"fixture:<name>". Records whatever is playing (mic or the ' +
       "synthetic test signal). Returns when the trace is written.",
     inputSchema: {
       type: "object",
@@ -484,7 +482,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Project name (letters, digits, - and _), e.g. \"01-opener\"." },
+        name: { type: "string", description: 'Project name (letters, digits, - and _), e.g. "01-opener".' },
       },
       required: ["name"],
     },
@@ -518,7 +516,7 @@ const TOOLS = [
       "with `since` (the seq cursor in `now.seq`); `dropped` tells you how many events the ring " +
       "evicted since your cursor (you missed them). Filter with kinds/instance/level/limit. The " +
       "result also carries a `perf` rollup (fps, clockSource, per-instance frameMs/slowSignals, " +
-      "worst recent frame, best-effort renderer counts). Pass scope:\"sidecar\" instead to see " +
+      'worst recent frame, best-effort renderer counts). Pass scope:"sidecar" instead to see ' +
       "THIS layer's own per-tool MCP-call latency (p50/p95, ok/error/timeout) — which tools are slow.",
     inputSchema: {
       type: "object",
@@ -545,12 +543,42 @@ const TOOLS = [
     },
   },
   {
+    name: "search_content",
+    description:
+      "Search the SHAREABLE marketplace index — the discovery layer over module-packs — for packs " +
+      "you don't already have. Returns ranked entries { name, description, tags, gitUrl, author, " +
+      "rating?, installHint } where installHint is the exact `pnpm pack:add <gitUrl>` command to " +
+      "install it. READ-ONLY: it pulls nothing, changes nothing, needs no arming. " +
+      "SEARCH THE LOCAL CATALOG FIRST: check content/CATALOG.md / get_session's availableScenes & " +
+      "availableEffects before reaching here — only search the wider index when no local content fits " +
+      "(the library-use reflex, aimed wider). Finding a pack is NOT installing it: pulling a result " +
+      "runs arbitrary code at content-edit trust and is a SEPARATE, human-gated `pack:add` step. A " +
+      "rating is popularity, not a security audit. If the index is offline/missing you get a clean " +
+      "error — already-installed packs are unaffected.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: 'Free-text search over pack name, description, and tags (e.g. "retro crt").',
+        },
+        tags: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional hard tag filter (AND): only packs carrying ALL these tags. Tags draw from the " +
+            "catalog vocabulary (audio-reactive, retro, 3d, particles, organic, feedback, color, …).",
+        },
+      },
+    },
+  },
+  {
     name: "batch",
     description:
       "Run several of these tools in ONE call — the lowest-latency way to make many changes at " +
       "once (one round-trip instead of one per tool). Pass `calls` as a list of { tool, args }; " +
       "they run serially in order. Each call's args are exactly what you'd pass that tool directly " +
-      "(e.g. { tool: \"set_params\", args: { values: { trail: 0.8 } } }). Results come back as a " +
+      '(e.g. { tool: "set_params", args: { values: { trail: 0.8 } } }). Results come back as a ' +
       "list aligned to `calls`, each { ok, result } or { ok:false, error }; screenshots taken in a " +
       "batch return their images alongside the JSON summary. `stopOnError: true` aborts the rest on " +
       "the first failure (default false runs them all). Per-call gates still apply — human-only verbs " +
@@ -772,6 +800,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const result = await broker.request("get_diagnostics", { ...engineArgs });
         return textResult(result);
       }
+      case "search_content": {
+        // Answered locally — reads the shareable index (committed JSON or a
+        // fetched URL), no engine round-trip. A missing/unreachable index throws
+        // a clean Error caught below → errorResult (NFR-2: never blocks pinned packs).
+        const { query, tags } = SearchContentArgs.parse(args);
+        const results = await searchContent(query, tags ?? []);
+        return textResult({ query, tags: tags ?? [], count: results.length, results });
+      }
       case "batch": {
         const parsed = BatchArgs.parse(args);
         // The engine runs the calls serially, so its wall time is bounded by the
@@ -836,10 +872,7 @@ function batchContent(out: BatchResult) {
       : { tool: r.tool, ok: false as const, error: r.error },
   );
   return {
-    content: [
-      ...images,
-      { type: "text" as const, text: JSON.stringify({ mode: out.mode, results }, null, 2) },
-    ],
+    content: [...images, { type: "text" as const, text: JSON.stringify({ mode: out.mode, results }, null, 2) }],
   };
 }
 

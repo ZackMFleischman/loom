@@ -1796,3 +1796,62 @@ path and never-go-black are untouched, NFR-4):
 - **Also deferred:** multi-input steps aren't yet saveable as composites
   (`serialize()` throws) or persisted into projects (`projects.ts` carries only
   id/effect/params) — both want the asset/persistence work to land first.
+
+## 2026-06-14 — Content-sharing marketplace (Phase 1)
+
+The DISCOVERY layer over module packs (find a pack you don't have a URL for).
+Phase 1 is frictionless: a flat versioned JSON index, no backend/accounts. Phase
+2 (hosted API, Console browse panel, real ratings/moderation, payments) is out
+of scope. (Spec: `feature-requests/content-sharing-marketplace.md`; one-pager:
+`docs/marketplace-publishing.md`.)
+
+- **`index.json` schema FROZEN (FR-1):** `{ schemaVersion: 1, packs: [{ name,
+  gitUrl, gitRef?, description, tags[], author, loomApi, rating? }] }`.
+  `name`/`loomApi` mirror `loom-pack.json`; `tags` draw from the catalog
+  vocabulary. Phase 2 reuses the shape with extra fields — adding optional fields
+  does NOT bump `schemaVersion`, only an incompatible change does (NFR-1: the
+  schema is the stable seam, the transport swappable).
+- **Index location:** committed seed at `content/marketplace/index.json`;
+  `LOOM_MARKETPLACE_INDEX` (a path OR an http(s) URL) overrides it so a community
+  index needs no code change. Off-vocabulary tags WARN (vocabulary can grow);
+  malformed entries ERROR.
+- **One schema + ranker, two sources, kept in sync:** `scripts/lib/marketplace.mjs`
+  (Node/CLI + schema test) and `packages/sidecar/src/marketplace.ts` (the agent
+  tool). Ranking: exact name +100, name-substring/tag-eq/desc-substring per term,
+  rating tie-break; `tags` is a HARD AND filter. The agent tool and the CLI
+  return the SAME order by construction.
+- **`search_content` MCP tool (FR-2):** read-only, agent-allowed, NO arming
+  (pulls nothing), answered SIDECAR-SIDE without the engine (like
+  `get_diagnostics { scope:"sidecar" }`) — so it works with no engine connected
+  and `SearchContentArgs` is NOT in the engine `RequestType` enum. Result carries
+  the exact `pack:add` `installHint`. Added to the canonical tool-list assertion
+  in `validate-core.mjs` (the one place the tool surface is asserted).
+- **`pnpm pack:search <q> [--tag t]` (FR-3)** and **`pnpm pack:fork <name>`
+  (FR-6)** extend `scripts/pack.mjs`. Fork copies an installed pack into an
+  editable, un-pinned `forks/<name>/` tree (committed; `.git` excluded),
+  junctions `packs/<name>` to track it, and re-points the registry entry at the
+  local fork with `pin: null` (reusing the existing linked-pack idiom, so
+  `pack:update` treats it as always-live). Single-module override stays the
+  LOCAL-WINS local-shadow rule (no new resolution code — module packs already
+  ships it).
+- **Install handoff (FR-4):** discovery hands off to `pnpm pack:add <gitUrl>` —
+  no reimplemented loading; found packs appear namespaced in CATALOG/
+  availableScenes after install (already true).
+- **Git-native publish/ratings/moderation (FR-7/8/9):** publish = PR a line
+  (CI-validated against the frozen schema); rating = a maintained schema field
+  (star-mirror / aggregate); moderation = the index repo's merge queue.
+  Documented loudly in `docs/marketplace-publishing.md`.
+- **Trust UNCHANGED, louder (NFR-3):** install runs arbitrary code at
+  content-edit trust; install is human-gated like commit; a rating is popularity,
+  NOT a security audit; no sandbox (document, don't promise). Search is the
+  `library-use` reflex aimed wider — local catalog first.
+- **Offline-degrades (NFR-2):** a missing/unreachable/invalid index is a CLEAN
+  error (exit 1, clear message) that never blocks already-pinned packs (they load
+  offline from `packs.json`).
+- Gates: `pnpm typecheck` green; `pnpm test` green (+ sidecar
+  `marketplace.test.ts` ranking/schema/offline, + scripts `marketplace.test.mjs`
+  schema/ranking/offline, `pack-search.test.mjs` CLI, `pack-fork.test.mjs`);
+  `pnpm validate:core` 6/6 with `search_content` in the live MCP tool surface
+  (WebGL2 fallback — headless has no WebGPU). `search_content` driven end-to-end
+  over MCP returns ranked entries with install hints. Deferred to Phase 2: hosted
+  index API, account ratings + active moderation, Console browse panel, payments.
