@@ -1,4 +1,4 @@
-import { Box, Button, NativeSelect, Stack, Typography } from "@mui/material";
+import { Box, Button, NativeSelect, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import type { SessionSnapshot } from "@loom/sidecar/protocol";
 import type { ParamDesc } from "../engine-link";
@@ -6,6 +6,7 @@ import { tileFps } from "../fps-meter";
 import { useEngine, usePreviewFrame, useThumb } from "../hooks";
 import { fail } from "../util";
 import { ParamPanel } from "./ParamPanel";
+import { StatusPill, TopBar } from "./primitives";
 
 type Props = {
   instance: string | null;
@@ -102,36 +103,15 @@ export function PreviewMode({ instance, manifest, session: s, onExit }: Props) {
         bgcolor: "background.default",
       }}
     >
-      <Stack
-        direction="row"
-        spacing={1.25}
-        alignItems="center"
-        component="header"
-        sx={{
-          px: 1.25,
-          py: 0.5,
-          bgcolor: "background.paper",
-          borderBottom: 1,
-          borderColor: "divider",
-          flex: "0 0 auto",
-        }}
-      >
+      <TopBar component="header" spacing={1.25}>
         <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.16em", fontWeight: 700 }}>
           PREVIEW
         </Typography>
         <Typography id="preview-name" sx={{ fontWeight: 700 }} noWrap>
           {name}
         </Typography>
-        {isLive && (
-          <Typography variant="caption" sx={{ color: "error.main", fontWeight: 700 }}>
-            LIVE
-          </Typography>
-        )}
-        {isStaged && (
-          <Typography variant="caption" sx={{ color: "warning.main", fontWeight: 700 }}>
-            STAGED
-          </Typography>
-        )}
+        {isLive && <StatusPill kind="live" />}
+        {isStaged && <StatusPill kind="staged" />}
         <Box sx={{ flex: 1 }} />
         {/* Per-tile render rate for the previewed instance (engine fps capped by
             its CPU budget) + its smoothed frame cost — same meters as the grid
@@ -178,13 +158,14 @@ export function PreviewMode({ instance, manifest, session: s, onExit }: Props) {
             overlay — one source of truth, less header clutter. */}
         <Button
           id="preview-exit"
+          variant="ghost"
           onClick={onExit}
           title="exit preview (p / Esc)"
-          sx={{ minWidth: 0, px: 1, fontSize: 16, lineHeight: 1 }}
+          sx={{ px: 1, fontSize: 16, lineHeight: 1 }}
         >
           ✕
         </Button>
-      </Stack>
+      </TopBar>
       <Box sx={{ flex: 1, display: "flex", minHeight: 0 }}>
         <Box
           id="preview-view"

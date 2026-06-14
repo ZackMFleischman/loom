@@ -8,6 +8,7 @@ import { tileFps } from "../fps-meter";
 import { useEngine, useThumb } from "../hooks";
 import { snapshotScene } from "../scene-thumbs";
 import { fail } from "../util";
+import { StatusPill } from "./primitives";
 
 type Props = {
   inst: InstanceInfo;
@@ -22,17 +23,6 @@ type Props = {
   /** The engine accepted a rename — keep order/selection pointing at the new id. */
   onRenamed: (from: string, to: string) => void;
 };
-
-const badgeSx = {
-  position: "absolute",
-  top: 6,
-  fontSize: 10,
-  fontWeight: 700,
-  borderRadius: "3px",
-  px: 0.6,
-  py: 0.2,
-  lineHeight: 1.4,
-} as const;
 
 /**
  * One instance tile. DOM contract: .tile[data-id], child <img> (src only once
@@ -118,35 +108,22 @@ export function Tile({ inst, isLive, isStaged, selected, solo, engineFps, onSele
         src={thumb}
         sx={{ width: "100%", aspectRatio: "16/9", objectFit: "cover", display: "block", bgcolor: "#000" }}
       />
-      <Box
-        component="span"
-        className={`badge live-badge${isLive ? " show" : ""}`}
-        sx={{ ...badgeSx, left: 6, bgcolor: "error.main", color: "#fff", display: isLive ? "inline-block" : "none" }}
-      >
-        LIVE
-      </Box>
-      <Box
-        component="span"
-        className={`badge staged-badge${isStaged ? " show" : ""}`}
-        sx={{
-          ...badgeSx,
-          left: isLive ? 44 : 6,
-          bgcolor: "warning.main",
-          color: "#000",
-          display: isStaged ? "inline-block" : "none",
-        }}
-      >
-        STAGED
-      </Box>
+      <StatusPill kind="live" variant="badge" badgeClass="live-badge" show={isLive} sx={{ left: 6 }} />
+      <StatusPill
+        kind="staged"
+        variant="badge"
+        badgeClass="staged-badge"
+        show={isStaged}
+        sx={{ left: isLive ? 44 : 6 }}
+      />
       {inst.pinned === "panic" && (
-        <Box
-          component="span"
-          className="badge safe-badge show"
+        <StatusPill
+          kind="safe"
+          variant="badge"
+          badgeClass="safe-badge"
           title="SAFE target — scene-panic cuts here; protected from destroy while designated"
-          sx={{ ...badgeSx, right: 6, bgcolor: "info.main", color: "#000" }}
-        >
-          ⛑ SAFE
-        </Box>
+          sx={{ right: 6 }}
+        />
       )}
       {!isLive && inst.pinned !== "panic" && (
         <IconButton
