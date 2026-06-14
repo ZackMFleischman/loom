@@ -58,3 +58,21 @@ Milestone work merges only with typecheck green, `pnpm test` green, and `pnpm va
 - `window.__loom` is the engine debug surface validators read; keep it updated when adding engine state.
 - `content/CATALOG.md` and validator screenshots (`artifacts/`, gitignored) are generated — never hand-edit, never commit artifacts.
 - New ideas outside v1 scope go to `DECISIONS.md` as post-v1 candidates (detail in `feature-requests/`).
+
+## Screenshots in PRs
+
+When a PR introduces or changes anything **visual** — a feature, the Console, a scene, a visualization — it **SHOULD** include a relevant screenshot in the PR body. Don't make a reviewer run the app to see what you changed.
+
+Commit images to the tracked dir **`preview/screenshots/`** and embed them via `raw.githubusercontent.com` URLs, which render on GitHub and on phones (no preview deploy needed):
+
+1. **Make the image.** Render a scene still (recommended), or drop in any PNG:
+   ```sh
+   node scripts/shoot.mjs pulse lava     # writes preview/screenshots/<scene>.png
+   ```
+2. **Commit it** on your PR branch: `git add preview/screenshots/<name>.png && git commit`, then push.
+3. **Embed it** in the PR description with a raw URL pinned to the **commit SHA** (stable — survives rebases/force-pushes) or the **branch** (auto-updates):
+   ```md
+   ![pulse](https://raw.githubusercontent.com/ZackMFleischman/loom/<sha-or-branch>/preview/screenshots/pulse.png)
+   ```
+
+Full mechanics (shoot env knobs, the automated per-PR preview screenshots): `docs/ci-and-preview.md` → "Screenshots in the PR".
