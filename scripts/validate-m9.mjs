@@ -3,72 +3,30 @@
 // NO rebuild; the clip loops past its duration; the M4 cover-scaling checks
 // hold against a video source; and the loom:media middleware serves
 // repo-external files (Range/206 for seeking) confined to registered roots.
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { execSync, spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { PNG } from "pngjs";
-import { chromium } from "playwright";
-import { glArgs, forceWebGL2, resQuery } from "./_browser.mjs";
+import {
+  ROOT,
+  ARTIFACTS,
+  SCENE,
+  bootStack,
+  makeResults,
+  sleep,
+  toolJson,
+  callOk,
+  waitFor,
+  dist,
+} from "./_harness.mjs";
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const ARTIFACTS = join(ROOT, "artifacts");
-const SCENE = join(ROOT, "content", "scenes", "live.scene.ts");
 const ROOTS_FILE = join(ROOT, "content", "state", "media-roots.json");
 const CLIP = join(ROOT, "content", "assets", "test", "clip.mp4");
 const PORT = 5207;
 const WS_PORT = 7352;
-const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off${resQuery}`;
+const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off`;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const results = [];
-function check(name, ok, detail = "") {
-  results.push({ name, ok });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
-}
-
-async function waitForServer(url, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {}
-    await sleep(250);
-  }
-  throw new Error(`dev server did not come up at ${url}`);
-}
-
-function toolJson(res) {
-  const text = res.content?.find((c) => c.type === "text")?.text ?? "";
-  return JSON.parse(text);
-}
-
-async function callOk(client, name, args = {}) {
-  const res = await client.callTool({ name, arguments: args });
-  if (res.isError) throw new Error(`${name} failed: ${res.content?.[0]?.text}`);
-  return res;
-}
-
-async function waitFor(fn, timeoutMs = 15_000, label = "condition") {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(100);
-  }
-  throw new Error(`timed out waiting for ${label}`);
-}
-
-const waitForFps = (page) =>
-  page.waitForFunction(
-    () => /\d+ fps/.test(document.querySelector("#fps")?.textContent ?? ""),
-    null,
-    { timeout: 20_000 },
-  );
+const { results, check } = makeResults();
 
 /** Average RGB of an MCP screenshot's center band (where testsrc2 animates). */
 function bandAvg(res) {
@@ -85,7 +43,6 @@ function bandAvg(res) {
   }
   return { r: r / n, g: g / n, b: b / n, lum: (r + g + b) / (3 * n) };
 }
-const dist = (a, b) => Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b);
 
 // The validator scene: one full-screen test clip with speed/scrub params.
 const sceneSource = (urlExpr) => `import { defineScene, Signal } from "@loom/runtime";
@@ -111,64 +68,28 @@ export default defineScene({
 `;
 const REPO_CLIP_EXPR = `new URL("../assets/test/clip.mp4", import.meta.url).href`;
 
-const originalScene = readFileSync(SCENE, "utf8");
 const originalRoots = existsSync(ROOTS_FILE) ? readFileSync(ROOTS_FILE, "utf8") : null;
-writeFileSync(SCENE, sceneSource(REPO_CLIP_EXPR));
 
 // A media root OUTSIDE the repo with a copy of the clip (middleware phase).
 const mediaDir = mkdtempSync(join(tmpdir(), "loom-media-"));
 copyFileSync(CLIP, join(mediaDir, "clip.mp4"));
 writeFileSync(ROOTS_FILE, JSON.stringify({ roots: [mediaDir] }));
-mkdirSync(ARTIFACTS, { recursive: true });
 
-const vite = spawn("pnpm", ["exec", "vite", "--port", String(PORT), "--strictPort"], {
-  cwd: join(ROOT, "packages", "engine-app"),
-  shell: true,
-  stdio: ["ignore", "pipe", "pipe"],
-  windowsHide: true,
-});
-vite.stdout.on("data", (d) => process.stdout.write(`[vite] ${d}`));
-vite.stderr.on("data", (d) => process.stderr.write(`[vite] ${d}`));
-let viteExit = null;
-vite.on("exit", (code) => {
-  viteExit = code ?? -1;
-});
-
-let browser;
-let client;
+const T_START = Date.now();
+let tChecks = T_START;
+let teardown = async () => {};
 try {
-  await Promise.race([
-    waitForServer(`http://localhost:${PORT}/`),
-    (async () => {
-      while (viteExit === null) await sleep(200);
-      throw new Error(`vite exited early (code ${viteExit}) — is port ${PORT} already in use?`);
-    })(),
-  ]);
-
-  client = new Client({ name: "validate-m9", version: "0.0.0" });
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: ["--import", "tsx", "packages/sidecar/src/index.ts"],
-    cwd: ROOT,
-    env: { ...process.env, LOOM_WS_PORT: String(WS_PORT) },
-    stderr: "pipe",
+  // Boot directly into the M9 video scene (not pulse) — `boot` IS the videoval.
+  const boot = await bootStack({
+    name: "validate-m9",
+    port: PORT,
+    wsPort: WS_PORT,
+    url: OUTPUT_URL,
+    pin: sceneSource(REPO_CLIP_EXPR),
   });
-  await client.connect(transport);
-  transport.stderr?.on("data", (d) => process.stderr.write(`[sidecar] ${d}`));
-
-  browser = await chromium.launch({
-    headless: true,
-    args: [...glArgs, "--autoplay-policy=no-user-gesture-required"],
-  });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  await forceWebGL2(context);
-  const output = await context.newPage();
-  await output.goto(OUTPUT_URL);
-  await waitForFps(output);
-  await waitFor(async () => {
-    const res = await client.callTool({ name: "get_session", arguments: {} });
-    return res.isError ? null : toolJson(res);
-  }, 15_000, "engine to connect to sidecar");
+  teardown = boot.teardown;
+  const { client, output } = boot;
+  tChecks = Date.now();
 
   const buildsOf = async () =>
     toolJson(await callOk(client, "get_session", {})).instances.find((x) => x.id === "boot")?.builds;
@@ -274,14 +195,10 @@ try {
 } catch (err) {
   check("validation run completed", false, String(err));
 } finally {
-  if (client) await client.close().catch(() => {});
-  if (browser) await browser.close();
-  if (process.platform === "win32") {
-    try { execSync(`taskkill /pid ${vite.pid} /T /F`, { stdio: "ignore" }); } catch {}
-  } else {
-    vite.kill("SIGTERM");
-  }
-  writeFileSync(SCENE, originalScene);
+  console.log(
+    `[timing] m9 boot=${((tChecks - T_START) / 1000).toFixed(1)}s checks=${((Date.now() - tChecks) / 1000).toFixed(1)}s`,
+  );
+  await teardown(); // closes engine/sidecar/vite and restores the original live scene
   if (originalRoots != null) writeFileSync(ROOTS_FILE, originalRoots);
   else rmSync(ROOTS_FILE, { force: true });
   rmSync(mediaDir, { recursive: true, force: true });

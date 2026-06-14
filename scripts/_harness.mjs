@@ -165,6 +165,8 @@ export function restoreState(stateBackup) {
  * @param {boolean} [o.mcp]      connect the MCP client (default true; m0/m1 pass false)
  * @param {boolean} [o.gotoOutput] open + await the Output page (default true)
  * @param {boolean} [o.waitHandshake] wait for get_session to connect (default = mcp)
+ * @param {string} [o.pin] live.scene.ts contents to boot with (default: the pulse
+ *   re-export). The ORIGINAL scene is always captured and restored by teardown().
  */
 export async function bootStack(o) {
   const {
@@ -176,6 +178,7 @@ export async function bootStack(o) {
     fakeMedia = false,
     mcp = true,
     gotoOutput = true,
+    pin = PULSE_PIN,
   } = o;
   const waitHandshake = o.waitHandshake ?? mcp;
   const stateFrag = stateMode === "on" ? "" : "&state=off";
@@ -183,7 +186,7 @@ export async function bootStack(o) {
 
   mkdirSync(ARTIFACTS, { recursive: true });
   const originalScene = readFileSync(SCENE, "utf8");
-  writeFileSync(SCENE, PULSE_PIN);
+  writeFileSync(SCENE, pin);
 
   const t0 = Date.now();
   const vite = spawn("pnpm", ["exec", "vite", "--port", String(port), "--strictPort"], {
