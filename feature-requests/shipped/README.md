@@ -17,3 +17,4 @@ when its PR merges.
 | console-performance-stability | #24 | `8b99b02` |
 | validator-test-consolidation | #32 | `aa3dc38` |
 | loom-user-plugin | #35 | bdce009 |
+| multi-input-chain-steps | #36 | b139efb | partial — asset-source deferred to M10 |
