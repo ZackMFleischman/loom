@@ -1665,3 +1665,60 @@ path and never-go-black are untouched, NFR-4):
   true GPU `particleState` + additive accumulation for million-point silk.
 - Gates: `pnpm typecheck` green (80 modules, 38 scenes); `pnpm test` +
   `pnpm test:content` green (476 content). Stills via `shoot.mjs` (WebGL2).
+
+## 2026-06-14 — physarum: GPU slime-mold agents on a diffusing trail field (SHIPPED)
+
+- **`physarum`** (source): the first FULLY-GPU agent system — agents in a
+  ping-ponged HalfFloat position texture (rgba = posX, posY, heading), a
+  full-screen update quad senses the trail at L/C/R and steers, the trail field
+  is a second ping-pong (gentle 3×3 diffuse + decay), and moved agents are
+  deposited additively via an instanced `Points` pass whose `positionNode` does
+  `textureLoad(agentTex, vertexIndex→texel)`. No vertex-texture-fetch guesswork,
+  no shared `particleState` primitive (deferred — `simBuffer`'s per-pixel step
+  can't read agent positions for the deposit, so physarum owns its 4 passes
+  inline — ~231 lines, over the ~150 soft budget, mostly backend-gotcha comments
+  + per-opt JSDoc). Seeded in-shader (hash, no Math.random) + frame-clocked → fixture-safe.
+- **Real-WebGPU verification caught two backend bugs the WebGL2 fallback hid:**
+  (1) the deposit pass camera was a bare `Camera` — WebGPU's `_renderScene` calls
+  `updateProjectionMatrix` which only exists on `OrthographicCamera` (froze via
+  NFR-2 on WebGPU, rendered fine on WebGL2); (2) RT Y-orientation differs
+  (WebGL2 bottom-up, WebGPU top-down) so agents deposited Y-mirrored from where
+  they sensed and the network collapsed to horizontal bands — fixed with a
+  per-frame `depFlipY` uniform keyed off `renderer.backend.isWebGLBackend`.
+- **Tuning:** a full 1/9 box diffuse + high deposit over-reinforces into a few
+  fat channels; center-weighted diffuse (40% toward box avg) + low deposit (0.12)
+  + 768×432 grid yields the fine leaf-venation/neuron lattice. Scene `slime-veins`
+  (kick flares sensor splay + flashes deposit, bass breathes speed, `pickPalette`).
+- Gates: `pnpm typecheck` green (81 modules, 39 scenes); `pnpm test` +
+  `pnpm test:content` green (481 content). Verified on REAL WebGPU (headed system
+  Chrome, hardware adapter) — non-black, clean console, no NFR-2 freeze; stills
+  also via `shoot.mjs` (WebGL2). validate:stdlib runs WebGL2-only headless.
+
+## 2026-06-14 — fluid2d: Stam stable-fluids smoke on a multi-buffer simBuffer (SHIPPED)
+
+- **`simBufferMulti`** added to `content/modules/_shared.ts` (the single-field
+  `simBuffer` left byte-for-byte unchanged): N *named* coupled HalfFloat
+  ping-pong fields (each its own grid/wrap/seed) driven by an ORDERED pass
+  pipeline — each pass writes one field, may `sample` any field (integer
+  neighbour taps) or `sampleUv` it at an arbitrary uv (advection backtrace), and
+  may `repeat` N sub-iterations (the Jacobi loop). Passes run sequentially,
+  swapping their target's pair the instant they write, so a later pass sees
+  earlier results (advect → divergence → pressure → project → advect dye). Same
+  statefulness as `simBuffer`/`feedback`: frame-clocked phase, seeded, NFR-5
+  reset. Existing `simBuffer` consumers (reactionDiffusion/waveField/automata/
+  physarum) all still pass typecheck + test:content + validate:stdlib unchanged.
+- **`fluid2d`** (source): velocity+divergence+pressure+dye on `simBufferMulti`;
+  two counter-rotating orbiting jets inject a vortex force + coloured puffs on
+  the kick (`inject`), bass eases `dissipation` for longer smoke; `pressureIters`
+  exposes the Jacobi count. Output = dye luminance (.x, ramp it) + speed (.y).
+  Scene `smoke-signals` colorizes through `pickPalette`. Tuning lesson: under
+  constant test-audio kicks the dye saturates into a white blob — tight splat
+  (SPOT_R2 0.0016), low dye injection, fast-sweeping jets and a vortex (not
+  linear) force are what break it into curling wisps; the visible warm-gray was
+  bloom amplifying near-black thin dye, fixed by scaling density into the ramp.
+- Verified on REAL WebGPU (headed system Chrome, NVIDIA Turing adapter):
+  non-black, instanceError null, no NFR-2 freeze, ~56 fps — AND on the WebGL2
+  fallback via shoot.mjs. Both backends render the smoke correctly (no Y-flip /
+  projection bug — the multi-buffer trap physarum hit). Grid 256×144.
+- Gates: `pnpm typecheck` green (83 modules, 41 scenes); `pnpm test` +
+  `pnpm test:content` green (493 content); `pnpm validate:stdlib` 84/84 (WebGL2).

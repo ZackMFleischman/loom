@@ -59,6 +59,8 @@ import { noiseField } from "../modules/sources/noiseField";
 import { noodles } from "../modules/sources/noodles";
 import { osc } from "../modules/sources/osc";
 import { pulseRings } from "../modules/sources/pulseRings";
+import { physarum } from "../modules/sources/physarum";
+import { fluid2d } from "../modules/sources/fluid2d";
 import { reactionDiffusion } from "../modules/sources/reactionDiffusion";
 import { waveField } from "../modules/sources/waveField";
 import { ripples } from "../modules/sources/ripples";
@@ -118,6 +120,8 @@ export const CASES: Record<string, ModuleCase> = {
   noodles: (ctx) => noodles(ctx, { energy: ctx.input("kick") }),
   osc: (ctx) => osc(ctx, {}),
   pulseRings: (ctx) => pulseRings(ctx, { energy: ctx.input("kick") }),
+  physarum: (ctx) => physarum(ctx, { count: 4096, sensorAngle: ctx.input("kick"), reseed: ctx.input("kick") }),
+  fluid2d: (ctx) => fluid2d(ctx, { inject: ctx.input("kick"), pressureIters: 8, reseed: ctx.input("kick") }),
   reactionDiffusion: (ctx) => reactionDiffusion(ctx, { inject: ctx.input("kick"), reseed: ctx.input("kick") }),
   waveField: (ctx) => waveField(ctx, { impact: ctx.input("kick"), reseed: ctx.input("kick") }),
   automata: (ctx) => automata(ctx, { reseed: ctx.input("kick") }),
