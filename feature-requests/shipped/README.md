@@ -15,3 +15,4 @@ when its PR merges.
 | console-ui-refactor | #15 | `be4ffcf` |
 | console-screenshot | #17 | `f9ac162` |
 | console-performance-stability | #24 | `8b99b02` |
+| validator-test-consolidation | #32 | `aa3dc38` |
