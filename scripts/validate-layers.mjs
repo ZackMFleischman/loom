@@ -5,72 +5,30 @@
 // (NFR-5 on a throwing step); layer params modulate like any other param; the
 // Console shows the node tree with a per-node "+ effect". (MIDI-learn on layer
 // params rides the same scene+path binding mechanics m5 already validates.)
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { execSync, spawn } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { PNG } from "pngjs";
-import { chromium } from "playwright";
-import { glArgs, forceWebGL2, resQuery } from "./_browser.mjs";
+import {
+  ROOT,
+  ARTIFACTS,
+  SCENE,
+  bootStack,
+  makeResults,
+  sleep,
+  toolJson,
+  callOk,
+  waitFor,
+  dist,
+} from "./_harness.mjs";
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const ARTIFACTS = join(ROOT, "artifacts");
-const SCENE = join(ROOT, "content", "scenes", "live.scene.ts");
 const BROKEN_CHAIN = join(ROOT, "content", "modules", "effects", "chains", "validatorBroken.chain.json");
 const PORT = 5205;
 const WS_PORT = 7350;
 // agentCommit=1: the boot instance is LIVE and this run edits its chain as the agent.
-const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off&agentCommit=1${resQuery}`;
+const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off&agentCommit=1`;
 const CONSOLE_URL = `http://localhost:${PORT}/console.html?embed=0`;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const results = [];
-function check(name, ok, detail = "") {
-  results.push({ name, ok });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
-}
-
-async function waitForServer(url, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {}
-    await sleep(250);
-  }
-  throw new Error(`dev server did not come up at ${url}`);
-}
-
-function toolJson(res) {
-  const text = res.content?.find((c) => c.type === "text")?.text ?? "";
-  return JSON.parse(text);
-}
-
-async function callOk(client, name, args = {}) {
-  const res = await client.callTool({ name, arguments: args });
-  if (res.isError) throw new Error(`${name} failed: ${res.content?.[0]?.text}`);
-  return res;
-}
-
-async function waitFor(fn, timeoutMs = 15_000, label = "condition") {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(100);
-  }
-  throw new Error(`timed out waiting for ${label}`);
-}
-
-const waitForFps = (page) =>
-  page.waitForFunction(
-    () => /\d+ fps/.test(document.querySelector("#fps")?.textContent ?? ""),
-    null,
-    { timeout: 20_000 },
-  );
+const { results, check } = makeResults();
 
 /** Average RGB of a fractional region [x0..x1]×[y0..y1] of an MCP screenshot. */
 function regionAvg(res, x0, y0, x1, y1) {
@@ -88,7 +46,6 @@ function regionAvg(res, x0, y0, x1, y1) {
   }
   return { r: r / n, g: g / n, b: b / n };
 }
-const dist = (a, b) => Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b);
 // The logo patch sits at screen center (±0.15 uv); corners are flat backdrop.
 const center = (res) => regionAvg(res, 0.45, 0.45, 0.55, 0.55);
 const corner = (res) => regionAvg(res, 0.0, 0.0, 0.08, 0.08);
@@ -117,8 +74,6 @@ export default defineScene({
 });
 `;
 
-const originalScene = readFileSync(SCENE, "utf8");
-writeFileSync(SCENE, sceneSource(false));
 // A composite whose inner step references a nonexistent primitive: plan()
 // accepts it (the composite IS registered), the fold throws — a real
 // throwing-step build for the NFR-5 check.
@@ -130,52 +85,23 @@ writeFileSync(
     steps: [{ id: "nope-1", effect: "doesNotExistEffect", params: {} }],
   }),
 );
-mkdirSync(ARTIFACTS, { recursive: true });
 
-const vite = spawn("pnpm", ["exec", "vite", "--port", String(PORT), "--strictPort"], {
-  cwd: join(ROOT, "packages", "engine-app"),
-  shell: true,
-  stdio: ["ignore", "pipe", "pipe"],
-  windowsHide: true,
-});
-vite.stdout.on("data", (d) => process.stdout.write(`[vite] ${d}`));
-vite.stderr.on("data", (d) => process.stderr.write(`[vite] ${d}`));
-let viteExit = null;
-vite.on("exit", (code) => {
-  viteExit = code ?? -1;
-});
-
-let browser;
-let client;
+const T_START = Date.now();
+let tChecks = T_START;
+let teardown = async () => {};
 try {
-  await Promise.race([
-    waitForServer(`http://localhost:${PORT}/`),
-    (async () => {
-      while (viteExit === null) await sleep(200);
-      throw new Error(`vite exited early (code ${viteExit}) — is port ${PORT} already in use?`);
-    })(),
-  ]);
-
-  client = new Client({ name: "validate-layers", version: "0.0.0" });
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: ["--import", "tsx", "packages/sidecar/src/index.ts"],
-    cwd: ROOT,
-    env: { ...process.env, LOOM_WS_PORT: String(WS_PORT) },
-    stderr: "pipe",
+  // Boot into the UNWRAPPED layerval scene; "the one live edit" rewrites it to
+  // the wrapped version mid-run. bootStack captures + restores the real scene.
+  const boot = await bootStack({
+    name: "validate-layers",
+    port: PORT,
+    wsPort: WS_PORT,
+    url: OUTPUT_URL,
+    pin: sceneSource(false),
   });
-  await client.connect(transport);
-  transport.stderr?.on("data", (d) => process.stderr.write(`[sidecar] ${d}`));
-
-  browser = await chromium.launch({
-    headless: true,
-    args: [...glArgs, "--autoplay-policy=no-user-gesture-required"],
-  });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  await forceWebGL2(context);
-  const output = await context.newPage();
-  await output.goto(OUTPUT_URL);
-  await waitForFps(output);
+  teardown = boot.teardown;
+  const { client, context } = boot;
+  tChecks = Date.now();
   await waitFor(async () => {
     const res = await client.callTool({ name: "get_session", arguments: {} });
     return res.isError ? null : toolJson(res);
@@ -335,14 +261,10 @@ try {
 } catch (err) {
   check("validation run completed", false, String(err));
 } finally {
-  if (client) await client.close().catch(() => {});
-  if (browser) await browser.close();
-  if (process.platform === "win32") {
-    try { execSync(`taskkill /pid ${vite.pid} /T /F`, { stdio: "ignore" }); } catch {}
-  } else {
-    vite.kill("SIGTERM");
-  }
-  writeFileSync(SCENE, originalScene);
+  console.log(
+    `[timing] layers boot=${((tChecks - T_START) / 1000).toFixed(1)}s checks=${((Date.now() - tChecks) / 1000).toFixed(1)}s`,
+  );
+  await teardown(); // closes engine/sidecar/vite and restores the original live scene
   rmSync(BROKEN_CHAIN, { force: true });
 }
 

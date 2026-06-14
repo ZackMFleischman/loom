@@ -4,75 +4,29 @@
 // to the Console (human-only set_audio; not an MCP tool). Staging is direct:
 // drag a tile to the stage strip, stage button toggles to unstage, and the
 // /staged page auditions + COMMITs the staged instance from its own tab.
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { execSync, spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
-import { glArgs, forceWebGL2, resQuery } from "./_browser.mjs";
+import {
+  ARTIFACTS,
+  bootStack,
+  makeResults,
+  sleep,
+  toolJson,
+  callOk,
+  waitFor,
+  waitForFps,
+} from "./_harness.mjs";
+import { join } from "node:path";
 import { PNG } from "pngjs";
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const ARTIFACTS = join(ROOT, "artifacts");
-const SCENE = join(ROOT, "content", "scenes", "live.scene.ts");
 const PORT = 5201;
 const WS_PORT = 7344;
 // state=off: persisted tunings (M5) must never skew validation assertions.
-const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off${resQuery}`;
+const OUTPUT_URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off`;
 // embed=0: validator consoles must never spawn an embedded engine (it would dial the default sidecar port).
 const CONSOLE_URL = `http://localhost:${PORT}/console.html?embed=0`;
 const STAGED_URL = `http://localhost:${PORT}/staged.html`;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const results = [];
-function check(name, ok, detail = "") {
-  results.push({ name, ok });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` â€” ${detail}` : ""}`);
-}
-
-async function waitForServer(url, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {}
-    await sleep(250);
-  }
-  throw new Error(`dev server did not come up at ${url}`);
-}
-
-function toolJson(res) {
-  const text = res.content?.find((c) => c.type === "text")?.text ?? "";
-  return JSON.parse(text);
-}
-
-async function callOk(client, name, args = {}) {
-  const res = await client.callTool({ name, arguments: args });
-  if (res.isError) throw new Error(`${name} failed: ${res.content?.[0]?.text}`);
-  return res;
-}
-
+const { results, check } = makeResults();
 const loomState = (page) => page.evaluate(() => ({ ...window.__loom, instances: window.__loom.instances }));
-
-async function waitFor(fn, timeoutMs = 10_000, label = "condition") {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(100);
-  }
-  throw new Error(`timed out waiting for ${label}`);
-}
-
-const waitForFps = (page) =>
-  page.waitForFunction(
-    () => /\d+ fps/.test(document.querySelector("#fps")?.textContent ?? ""),
-    null,
-    { timeout: 20_000 },
-  );
 
 /** Mean luminance of a full page screenshot (and save it). */
 async function pageLum(page, savePath) {
@@ -85,61 +39,21 @@ async function pageLum(page, savePath) {
   return l / (png.width * png.height);
 }
 
-mkdirSync(ARTIFACTS, { recursive: true });
-const PULSE_PIN = `export { default } from "./pulse.scene";\n`;
-const originalScene = readFileSync(SCENE, "utf8");
-writeFileSync(SCENE, PULSE_PIN);
-
-const vite = spawn("pnpm", ["exec", "vite", "--port", String(PORT), "--strictPort"], {
-  cwd: join(ROOT, "packages", "engine-app"),
-  shell: true,
-  stdio: ["ignore", "pipe", "pipe"],
-  windowsHide: true,
-});
-vite.stdout.on("data", (d) => process.stdout.write(`[vite] ${d}`));
-vite.stderr.on("data", (d) => process.stderr.write(`[vite] ${d}`));
-let viteExit = null;
-vite.on("exit", (code) => {
-  viteExit = code ?? -1;
-});
-
-let browser;
-let client;
+const T_START = Date.now();
+let tChecks = T_START;
+let teardown = async () => {};
 try {
-  await Promise.race([
-    waitForServer(`http://localhost:${PORT}/`),
-    (async () => {
-      while (viteExit === null) await sleep(200);
-      throw new Error(`vite exited early (code ${viteExit}) â€” is port ${PORT} already in use?`);
-    })(),
-  ]);
-
-  client = new Client({ name: "validate-m4", version: "0.0.0" });
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: ["--import", "tsx", "packages/sidecar/src/index.ts"],
-    cwd: ROOT,
-    env: { ...process.env, LOOM_WS_PORT: String(WS_PORT) },
-    stderr: "pipe",
+  const boot = await bootStack({
+    name: "validate-m4",
+    port: PORT,
+    wsPort: WS_PORT,
+    url: OUTPUT_URL,
+    viewport: { width: 960, height: 540 },
+    fakeMedia: true, // set_audio's mic path needs a (fake) capture device in headless
   });
-  await client.connect(transport);
-  transport.stderr?.on("data", (d) => process.stderr.write(`[sidecar] ${d}`));
-
-  browser = await chromium.launch({
-    headless: true,
-    args: [
-      ...glArgs,
-      "--autoplay-policy=no-user-gesture-required",
-      // set_audio's mic path needs a (fake) capture device in headless.
-      "--use-fake-device-for-media-stream",
-      "--use-fake-ui-for-media-stream",
-    ],
-  });
-  const context = await browser.newContext({ viewport: { width: 960, height: 540 } });
-  await forceWebGL2(context);
-  const output = await context.newPage();
-  await output.goto(OUTPUT_URL);
-  await waitForFps(output);
+  teardown = boot.teardown;
+  const { client, context, output } = boot;
+  tChecks = Date.now();
 
   // 1. Pure output (R9.1): no overlay element; fps populated but invisible.
   const pure = await output.evaluate(() => ({
@@ -180,22 +94,13 @@ try {
   );
   await output.setViewportSize({ width: 960, height: 540 });
 
-  // 3. Engine reaches the sidecar; tool surface is unchanged (set_audio is
-  // deliberately NOT an MCP tool â€” agents have no path to the audio source).
+  // 3. Engine reaches the sidecar. (The canonical MCP tool-surface assertion —
+  // including the deliberate absence of the human-only set_audio — moved to the
+  // shared boot-smoke suite validate-core.mjs, FR-5.)
   await waitFor(async () => {
     const res = await client.callTool({ name: "get_session", arguments: {} });
     return res.isError ? null : toolJson(res);
   }, 15_000, "engine to connect to sidecar");
-  const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-  check(
-    "MCP tool surface unchanged (no set_audio for agents)",
-    [
-        "clear_modulation", "commit", "create_instance", "destroy_instance", "get_manifest",
-        "get_session", "list_projects", "load_project", "modulate_param", "record_fixture", "save_chain",
-        "save_project", "screenshot", "set_chain", "set_modulation_enabled", "set_param", "stage", "unstage",
-      ].every((t) => tools.includes(t)) && !tools.includes("set_audio"),
-    tools.join(", "),
-  );
 
   // 4. Audio source picker in the Console drives set_audio (human path).
   const consolePage = await context.newPage();
@@ -312,14 +217,10 @@ try {
 } catch (err) {
   check("validation run completed", false, String(err));
 } finally {
-  writeFileSync(SCENE, originalScene);
-  if (client) await client.close().catch(() => {});
-  if (browser) await browser.close();
-  if (process.platform === "win32") {
-    try { execSync(`taskkill /pid ${vite.pid} /T /F`, { stdio: "ignore" }); } catch {}
-  } else {
-    vite.kill("SIGTERM");
-  }
+  console.log(
+    `[timing] m4 boot=${((tChecks - T_START) / 1000).toFixed(1)}s checks=${((Date.now() - tChecks) / 1000).toFixed(1)}s`,
+  );
+  await teardown();
 }
 
 const failed = results.filter((r) => !r.ok);

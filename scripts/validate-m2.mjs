@@ -7,15 +7,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { execSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { chromium } from "playwright";
 import { glArgs, forceWebGL2, resQuery } from "./_browser.mjs";
+import { ROOT, ARTIFACTS, SCENE, makeResults, sleep, waitForServer, toolJson } from "./_harness.mjs";
 import { PNG } from "pngjs";
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const ARTIFACTS = join(ROOT, "artifacts");
-const SCENE = join(ROOT, "content", "scenes", "live.scene.ts");
 const PORT = 5199;
 // Isolated sidecar port: a live Claude Code session may hold the default 7341.
 const WS_PORT = 7342;
@@ -25,30 +22,9 @@ const WS_PORT = 7342;
 // otherwise defaults to armed, which would short-circuit on "nothing staged".
 const URL = `http://localhost:${PORT}/?audio=test&bpm=120&ws=${WS_PORT}&state=off&agentCommit=0${resQuery}`;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const results = [];
-function check(name, ok, detail = "") {
-  results.push({ name, ok });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
-}
-
-async function waitForServer(url, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {}
-    await sleep(250);
-  }
-  throw new Error(`dev server did not come up at ${url}`);
-}
-
-/** Parse the JSON text content of a (non-image) MCP tool result. */
-function toolJson(res) {
-  const text = res.content?.find((c) => c.type === "text")?.text ?? "";
-  return JSON.parse(text);
-}
+const { results, check } = makeResults();
+const T_START = Date.now(); // Phase 0 timing: boot vs checks split
+let tChecks = T_START;
 
 function decodeShot(res) {
   const img = res.content?.find((c) => c.type === "image");
@@ -162,6 +138,8 @@ try {
   }
   check("engine connected to sidecar", session !== null);
   if (!session) throw new Error("engine never connected to the sidecar");
+  tChecks = Date.now();
+  console.log(`[timing] m2 boot=${((tChecks - T_START) / 1000).toFixed(1)}s`);
 
   // 3. get_session reflects reality.
   check("session: scene is pulse", session.scene === "pulse", `scene=${session.scene}`);
@@ -447,6 +425,8 @@ try {
   }
 }
 
+console.log(`[timing] m2 checks=${((Date.now() - tChecks) / 1000).toFixed(1)}s`);
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 process.exit(failed.length === 0 ? 0 : 1);
+// (results/check come from the shared harness; finally above does m2's bespoke teardown)

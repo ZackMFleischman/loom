@@ -3,15 +3,12 @@
 // hot-swaps it in-place, and a broken edit changes nothing on screen.
 import { spawn, execSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { chromium } from "playwright";
 import { glArgs, forceWebGL2, resQuery } from "./_browser.mjs";
+import { ROOT, ARTIFACTS, SCENE, makeResults, sleep, waitForServer } from "./_harness.mjs";
 import { PNG } from "pngjs";
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const SCENE = join(ROOT, "content", "scenes", "live.scene.ts");
-const ARTIFACTS = join(ROOT, "artifacts");
 const PORT = 5199;
 // state=off: persisted tunings (M5) must never skew validation assertions.
 const URL = `http://localhost:${PORT}/?state=off${resQuery}`;
@@ -42,24 +39,7 @@ export default defineScene({
 `;
 // (build() throws before returning, so no TexNode is ever produced)
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const results = [];
-function check(name, ok, detail = "") {
-  results.push({ name, ok, detail });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
-}
-
-async function waitForServer(url, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {}
-    await sleep(250);
-  }
-  throw new Error(`dev server did not come up at ${url}`);
-}
+const { results, check } = makeResults();
 
 /**
  * Average + center RGB from a composited page screenshot (a WebGL/WebGPU
