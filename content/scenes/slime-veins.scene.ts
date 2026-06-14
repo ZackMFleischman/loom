@@ -1,4 +1,4 @@
-import { defineScene, lagSignal, Signal, texNode } from "@loom/runtime";
+import { defineScene, Signal, texNode } from "@loom/runtime";
 import { vec4 } from "three/tsl";
 import { pickPalette } from "../palettes";
 import { bloom } from "../modules/effects/bloom";
@@ -45,7 +45,7 @@ export default defineScene({
     ]);
 
     const kick = ctx.input("kick");
-    const bass = lagSignal(ctx.audio.band("bass"), 0.12);
+    const bass = ctx.input("bass"); // rack channel (lagged bass) — tunable/meterable from the Console
 
     // Kick flares the sensor splay open then it re-knits; bass swells speed.
     const splayBase = sensorAngle.signal();

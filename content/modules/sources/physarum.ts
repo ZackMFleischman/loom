@@ -12,7 +12,9 @@ import {
 const DEPOSIT_CAM = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
 /** Trail field grid — fixed & modest (HalfFloat state, not output res). Toroidal.
- *  16:9 and high enough that veins read thin against a 1080p frame. */
+ *  16:9 and high enough that veins read thin against a 1080p frame. (sensorDist/
+ *  speed are in texels; the slight non-square bias is acceptable — on the WebGPU
+ *  production backend the network reads cleanly isotropic.) */
 const TRAIL_W = 768;
 const TRAIL_H = 432;
 

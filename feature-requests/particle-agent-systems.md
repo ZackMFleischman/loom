@@ -80,7 +80,8 @@ open + re-knits on the kick) and the deposit flash; bass breathes the agent
 speed. Frame-clocked + deterministically seeded (in-shader hash, no
 Math.random) → fixture-replay-safe. Scene `slime-veins`. NOTE: did NOT reuse
 `simBuffer` — its per-pixel `step` can't read agent positions for the deposit,
-so physarum owns its four passes inline (still ≤150 lines).
+so physarum owns its four passes inline (~231 lines — over the ~150 soft budget,
+mostly backend-gotcha comments + per-opt JSDoc).
 
 ## Why later / scope
 

@@ -1629,7 +1629,8 @@ surfaces lacked (what build/swap/freeze/perf event led to a number).
   `textureLoad(agentTex, vertexIndex→texel)`. No vertex-texture-fetch guesswork,
   no shared `particleState` primitive (deferred — `simBuffer`'s per-pixel step
   can't read agent positions for the deposit, so physarum owns its 4 passes
-  inline). Seeded in-shader (hash, no Math.random) + frame-clocked → fixture-safe.
+  inline — ~231 lines, over the ~150 soft budget, mostly backend-gotcha comments
+  + per-opt JSDoc). Seeded in-shader (hash, no Math.random) + frame-clocked → fixture-safe.
 - **Real-WebGPU verification caught two backend bugs the WebGL2 fallback hid:**
   (1) the deposit pass camera was a bare `Camera` — WebGPU's `_renderScene` calls
   `updateProjectionMatrix` which only exists on `OrthographicCamera` (froze via
