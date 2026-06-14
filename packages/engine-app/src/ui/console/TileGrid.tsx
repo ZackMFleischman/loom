@@ -31,9 +31,7 @@ export function sortTiles<T extends { id: string }>(instances: T[], order: strin
  * locally; the DndContext in ConsoleApp also lets the same drag go LIVE on the
  * stage bar). DOM contract: #grid, tiles render in display order.
  */
-export function TileGrid({
-  session: s, selected, solo, order, onOrderChange, onSelect, onSolo, onCreated,
-}: Props) {
+export function TileGrid({ session: s, selected, solo, order, onOrderChange, onSelect, onSolo, onCreated }: Props) {
   // The "+" tile's preview instances render inside that tile, never as grid
   // tiles. Hiding must outlive the preview pointer: a destroyed preview stays
   // in the session for a state tick or two, and clearing its id immediately
@@ -97,6 +95,7 @@ export function TileGrid({
             isStaged={inst.id === s.staged}
             selected={inst.id === selected}
             solo={inst.id === solo}
+            engineFps={s.fps}
             onSelect={onSelect}
             onSolo={onSolo}
             onRenamed={renamed}

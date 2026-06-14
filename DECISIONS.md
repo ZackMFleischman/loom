@@ -1279,3 +1279,43 @@ Phase 5's `groupParams`).
   + `pnpm test` green (runtime 239 · sidecar 35 · engine-app 39 · content 434 ·
   scripts 11). validate suites not run (sandbox egress blocks Playwright chromium;
   CI/preview is the eyes-on check, per prior entries).
+
+## FPS counters (Console + Output + per-tile) — 2026-06-13
+
+Three visible FPS readouts, reusing the engine's existing fps/frameMs rather than
+adding engine plumbing:
+- **Console UI paint rate (new):** `FrameRateCounter` (pure, rolling-window) +
+  `useRenderFps()` rAF hook in `packages/engine-app/src/ui/fps-meter.ts`. The
+  Console is a React app whose paint loop is independent of the engine render
+  loop, so its jank was previously unmeasured. Shown as `#uifps` in the Header
+  next to the engine readout.
+- **Output window fps:** already in `SessionSnapshot.fps` (from the engine's
+  `FpsMeter`, gated visible by `?hud=1` in the Output). Surfaced in the Console
+  Header as `#fps`, relabeled "out" to distinguish it from the new "ui" meter.
+- **Per-tile fps:** `tileFps(frameMs, engineFps, frozen)` — every instance renders
+  once per engine frame, so a tile's throughput is the engine fps capped by its
+  own CPU budget (`1000/frameMs`); a frozen (errored) instance reads 0. Shown on
+  each grid Tile (`.tilefps`) and in PreviewMode's header (`#preview-fps`)
+  alongside the existing `frameMs`. No new engine/protocol fields.
+
+**Perf findings (investigated; NOT fixed here to avoid destabilizing — sibling
+PRs concurrently edit Header + FxChain):**
+- The Console re-renders its whole tree on every engine **state** broadcast
+  (`STATE_MS = 100`, ~10 Hz): `useEngineState()` returns a fresh snapshot object
+  each tick (`engine-link.ts` `onMessage`/state), so `ConsoleApp` and all
+  descendants (Header, StageStrip, TileGrid, every Tile, ParamPanel) re-render
+  10×/s regardless of what changed. This is the dominant Console CPU cost. Safe
+  future fix: memoize tiles (`React.memo` on `Tile` keyed by the fields it reads)
+  and/or split the snapshot into narrower external-store selectors so a tile only
+  re-renders when its own instance changes — deferred because it touches the
+  shared render path the sibling PRs are also editing.
+- Thumbnails are a separate ~6.6 Hz store (`THUMBS_MS = 150`) already isolated via
+  `useThumb`; good as-is.
+- Dropdown/popover open-delay is consistent with MUI Menu/Popover mounting heavy
+  children *while* the 10 Hz re-render storm competes for the main thread —
+  i.e. a symptom of the re-render cost above, not an independent bug. The
+  `STATUS_BREAKPOINT` crash could not be reproduced headlessly (no WebGPU adapter
+  in headless Chromium); reasoned from code — most likely GPU/driver-side under
+  many simultaneous live preview canvases, outside this PR's scope.
+- Gates: `pnpm typecheck`, `pnpm lint` (no new errors — 37 pre-existing warnings
+  unchanged), `pnpm test` (engine-app 46, +9 new fps-meter tests) all green.

@@ -2,6 +2,7 @@ import { Box, Button, NativeSelect, Stack, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import type { SessionSnapshot } from "@loom/sidecar/protocol";
 import type { ParamDesc } from "../engine-link";
+import { tileFps } from "../fps-meter";
 import { useEngine, usePreviewFrame, useThumb } from "../hooks";
 import { fail } from "../util";
 import { ParamPanel } from "./ParamPanel";
@@ -52,8 +53,7 @@ export function PreviewMode({ instance, manifest, session: s, onExit }: Props) {
   const pf = usePreviewFrame();
   const inst = instance != null ? s.instances.find((i) => i.id === instance) : undefined;
   const scene = inst?.scene;
-  const name =
-    instance == null ? "—" : scene && scene !== instance ? `${instance} · ${scene}` : instance;
+  const name = instance == null ? "—" : scene && scene !== instance ? `${instance} · ${scene}` : instance;
   const isLive = instance != null && s.live === instance;
   const isStaged = instance != null && s.staged === instance;
   // globals is the rack/palette pseudo-instance, never something to project.
@@ -116,11 +116,7 @@ export function PreviewMode({ instance, manifest, session: s, onExit }: Props) {
           flex: "0 0 auto",
         }}
       >
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          sx={{ letterSpacing: "0.16em", fontWeight: 700 }}
-        >
+        <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: "0.16em", fontWeight: 700 }}>
           PREVIEW
         </Typography>
         <Typography id="preview-name" sx={{ fontWeight: 700 }} noWrap>
@@ -137,6 +133,21 @@ export function PreviewMode({ instance, manifest, session: s, onExit }: Props) {
           </Typography>
         )}
         <Box sx={{ flex: 1 }} />
+        {/* Per-tile render rate for the previewed instance (engine fps capped by
+            its CPU budget) + its smoothed frame cost — same meters as the grid
+            tiles, surfaced here because the tile is hidden in preview mode. */}
+        {inst && (
+          <Typography
+            id="preview-fps"
+            data-fps={tileFps(inst.frameMs, s.fps, inst.status !== "ok")}
+            variant="caption"
+            color={inst.status !== "ok" ? "error.main" : "text.secondary"}
+            sx={{ fontFamily: "monospace" }}
+            title="previewed tile render rate · per-frame CPU cost"
+          >
+            {tileFps(inst.frameMs, s.fps, inst.status !== "ok").toFixed(0)}fps · {inst.frameMs.toFixed(1)}ms
+          </Typography>
+        )}
         {/* Resolution ceiling + the live streamed resolution (· auto when the
             engine has reduced it under fps pressure). */}
         <NativeSelect
@@ -146,7 +157,9 @@ export function PreviewMode({ instance, manifest, session: s, onExit }: Props) {
           sx={{ fontSize: 12 }}
         >
           {RES_OPTIONS.map((o) => (
-            <option key={o.h} value={o.h}>{o.label}</option>
+            <option key={o.h} value={o.h}>
+              {o.label}
+            </option>
           ))}
         </NativeSelect>
         <Typography
@@ -155,9 +168,7 @@ export function PreviewMode({ instance, manifest, session: s, onExit }: Props) {
           color={hiRes?.reduced ? "warning.main" : "text.secondary"}
           sx={{ fontFamily: "monospace", minWidth: 86 }}
           title={
-            hiRes?.reduced
-              ? "fps dipped — the engine auto-reduced the preview resolution"
-              : "live preview resolution"
+            hiRes?.reduced ? "fps dipped — the engine auto-reduced the preview resolution" : "live preview resolution"
           }
         >
           {hiRes ? `${hiRes.width}×${hiRes.height}${hiRes.reduced ? " · auto" : ""}` : "…"}
@@ -168,11 +179,7 @@ export function PreviewMode({ instance, manifest, session: s, onExit }: Props) {
               id="preview-stage"
               variant="outlined"
               disabled={isLive}
-              onClick={() =>
-                void link
-                  .req(isStaged ? "unstage" : "stage", isStaged ? {} : { instance })
-                  .catch(fail)
-              }
+              onClick={() => void link.req(isStaged ? "unstage" : "stage", isStaged ? {} : { instance }).catch(fail)}
               sx={{ fontSize: 12, py: 0.25 }}
             >
               {isStaged ? "unstage" : "stage"}
@@ -184,7 +191,10 @@ export function PreviewMode({ instance, manifest, session: s, onExit }: Props) {
               disabled={isLive || s.panicked}
               title="stage this scene and crossfade it LIVE now"
               onClick={() =>
-                void link.req("stage", { instance }).then(() => link.req("commit", {})).catch(fail)
+                void link
+                  .req("stage", { instance })
+                  .then(() => link.req("commit", {}))
+                  .catch(fail)
               }
               sx={{ fontSize: 12, fontWeight: 700, py: 0.25 }}
             >
