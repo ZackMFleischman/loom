@@ -1319,3 +1319,30 @@ PRs concurrently edit Header + FxChain):**
   many simultaneous live preview canvases, outside this PR's scope.
 - Gates: `pnpm typecheck`, `pnpm lint` (no new errors — 37 pre-existing warnings
   unchanged), `pnpm test` (engine-app 46, +9 new fps-meter tests) all green.
+
+## 2026-06-13 — Console preview fidelity + header declutter
+
+- **Console preview now renders at the LIVE resolution, not a fluctuating one.**
+  Root cause of the "preview doesn't match live / params break" bug: the preview
+  resized the previewed sandbox instance's OWN render target through an
+  fps-adaptive ladder (1080→720→540→360). Destination-sized stateful passes
+  (`layerRig`, `transform`, feedback, render3d) re-size/reset their buffers off
+  the target, and `screenSize`/`surfaceAspect` are resolution-dependent — so the
+  audition looked different from the fixed-1080p live canvas and params driving
+  those passes thrashed. Fix: a dedicated fixed full-res `previewRT` (RENDER_W×
+  RENDER_H); the compositor redirects the previewed NON-live instance there
+  (`PreviewRoute`, replacing its thumbnail render — one render, never a second/
+  stateful pass; live/crossfade/panic legs untouched, so "never go black" holds).
+  The fps ladder now only caps the **JPEG downscale** of the readback, never the
+  render — bandwidth/readback still throttle under load, pixels stay faithful.
+  The live instance keeps its canvas-mirror path (now full-res, downscaled at
+  JPEG time). `set_preview` no longer mutates entry targets.
+- **PreviewMode header declutter:** dropped the duplicated `#preview-stage` /
+  `#preview-golive` buttons — the ParamPanel rendered in the same overlay already
+  carries `#panel-stage` / `#panel-golive` as the single source. No validator
+  references the removed ids. Console main header / `StageStrip` (`#commit`,
+  `#unstage`, `#stagestrip`, drop-to-go-live) untouched — left for the sibling
+  Console PRs (FPS / FxChain) to avoid conflicts.
+- Gates: `pnpm typecheck`, `pnpm lint` (no new diagnostics), `pnpm test` green
+  (engine-api preview tests rewritten to assert the fixed-res route + no target
+  resize). GPU acceptance validators (m3/m4 preview paths) not run here.

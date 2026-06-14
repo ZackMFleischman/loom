@@ -75,6 +75,7 @@ function world() {
   const deps: EngineDeps = {
     renderer: {} as never,
     canvas: document.createElement("canvas"),
+    renderSize: { width: 1920, height: 1080 },
     session,
     stage,
     audio: silentAudio,
@@ -200,7 +201,7 @@ describe("EngineApi full-res preview stream", () => {
     expect(r.preview?.id).toBe("boot"); // "live" resolved to the live instance
   });
 
-  it("renders a sandbox candidate at the chosen resolution and restores on stop", async () => {
+  it("routes a sandbox candidate to the fixed full-res target WITHOUT resizing its own target", async () => {
     const { api, session, stage } = world();
     session.create(scene, "boot");
     stage.adoptLive("boot");
@@ -210,29 +211,34 @@ describe("EngineApi full-res preview stream", () => {
     api.markConsolePresent();
     await api.handleRequest(req("set_preview", { instance: "sandbox", maxHeight: 1080 }), "human");
     api.tickPreview("single", 60);
-    expect([e.target.width, e.target.height]).toEqual([1920, 1080]); // full-res render now
 
-    // A lower ceiling re-sizes; the live instance is never enlarged (it renders
-    // to the canvas, so its target stays at the thumbnail size).
-    await api.handleRequest(req("set_preview", { instance: "sandbox", maxHeight: 720 }), "human");
-    api.tickPreview("single", 60);
-    expect([e.target.width, e.target.height]).toEqual([1280, 720]);
+    // The compositor is told to render the sandbox into a FIXED full-res target
+    // (live resolution) — the scene's own target is never resized, so its
+    // resolution-dependent passes can't thrash (the bug this fixes).
+    const route = api.previewRoute();
+    expect(route?.id).toBe("sandbox");
+    expect([route?.target.width, route?.target.height]).toEqual([1920, 1080]);
+    expect([e.target.width, e.target.height]).toEqual([640, 360]); // untouched
 
+    // Stopping the preview clears the route; the target was never touched.
     await api.handleRequest(req("set_preview", { instance: null }), "human");
-    expect([e.target.width, e.target.height]).toEqual([640, 360]); // restored
+    api.tickPreview("single", 60);
+    expect(api.previewRoute()).toBeNull();
+    expect([e.target.width, e.target.height]).toEqual([640, 360]);
   });
 
-  it("leaves the live instance's target untouched (canvas-mirrored, not enlarged)", async () => {
+  it("never routes the live instance (it renders to the canvas, mirrored instead)", async () => {
     const { api, session, stage } = world();
     const e = session.create(scene, "boot");
     stage.adoptLive("boot");
     api.markConsolePresent();
     await api.handleRequest(req("set_preview", { instance: "boot", maxHeight: 1080 }), "human");
     api.tickPreview("single", 60);
+    expect(api.previewRoute()).toBeNull(); // canvas-mirrored, not routed
     expect([e.target.width, e.target.height]).toEqual([640, 360]);
   });
 
-  it("auto-reduces the resolution when fps sags and climbs back when it recovers", async () => {
+  it("renders at the FIXED full-res target regardless of the fps ladder (faithful to live)", async () => {
     const { api, session, stage } = world();
     session.create(scene, "boot");
     stage.adoptLive("boot");
@@ -243,17 +249,13 @@ describe("EngineApi full-res preview stream", () => {
     const sag = (n: number, fps: number) => {
       for (let i = 0; i < n; i++) api.tickPreview("single", fps);
     };
-    sag(25, 30); // sustained low fps → drop one level
-    expect(e.target.height).toBe(720);
-    sag(25, 30); // keep sagging → drop another
-    expect(e.target.height).toBe(540);
-    sag(260, 60); // sustained headroom → climb one level back
-    expect(e.target.height).toBe(720);
-    // Never climbs past the human-chosen ceiling.
-    sag(520, 60);
-    expect(e.target.height).toBe(1080);
-    sag(260, 60);
-    expect(e.target.height).toBe(1080);
+    // The fps ladder only changes the STREAM downscale height, never the render
+    // target — the previewed scene always renders at the live resolution.
+    sag(50, 30); // sustained low fps
+    expect([e.target.width, e.target.height]).toEqual([640, 360]); // own target never resized
+    expect([api.previewRoute()?.target.width, api.previewRoute()?.target.height]).toEqual([1920, 1080]);
+    sag(520, 60); // sustained headroom
+    expect([api.previewRoute()?.target.width, api.previewRoute()?.target.height]).toEqual([1920, 1080]);
   });
 });
 

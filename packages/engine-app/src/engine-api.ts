@@ -53,7 +53,7 @@ import {
   type ScreenshotResult,
   type SessionSnapshot,
 } from "@loom/sidecar/protocol";
-import type { WebGPURenderer } from "three/webgpu";
+import { RenderTarget, type WebGPURenderer } from "three/webgpu";
 import { readTargetToDataUrl } from "./readback";
 import { entryStatus, PREVIEW_H, PREVIEW_W, type Entry, type SessionStore } from "./session";
 
@@ -80,6 +80,12 @@ const HUMAN_ONLY: ReadonlySet<string> = new Set([
 // Full-res preview stream (Console preview overlay): the ladder of streamed
 // heights (16:9), the fps thresholds that drive auto-reduction, and how long a
 // trend must hold before stepping. Reacts down fast, climbs back slowly.
+//
+// The previewed instance always RENDERS at the live resolution (so the picture
+// is faithful and resolution-dependent passes don't thrash); the ladder only
+// chooses the height the readback is DOWNSCALED to for the JPEG stream — that
+// throttles readback + bandwidth cost under fps pressure without changing a
+// single pixel the scene's passes see.
 const PREVIEW_LEVELS = [1080, 720, 540, 360] as const;
 const PREVIEW_FPS_LOW = 50;
 const PREVIEW_FPS_HIGH = 57;
@@ -104,6 +110,10 @@ const ACTION_PATHS: ReadonlySet<string> = new Set(["live.next", "live.prev"]);
 export interface EngineDeps {
   renderer: WebGPURenderer;
   canvas: HTMLCanvasElement;
+  /** The live output's internal render resolution (RENDER_W × RENDER_H). The
+   * Console preview renders the auditioned instance at this exact size, so what
+   * you preview is what a commit sends live. */
+  renderSize: { width: number; height: number };
   session: SessionStore;
   stage: Stage;
   audio: AudioBusLike & {
@@ -200,15 +210,23 @@ export class EngineApi {
   private consoleSeenAt = -Infinity;
 
   // Full-res preview stream state. `preview` is the active request (instance +
-  // user-chosen ceiling); `previewSizedId` is the sandbox entry whose target we
-  // enlarged (restored when preview moves/stops); `previewMirror` holds the
-  // downscaled live canvas when the *live* instance is the one being previewed.
+  // user-chosen ceiling). The previewed instance always renders at the LIVE
+  // resolution: a sandbox candidate renders into the fixed `previewRT` (the
+  // compositor redirects it there — never resizing the scene's own buffers), and
+  // the live instance is mirrored from the canvas at full res into the 2D
+  // `previewMirror` (the canvas is only readable in the render task). The fps
+  // ladder picks `previewActualH` purely as the height the readback is then
+  // DOWNSCALED to for the JPEG — it never changes what the passes render at.
   private preview: { id: string; ceilingH: number } | null = null;
   private previewAdaptiveH: number = PREVIEW_LEVELS[0];
   private previewActualH: number = PREVIEW_LEVELS[0];
-  private previewSizedId: string | null = null;
+  /** The id whose sandbox render the compositor must redirect to `previewRT`. */
+  private previewRouteId: string | null = null;
   private previewLowFrames = 0;
   private previewGoodFrames = 0;
+  /** Fixed full-res target the previewed sandbox renders into (live-resolution). */
+  private readonly previewRT: RenderTarget;
+  /** Full-res mirror of the live canvas (when the LIVE instance is previewed). */
   private readonly previewMirror = document.createElement("canvas");
   private readonly previewMirrorCtx: CanvasRenderingContext2D;
 
@@ -220,7 +238,19 @@ export class EngineApi {
     this.liveMirror.width = 640;
     this.liveMirror.height = 360;
     this.liveMirrorCtx = this.liveMirror.getContext("2d")!;
+    this.previewRT = new RenderTarget(deps.renderSize.width, deps.renderSize.height);
+    this.previewMirror.width = deps.renderSize.width;
+    this.previewMirror.height = deps.renderSize.height;
     this.previewMirrorCtx = this.previewMirror.getContext("2d")!;
+  }
+
+  /**
+   * The compositor preview route for this frame: the previewed sandbox instance
+   * → the fixed full-res target, or null. The live instance is NOT routed here
+   * (it renders to the canvas; we mirror that instead).
+   */
+  previewRoute(): { id: string; target: RenderTarget } | null {
+    return this.previewRouteId != null ? { id: this.previewRouteId, target: this.previewRT } : null;
   }
 
   markConsolePresent(): void {
@@ -630,7 +660,7 @@ export class EngineApi {
         const { instance, maxHeight } = SetPreviewArgs.parse(req.args);
         if (instance == null) {
           this.preview = null;
-          this.restorePreviewTarget();
+          this.previewRouteId = null;
         } else {
           const id = this.resolveId(instance);
           session.require(id); // throws on unknown id
@@ -957,9 +987,10 @@ export class EngineApi {
   }
 
   private readTarget(e: Entry, outW: number, outH: number, mime: string): Promise<string> {
-    // Read the target at its ACTUAL size — a previewed instance's target is
-    // enlarged (tickPreview), and the source region must match or the readback
-    // crops. Thumbnails/screenshots still downscale to their requested outW/outH.
+    // Read the target at its ACTUAL size (the source region must match or the
+    // readback crops), then downscale to the requested outW/outH. Entry targets
+    // now stay a fixed PREVIEW_W×PREVIEW_H — the Console preview renders into a
+    // separate fixed full-res target, never resizing this one.
     return readTargetToDataUrl(this.deps.renderer, e.target, e.target.width, e.target.height, {
       outW,
       outH,
@@ -974,24 +1005,32 @@ export class EngineApi {
   }
 
   /**
-   * Per-frame preview bookkeeping (called from the render loop). Runs the fps
-   * auto-reduction ladder, then prepares the source the stream reads from: for
-   * the LIVE instance it downscales the canvas into previewMirror (the canvas is
-   * only readable in this task); for a sandbox instance it resizes that entry's
-   * render target so the compositor renders it at the preview resolution (once
-   * per frame — no second render). Never throws into the loop.
+   * Per-frame preview routing + ladder (called from the render loop BEFORE the
+   * compositor renders, so the route it sets takes effect this frame). Runs the
+   * fps auto-reduction ladder — which now only chooses the height the readback is
+   * DOWNSCALED to (`previewActualH`), never the render resolution — and decides
+   * where the previewed instance renders:
+   *
+   * - LIVE instance: it renders to the canvas, so leave the route null and mirror
+   *   the canvas afterwards (see {@link mirrorPreviewCanvas}).
+   * - sandbox instance: set `previewRouteId` so the compositor renders it into
+   *   the fixed full-res `previewRT` this frame (one render, at live resolution).
+   *
+   * Either way the previewed scene renders at exactly the live resolution, so the
+   * picture is faithful and resolution-dependent passes never thrash. Never
+   * throws into the loop.
    */
   tickPreview(mode: "single" | "crossfade" | "hold" | "panic-scene", fps: number): void {
     const p = this.preview;
     if (p == null || performance.now() - this.consoleSeenAt > 5000) {
-      this.restorePreviewTarget();
+      this.previewRouteId = null;
       return;
     }
     const e = this.deps.session.get(p.id);
     if (!e) {
       // Previewed instance vanished (destroyed/renamed) — drop the request.
       this.preview = null;
-      this.restorePreviewTarget();
+      this.previewRouteId = null;
       return;
     }
 
@@ -1013,49 +1052,47 @@ export class EngineApi {
       this.previewAdaptiveH = stepPreviewUp(this.previewAdaptiveH);
       this.previewGoodFrames = 0;
     }
-    const actualH = Math.min(p.ceilingH, this.previewAdaptiveH);
-    this.previewActualH = actualH;
-    const w = previewWidth(actualH);
+    this.previewActualH = Math.min(p.ceilingH, this.previewAdaptiveH);
 
+    // The live instance renders to the canvas (not entry.target / previewRT), so
+    // never route it through the compositor — mirror the canvas instead. During
+    // hold / scene-panic the canvas isn't showing this instance, so we route its
+    // offscreen render rather than mirror a stale canvas.
     const isLive =
       this.deps.stage.live === p.id && mode !== "hold" && mode !== "panic-scene";
-    try {
-      if (isLive) {
-        // Live renders to the canvas, not entry.target — mirror the canvas.
-        this.restorePreviewTarget();
-        if (this.previewMirror.width !== w || this.previewMirror.height !== actualH) {
-          this.previewMirror.width = w;
-          this.previewMirror.height = actualH;
-        }
-        this.previewMirrorCtx.drawImage(this.deps.canvas, 0, 0, w, actualH);
-      } else {
-        // Size the sandbox instance's target up so the compositor renders it at
-        // the preview resolution next frame; restore any previously-sized entry.
-        if (this.previewSizedId !== p.id) this.restorePreviewTarget();
-        if (e.target.width !== w || e.target.height !== actualH) {
-          e.target.setSize(w, actualH);
-        }
-        this.previewSizedId = p.id;
-      }
-    } catch {
-      // A bad capture/resize must never disturb the live loop.
-    }
+    // Route a sandbox candidate into previewRT (replacing its thumbnail render —
+    // one render, never a second/stateful pass); leave the live instance to its
+    // canvas mirror.
+    this.previewRouteId = isLive ? null : p.id;
   }
 
-  /** Restore the enlarged preview target back to the standard thumbnail size. */
-  private restorePreviewTarget(): void {
-    if (this.previewSizedId == null) return;
-    const e = this.deps.session.get(this.previewSizedId);
-    if (e && (e.target.width !== PREVIEW_W || e.target.height !== PREVIEW_H)) {
-      e.target.setSize(PREVIEW_W, PREVIEW_H);
+  /**
+   * Mirror the live canvas into `previewMirror` at full resolution — called from
+   * the render loop AFTER the compositor renders (the canvas is only readable in
+   * that task). Only does work while the LIVE instance is the one being previewed
+   * (route null with an active preview); the JPEG downscale happens later in
+   * {@link previewFrame}. Never throws into the loop.
+   */
+  mirrorPreviewCanvas(): void {
+    if (this.preview == null || this.previewRouteId != null) return;
+    try {
+      this.previewMirrorCtx.drawImage(
+        this.deps.canvas,
+        0,
+        0,
+        this.previewMirror.width,
+        this.previewMirror.height,
+      );
+    } catch {
+      // A bad capture must never disturb the live loop.
     }
-    this.previewSizedId = null;
   }
 
   /**
    * One frame of the preview stream (called off the render loop at stream rate,
-   * like thumbnails). Reads the previewMirror (live) or the enlarged target
-   * (sandbox) back as a JPEG. Returns null when there's nothing to stream.
+   * like thumbnails). Reads the full-res source — `previewMirror` (live) or
+   * `previewRT` (sandbox) — and DOWNSCALES it to the ladder-chosen height for the
+   * JPEG. Returns null when there's nothing to stream.
    */
   async previewFrame(): Promise<PreviewFrame | null> {
     const p = this.preview;
@@ -1065,29 +1102,40 @@ export class EngineApi {
     const ceilingHeight = p.ceilingH;
     const actualHeight = this.previewActualH;
     const reduced = actualHeight < ceilingHeight;
-    const isLive = this.deps.stage.live === p.id;
+    // Downscale dimensions for the stream (the render itself was full-res).
+    const outH = actualHeight;
+    const outW = previewWidth(outH);
+    // `previewRouteId` is the single source of truth for which branch ran this
+    // frame: set = sandbox (rendered into previewRT), null = the live mirror.
+    const fromMirror = this.previewRouteId == null;
     try {
-      if (isLive) {
-        const w = this.previewMirror.width;
-        const h = this.previewMirror.height;
-        if (w === 0 || h === 0) return null;
+      if (fromMirror) {
+        const sw = this.previewMirror.width;
+        const sh = this.previewMirror.height;
+        if (sw === 0 || sh === 0) return null;
+        const out = document.createElement("canvas");
+        out.width = outW;
+        out.height = outH;
+        out.getContext("2d")!.drawImage(this.previewMirror, 0, 0, outW, outH);
         return {
           instance: p.id,
-          image: this.previewMirror.toDataURL("image/jpeg", PREVIEW_QUALITY),
-          width: w,
-          height: h,
+          image: out.toDataURL("image/jpeg", PREVIEW_QUALITY),
+          width: outW,
+          height: outH,
           actualHeight,
           ceilingHeight,
           reduced,
         };
       }
-      const w = e.target.width;
-      const h = e.target.height;
-      const image = await readTargetToDataUrl(this.deps.renderer, e.target, w, h, {
-        mime: "image/jpeg",
-        quality: PREVIEW_QUALITY,
-      });
-      return { instance: p.id, image, width: w, height: h, actualHeight, ceilingHeight, reduced };
+      // Sandbox: read the fixed full-res previewRT, downscaled to the stream size.
+      const image = await readTargetToDataUrl(
+        this.deps.renderer,
+        this.previewRT,
+        this.previewRT.width,
+        this.previewRT.height,
+        { mime: "image/jpeg", quality: PREVIEW_QUALITY, outW, outH },
+      );
+      return { instance: p.id, image, width: outW, height: outH, actualHeight, ceilingHeight, reduced };
     } catch {
       return null;
     }

@@ -36,15 +36,15 @@ const loadMax = (): number => {
  *
  * Unlike the tiles (which share the 640×360 thumbnail stream), the big image is
  * a dedicated FULL-resolution stream: while the overlay is open the engine
- * renders the selected instance at the chosen resolution (`set_preview`) and
- * streams it back — so you see exactly what would be sent to live. The human
- * picks the ceiling from the resolution dropdown; the engine auto-reduces it
- * when fps dips and climbs back when it's safe (the readout shows "· auto"
- * while reduced). Reuses ParamPanel so widgets, FX chain, and the stage/GO LIVE
- * buttons all come for free; the slim header repeats GO LIVE so sending to live
- * stays one tap even when the drawer is collapsed. DOM contract: #preview-mode,
- * #preview-image, #preview-name, #preview-res, #preview-resselect,
- * #preview-stage, #preview-golive, #preview-exit.
+ * renders the selected instance at the LIVE resolution (`set_preview`) and
+ * streams it back — so you see exactly what a commit would send live (the render
+ * is always full-res; the resolution dropdown only caps the streamed JPEG, which
+ * the engine auto-reduces under fps pressure — the readout shows "· auto" while
+ * reduced). Reuses ParamPanel so widgets, FX chain, and the stage/GO LIVE
+ * buttons (#panel-stage / #panel-golive) all come for free — those are the
+ * single source for staging from preview, so the slim header no longer repeats
+ * them. DOM contract: #preview-mode, #preview-image, #preview-name,
+ * #preview-res, #preview-resselect, #preview-exit.
  */
 export function PreviewMode({ instance, manifest, session: s, onExit }: Props) {
   const link = useEngine();
@@ -173,35 +173,9 @@ export function PreviewMode({ instance, manifest, session: s, onExit }: Props) {
         >
           {hiRes ? `${hiRes.width}×${hiRes.height}${hiRes.reduced ? " · auto" : ""}` : "…"}
         </Typography>
-        {stageable && (
-          <>
-            <Button
-              id="preview-stage"
-              variant="outlined"
-              disabled={isLive}
-              onClick={() => void link.req(isStaged ? "unstage" : "stage", isStaged ? {} : { instance }).catch(fail)}
-              sx={{ fontSize: 12, py: 0.25 }}
-            >
-              {isStaged ? "unstage" : "stage"}
-            </Button>
-            <Button
-              id="preview-golive"
-              variant="contained"
-              color="error"
-              disabled={isLive || s.panicked}
-              title="stage this scene and crossfade it LIVE now"
-              onClick={() =>
-                void link
-                  .req("stage", { instance })
-                  .then(() => link.req("commit", {}))
-                  .catch(fail)
-              }
-              sx={{ fontSize: 12, fontWeight: 700, py: 0.25 }}
-            >
-              {isLive ? "LIVE" : "GO LIVE"}
-            </Button>
-          </>
-        )}
+        {/* Stage / GO LIVE used to be repeated here, but they already live in the
+            ParamPanel (#panel-stage / #panel-golive) rendered in this same
+            overlay — one source of truth, less header clutter. */}
         <Button
           id="preview-exit"
           onClick={onExit}
