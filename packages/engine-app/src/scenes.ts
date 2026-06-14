@@ -12,8 +12,8 @@ export function getScenes(): Map<string, SceneDef> {
   const map = new Map<string, SceneDef>();
   for (const [path, mod] of Object.entries(globbed)) {
     const file = path.split("/").pop()!.replace(".scene.ts", "");
-    // Re-export pointers, not scenes of their own (safe.scene.ts itself still lists).
-    if (file === "live" || file === "panic") continue;
+    // live.scene.ts is a re-export pointer (the boot scene), not a scene of its own.
+    if (file === "live") continue;
     const def = (mod as { default?: SceneDef }).default;
     if (def?.name) map.set(def.name, def);
   }

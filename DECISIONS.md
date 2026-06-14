@@ -1451,6 +1451,7 @@ destroy/rename protection, human-only trust tier).
 - **Scope.** Header.tsx changes are confined to the PANIC cluster (a later
   console-ui-refactor restyles the rest). `Tile.tsx`'s ⛑ SAFE badge is unchanged
   (it simply shows less often — only after opt-in).
-- Gates: `pnpm typecheck` green; `pnpm test` green (411 package + 434 content +
-  11 script tests; `panic-controller.test.ts` rewritten for the no-build API);
+- Gates: `pnpm typecheck` green; `pnpm test` green (360 package = 239 runtime +
+  86 engine-app + 35 sidecar; 434 content; 11 script; `panic-controller.test.ts`
+  rewritten for the no-build API);
   `pnpm validate:panic` **18/18 green** (ran in-env on the WebGL2 fallback).
