@@ -1,112 +1,70 @@
-import type { SceneDef } from "@loom/runtime";
 import type { Entry, SessionStore } from "./session";
 
-/** Id of the always-warm Panic Scene instance (FR-3). */
-export const PANIC_ID = "panic";
-
-/** What scene-panic cuts to + its build health, surfaced to the Console/__loom. */
+/** What scene-panic cuts to + its health, surfaced to the Console/__loom. */
 export interface PanicSceneInfo {
+  /** The designated instance's scene name, or "" when none is designated. */
   name: string;
-  status: "ok" | "error";
+  /**
+   * "none" = no SAFE target designated (scene-panic unavailable → PANIC holds);
+   * "ok" = a healthy designated instance exists; "error" = the designated
+   * instance has errored (PANIC holds).
+   */
+  status: "none" | "ok" | "error";
+  /** Last error for an errored target, else null. */
   error: string | null;
 }
 
 export interface PanicControllerDeps {
   session: SessionStore;
-  /** Persist the chosen safe-scene name so the default survives a restart. */
-  persistPanicScene: () => void;
-  /** Boot default safe-scene name (from panic.scene.ts). */
-  initialSceneName: string;
 }
 
 /**
- * The always-warm safe-scene instance (FR-3/FR-7), extracted from main.ts
- * (architecture refactor Phase 3).
+ * The SAFE-target designation for scene-panic (panic-safe-scene-redesign).
  *
- * Owns the warm-instance lifecycle (`tryBuild`), the SAFE designation
- * (`setInstance`, which moves the ⛑ marker to any already-warm instance with no
- * build/gap), and the health surface (`instanceId`, `info`). PANIC must never
- * wait on — or risk — a build, so the warm instance is built next to boot and
- * never disposed; build failures only flag health (`buildError`) while whatever
- * is running keeps running (NFR-5). The hold-fallback (FR-7) triggers only when
- * no usable safe instance has *ever* built.
+ * Scene-panic is **opt-in**: there is no boot-default warm instance anymore. At
+ * boot nothing is designated — `instanceId()` returns null and PANIC holds. The
+ * human turns scene-panic on by designating an existing, already-warm instance
+ * as the SAFE target via `setInstance` (the Console picker), which moves the ⛑
+ * marker with no build and no gap, exactly as before. Designation is purely
+ * runtime over existing instances and is **not persisted** — a fresh session
+ * boots to hold, the human re-designates if they want scene-panic.
+ *
+ * The engine's panic machinery is unchanged: a missing/errored target degrades
+ * scene-panic to hold (FR-7), and the designated instance is destroy/rename
+ * protected (engine-api) exactly as today.
  */
 export class PanicController {
-  private sceneNameValue: string;
-  // Last build error, surfaced even when a previous good instance still runs;
-  // null once a usable instance exists.
-  private buildError: string | null = "panic instance not built yet";
-
-  constructor(private readonly d: PanicControllerDeps) {
-    this.sceneNameValue = d.initialSceneName;
-  }
-
-  /** The current safe-scene name (boot default, or whatever was designated). */
-  get sceneName(): string {
-    return this.sceneNameValue;
-  }
-
-  /**
-   * Build (or HMR-rebuild) the warm panic instance, same NFR-5 semantics as the
-   * boot instance: a failed rebuild keeps the previous one running and only
-   * flags health. The hold-fallback (FR-7) triggers only if there has *never*
-   * been a healthy build (no instance exists).
-   */
-  tryBuild(def: SceneDef): boolean {
-    this.sceneNameValue = def?.name ?? this.sceneNameValue;
-    if (this.d.session.get(PANIC_ID)) {
-      const ok = this.d.session.rebuild(PANIC_ID, def);
-      this.buildError = ok ? null : `panic scene "${def?.name ?? "?"}" update rejected (see console)`;
-      return ok;
-    }
-    try {
-      const e = this.d.session.create(def, PANIC_ID);
-      e.pinned = "panic";
-      this.buildError = null;
-      return true;
-    } catch (err) {
-      this.buildError = `panic scene "${def?.name ?? "?"}" failed to build: ${String(err)}`;
-      console.error(`[loom] ${this.buildError}; PANIC will hold`, err);
-      return false;
-    }
-  }
+  constructor(private readonly d: PanicControllerDeps) {}
 
   /**
    * Designate an existing, already-warm instance as the SAFE SCENE target (the
    * Console picker). The ⛑ SAFE marker — and what scene-panic cuts to — moves to
-   * the chosen instance; no build, no gap. Persists the target's scene so the
-   * default reflects it across a restart (instance ids are ephemeral).
+   * the chosen instance; no build, no gap.
    */
   setInstance(id: string): void {
     const target = this.d.session.require(id);
     if (target.pinned === "panic") return;
     for (const e of this.d.session.entries.values()) if (e.pinned === "panic") delete e.pinned;
     target.pinned = "panic";
-    this.sceneNameValue = target.sceneName;
-    this.buildError = null;
-    this.d.persistPanicScene();
   }
 
-  /** A usable safe-target instance exists → scene-panic is available (FR-7). */
+  /**
+   * The designated, usable safe-target instance id → scene-panic is available
+   * (FR-4). Null until the human designates one, or when the designated instance
+   * has errored (so the engine falls back to hold, FR-7).
+   */
   instanceId(): string | null {
-    return this.pinnedEntry()?.id ?? (this.d.session.get(PANIC_ID) ? PANIC_ID : null);
+    const e = this.pinnedEntry();
+    if (!e) return null;
+    return e.instance.error != null ? null : e.id;
   }
 
   info(): PanicSceneInfo {
     const e = this.pinnedEntry();
-    return {
-      name: e?.sceneName ?? this.sceneNameValue,
-      status: e ? "ok" : "error",
-      error: e ? null : this.buildError,
-    };
-  }
-
-  /**
-   * HMR hook: when the `./scenes` barrel rebuilds the pinned safe instance, fold
-   * the result into build health (a rejected update flags, a good one clears).
-   */
-  noteSafeRebuild(ok: boolean, def: SceneDef): void {
-    this.buildError = ok ? null : `safe scene "${def.name}" update rejected (see console)`;
+    if (!e) return { name: "", status: "none", error: null };
+    const err = e.instance.error;
+    if (err != null) return { name: e.sceneName, status: "error", error: String(err) };
+    return { name: e.sceneName, status: "ok", error: null };
   }
 
   /** The instance currently bearing the SAFE designation, if any. */

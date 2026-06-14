@@ -38,6 +38,10 @@ const watchContent: Plugin = {
   name: "loom:watch-content",
   configureServer(server) {
     server.watcher.add(fileURLToPath(new URL("../../content", import.meta.url)));
+    // Module packs (packs/<name>/) live outside this package root too — watch
+    // them so a pack's scene/module add/edit hot-registers through the barrels'
+    // packs/* globs (gitignored dir; absent until `pnpm pack:add`).
+    server.watcher.add(fileURLToPath(new URL("../../packs", import.meta.url)));
   },
 };
 
@@ -52,11 +56,14 @@ const buildCatalog: Plugin = {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const isCatalogSource = (file: string) => {
       const n = normalize(file);
-      return (
-        (n.includes(`${sep}content${sep}modules${sep}`) ||
-          n.includes(`${sep}content${sep}scenes${sep}`)) &&
-        n.endsWith(".ts")
-      );
+      const inContent =
+        n.includes(`${sep}content${sep}modules${sep}`) ||
+        n.includes(`${sep}content${sep}scenes${sep}`);
+      // Pack sources feed the catalog too (packs/<name>/{modules,scenes}/…).
+      const inPack =
+        n.includes(`${sep}packs${sep}`) &&
+        (n.includes(`${sep}modules${sep}`) || n.includes(`${sep}scenes${sep}`));
+      return (inContent || inPack) && n.endsWith(".ts");
     };
     const schedule = (file: string) => {
       if (!isCatalogSource(file)) return;
@@ -343,7 +350,7 @@ const effectsApi: Plugin = {
   },
 };
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [loopGuard, watchContent, buildCatalog, stateApi, stateListApi, mediaApi, effectsApi],
   // Multi-page production build for the static preview deploy (Cloudflare Pages):
   // the Output window (/), the Console cockpit (/console.html), and the staged
@@ -359,6 +366,19 @@ export default defineConfig({
     },
   },
   resolve: {
+    // A locally-linked module pack (packs/<name>/ → an out-of-tree dir via
+    // `pnpm pack:add <path>`) must resolve the host's `three`/`three/tsl` from
+    // node_modules. Keeping the symlinked path (not the real out-of-tree path)
+    // makes bare specifiers walk up to the repo's node_modules like local
+    // content. Cloned packs (in-tree) are unaffected.
+    //
+    // Dev-server ONLY: linked packs are a `pnpm pack:add <path>` dev workflow and
+    // never exist in the production preview build (packs/ is gitignored, absent in
+    // CI). Enabling preserveSymlinks in the `build` pass breaks MUI's subpath
+    // resolution (rolldown can't follow `@mui/material/esm` → `@mui/utils/*`
+    // through the pnpm store), failing the Console bundle. Scoping it to `serve`
+    // keeps the pack-link feature intact and the production build green.
+    preserveSymlinks: command === "serve",
     alias: {
       // Single source of truth for runtime resolution so content/ scenes
       // (outside any package) resolve it too.
@@ -374,4 +394,4 @@ export default defineConfig({
       allow: [fileURLToPath(new URL("../..", import.meta.url))],
     },
   },
-});
+}));

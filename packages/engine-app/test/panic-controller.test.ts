@@ -1,12 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
-import { PANIC_ID, PanicController } from "../src/panic-controller";
+import { describe, expect, it } from "vitest";
+import { PanicController } from "../src/panic-controller";
 import type { SessionStore } from "../src/session";
 
-type FakeEntry = { id: string; sceneName: string; pinned?: "panic" };
+type FakeEntry = { id: string; sceneName: string; pinned?: "panic"; instance: { error: unknown } };
 
 /** A SessionStore stand-in with just the surface PanicController touches. */
-function fakeSession(opts: { createThrows?: boolean } = {}) {
+function fakeSession() {
   const entries = new Map<string, FakeEntry>();
+  const add = (id: string, sceneName: string, error: unknown = null) => {
+    const e: FakeEntry = { id, sceneName, instance: { error } };
+    entries.set(id, e);
+    return e;
+  };
   const store = {
     entries,
     get: (id: string) => entries.get(id),
@@ -15,104 +20,68 @@ function fakeSession(opts: { createThrows?: boolean } = {}) {
       if (!e) throw new Error(`unknown ${id}`);
       return e;
     },
-    create: vi.fn((def: { name: string }, id: string) => {
-      if (opts.createThrows) throw new Error("build boom");
-      const e: FakeEntry = { id, sceneName: def.name };
-      entries.set(id, e);
-      return e;
-    }),
-    rebuild: vi.fn((_id: string, _def: { name: string }) => true),
   };
-  return { store, entries };
+  return { store, entries, add };
 }
 
-const def = (name: string) => ({ name }) as never;
-
-function make(opts: { createThrows?: boolean } = {}) {
-  const { store, entries } = fakeSession(opts);
-  const persistPanicScene = vi.fn();
-  const pc = new PanicController({
-    session: store as unknown as SessionStore,
-    persistPanicScene,
-    initialSceneName: "panic",
-  });
-  return { pc, store, entries, persistPanicScene };
+function make() {
+  const { store, entries, add } = fakeSession();
+  const pc = new PanicController({ session: store as unknown as SessionStore });
+  return { pc, entries, add };
 }
 
-describe("PanicController.info / instanceId before any build", () => {
-  it("reports error health and no instance", () => {
+describe("PanicController.info / instanceId with no designation (the boot default)", () => {
+  it("reports a clean 'none' status and no instance — scene-panic is opt-in", () => {
     const { pc } = make();
     expect(pc.instanceId()).toBeNull();
-    expect(pc.info()).toEqual({ name: "panic", status: "error", error: "panic instance not built yet" });
+    expect(pc.info()).toEqual({ name: "", status: "none", error: null });
   });
 });
 
-describe("PanicController.tryBuild", () => {
-  it("creates and pins the warm instance on first build", () => {
-    const { pc, entries } = make();
-    expect(pc.tryBuild(def("panic"))).toBe(true);
-    expect(entries.get(PANIC_ID)?.pinned).toBe("panic");
-    expect(pc.instanceId()).toBe(PANIC_ID);
-    expect(pc.info()).toEqual({ name: "panic", status: "ok", error: null });
-  });
-
-  it("rebuilds (not recreates) when the warm instance already exists", () => {
-    const { pc, store } = make();
-    pc.tryBuild(def("panic"));
-    store.create.mockClear();
-    store.rebuild.mockReturnValueOnce(true);
-    expect(pc.tryBuild(def("panic2"))).toBe(true);
-    expect(store.create).not.toHaveBeenCalled();
-    expect(store.rebuild).toHaveBeenCalledWith(PANIC_ID, expect.anything());
-    expect(pc.sceneName).toBe("panic2");
-  });
-
-  it("flags health (keeps running) when a rebuild is rejected", () => {
-    const { pc, store } = make();
-    pc.tryBuild(def("panic"));
-    store.rebuild.mockReturnValueOnce(false);
-    expect(pc.tryBuild(def("panic3"))).toBe(false);
-    expect(pc.info().status).toBe("ok"); // instance still exists/pinned
-    expect(pc.info().error).toBeNull(); // pinned entry overrides buildError in info()
-  });
-
-  it("falls back to hold (no instance) when the first build throws", () => {
-    const { pc } = make({ createThrows: true });
-    expect(pc.tryBuild(def("panic"))).toBe(false);
-    expect(pc.instanceId()).toBeNull();
-    expect(pc.info().status).toBe("error");
-    expect(pc.info().error).toContain("failed to build");
-  });
-});
-
-describe("PanicController.setInstance", () => {
-  it("moves the SAFE marker to an already-warm instance and persists", () => {
-    const { pc, entries, persistPanicScene } = make();
-    pc.tryBuild(def("panic")); // pins PANIC_ID
-    entries.set("pulse-1", { id: "pulse-1", sceneName: "pulse" });
+describe("PanicController.setInstance (the runtime ⛑ designation)", () => {
+  it("designates an existing instance with no build; instanceId + info reflect it", () => {
+    const { pc, entries, add } = make();
+    add("pulse-1", "pulse");
     pc.setInstance("pulse-1");
     expect(entries.get("pulse-1")?.pinned).toBe("panic");
-    expect(entries.get(PANIC_ID)?.pinned).toBeUndefined();
-    expect(pc.sceneName).toBe("pulse");
     expect(pc.instanceId()).toBe("pulse-1");
-    expect(persistPanicScene).toHaveBeenCalledTimes(1);
+    expect(pc.info()).toEqual({ name: "pulse", status: "ok", error: null });
   });
 
-  it("is a no-op (no persist) when the target is already the safe instance", () => {
-    const { pc, persistPanicScene } = make();
-    pc.tryBuild(def("panic"));
-    pc.setInstance(PANIC_ID);
-    expect(persistPanicScene).not.toHaveBeenCalled();
+  it("moves the marker to a new target (exactly one pinned)", () => {
+    const { pc, entries, add } = make();
+    add("pulse-1", "pulse");
+    add("gradient-1", "gradient");
+    pc.setInstance("pulse-1");
+    pc.setInstance("gradient-1");
+    expect(entries.get("pulse-1")?.pinned).toBeUndefined();
+    expect(entries.get("gradient-1")?.pinned).toBe("panic");
+    expect([...entries.values()].filter((e) => e.pinned === "panic")).toHaveLength(1);
+    expect(pc.instanceId()).toBe("gradient-1");
+  });
+
+  it("is a no-op when the target is already designated", () => {
+    const { pc, entries, add } = make();
+    add("pulse-1", "pulse");
+    pc.setInstance("pulse-1");
+    pc.setInstance("pulse-1");
+    expect(entries.get("pulse-1")?.pinned).toBe("panic");
+    expect(pc.instanceId()).toBe("pulse-1");
+  });
+
+  it("throws on an unknown instance id", () => {
+    const { pc } = make();
+    expect(() => pc.setInstance("nope")).toThrow(/unknown/);
   });
 });
 
-describe("PanicController.noteSafeRebuild", () => {
-  it("clears health on a good HMR rebuild and flags on a rejected one", () => {
-    const { pc } = make();
-    pc.noteSafeRebuild(false, def("safe"));
-    // No pinned entry yet → buildError surfaces.
-    expect(pc.info().error).toContain("update rejected");
-    pc.noteSafeRebuild(true, def("safe"));
-    expect(pc.info().error).toBeNull();
+describe("PanicController health when the designated target errors (FR-7)", () => {
+  it("reports 'error' and makes scene-panic unavailable (instanceId null → hold)", () => {
+    const { pc, add } = make();
+    add("boom-1", "boom", "render boom");
+    pc.setInstance("boom-1");
+    expect(pc.info()).toEqual({ name: "boom", status: "error", error: "render boom" });
+    // A broken target degrades scene-panic to hold: instanceId() returns null.
+    expect(pc.instanceId()).toBeNull();
   });
 });

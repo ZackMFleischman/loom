@@ -42,7 +42,7 @@ export interface Entry {
   readonly fixture: { name: string; data: FixtureData; player: FixturePlayer } | null;
   /** Successful builds of this entry (1 on create) — validators assert "no rebuild" against this. */
   builds: number;
-  /** Pinned role: "panic" = the always-warm safe-scene instance (protected from destroy). */
+  /** Pinned role: "panic" = the designated SAFE target for scene-panic (protected from destroy). */
   pinned?: "panic";
 }
 
