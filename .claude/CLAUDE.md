@@ -29,6 +29,10 @@ You are working inside LOOM, a live-visuals instrument. A human is watching the 
 
 The engine must be running (`pnpm dev`) for tools to work. `?audio=test` on the URL gives synthetic kick/hats when no mic is around. The human's cockpit is `/console.html` — they see every instance as a tile, can spawn library scenes themselves (scene picker), drag your params, PANIC, and COMMIT there.
 
+### Read the diagnostics after you act
+
+The snapshot tools show the present; `get_diagnostics` shows the history. After any action that touches the build/swap/render path (save a scene, `set_chain`, `create_instance`), run the loop: **act → `get_diagnostics { since: <last now.seq> }` → read what your action triggered → `screenshot` to confirm**. This is how you learn a save was *rejected* when the screenshot looks unchanged (the previous pixels keep running — never-go-black): you'll see a `scene.rejected`/`instance.rejected` event with the build error in its `data`. Page forward with `since`; `dropped > 0` means the ring evicted events you missed. The result also carries a `perf` rollup (also on `get_session.perf`); `scope:"sidecar"` shows your own MCP-call latency. Full reference — args, the `kind` catalog, `frameMs`/`slowSignals`, URL knobs, a worked example: **`docs/debugging.md`**.
+
 ## Rules
 
 1. **Params before rewrites — and batch them.** To change feel (speed, intensity, color balance), first check `get_manifest`, then tune params, not code. When you're setting **more than one knob, reach for `set_params`** (the whole cluster in one frame, one round-trip) rather than a stream of `set_param`; when the work spans different tools or instances, wrap it in a **`batch`**. Single `set_param` is for a one-off nudge in a tweak→screenshot loop. Only edit code when the structure itself is wrong; when code must change, expose the new knob as a param.
