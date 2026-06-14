@@ -1576,3 +1576,24 @@ surfaces lacked (what build/swap/freeze/perf event led to a number).
 - Gates: `pnpm typecheck` green (75 modules, 33 scenes); `pnpm test` green (449
   content). GPU `validate:stdlib` not run (headless container, no WebGPU);
   stills rendered via `scripts/shoot.mjs` on the WebGL2 fallback.
+
+## 2026-06-14 — More generative sources: marble + strangeAttractor
+
+- **`marble`** (source): iterated domain-warp FBM (`fbm(p+fbm(p+fbm(p)))`) →
+  agate/oil veins. Kept **grayscale** (composes with colorize/palette) rather
+  than self-colouring, so the scene (`marble-slab`) ramps it through
+  `pickPalette` — consistent with the other new scenes' palette-as-choice.
+- **`strangeAttractor`** (geo): chaotic ODEs (Lorenz/Aizawa/Thomas/Halvorsen)
+  integrated CPU-side into a vertex buffer (deterministic start, no
+  Math.random), then drawn via the existing `pointCloud` + `render3d` +
+  `orbitCam` path. Chose this geometry-first route over a GPU particle-state
+  texture: reuses proven 3D-point rendering and is verifiable headlessly.
+  Trade-off — constants bake at build (changing the system rebuilds); camera/
+  spin/size/glow are the live surface. Scene `attractor-cloud`.
+- Headless-verification reality: pure-shader (`marble`) and geometry-reusing
+  (`strangeAttractor`) techniques verify via `shoot.mjs` on WebGL2. The
+  remaining list items (`flowParticles`/`flock`/`physarum` — GPU particle
+  state; `fluid2d` — multi-buffer; growth/L-systems — a line renderer) need new
+  GPU infra best validated on a real WebGPU device.
+- Gates: `pnpm typecheck` green (77 modules, 35 scenes); `pnpm test:content`
+  green (459). Stills via `shoot.mjs` (WebGL2). Feature-request docs updated.

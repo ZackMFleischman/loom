@@ -1,7 +1,12 @@
 # Particle & agent systems — flow, flocking, attractors, slime mold (post-v1 candidates)
 
-**Status:** ideas, not scheduled. Sibling family to `gpu-field-simulations.md`;
-spawned from the `reactionDiffusion` simulation work (PR #18).
+**Status:** PARTIALLY SHIPPED. **`strangeAttractor`** shipped (geo module,
+scene `attractor-cloud`) — but via a simpler route than this doc's
+`particleState`: the trajectory is integrated CPU-side into a vertex buffer and
+drawn through the existing `pointCloud` + `render3d` path (no GPU particle-state
+texture, no accumulation buffer). **`flowParticles`, `flock`, `physarum`** —
+and the `particleState`/accumulation primitive they'd share — remain open.
+Sibling family to `gpu-field-simulations.md`.
 
 ## The opportunity
 
@@ -47,12 +52,16 @@ honest and cheap, with a GPU spatial-hash version as a later upgrade. Energy
 widens cohesion, the kick scatters the flock. Ships as a GeoNode (instanced) or
 a 2D overlay source.
 
-### `attractor` — strange-attractor splatting (Lorenz / Clifford / de Jong)
-Each particle iterates a chaotic map; splat millions of points into the additive
-density buffer and tone-map → filamentary silk. **No neighbour interaction**, so
-it's cheap per point and scales to huge counts. Morph the map constants live
-(like Julia's `c`) for continuous metamorphosis. Pure win on the accumulation
-infra; arguably the best wow-per-line in this list.
+### `attractor` — strange-attractor point cloud ✅ SHIPPED (as `strangeAttractor`)
+Shipped the geometry-first route: the chaotic ODE (Lorenz/Aizawa/Thomas/
+Halvorsen) is integrated **CPU-side** into a vertex buffer (deterministic from a
+fixed start), then drawn as glowing points through the existing `pointCloud` +
+`render3d` + `orbitCam` path — no GPU particle-state texture, no accumulation
+pass. The camera orbit reveals the 3D structure; spin/size/glow ride live.
+Trade-off vs the original sketch: the constants are **baked at build** (changing
+the system rebuilds), where a `particleState` version could morph them live and
+do the additive-density "silk" look. A future `attractorField` could add that
+once `particleState` exists.
 
 ### `physarum` — slime-mold agents on a trail field (the crossover)
 Thousands of agents (a `particleState` texture) **deposit** into a trail map,

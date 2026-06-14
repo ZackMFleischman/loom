@@ -1,8 +1,9 @@
 # Domain-warp marble — iterated fbm warping (post-v1 candidate)
 
-**Status:** idea, not scheduled. Spawned from the `reactionDiffusion` work
-(PR #18). The only one of that brainstorm batch that shares no infrastructure —
-pure shader, no state — so it stands alone and is the cheapest to ship.
+**Status:** SOURCE SHIPPED — `marble` (grayscale iterated domain warp, scene
+`marble-slab`). The chainable **effect** face (warp an input's UVs by the same
+field, via `bufferPass`) remains the open item. Pure shader, no state — the
+cheapest of the brainstorm batch.
 
 ## The gap
 
@@ -17,12 +18,14 @@ existing module produces it.
 
 Ship `marble` in two faces off the same core warp function:
 
-- **as a `source`** — colour the final warp field through `ctx.palette.ramp`
-  (or `pickPalette`) for a self-contained marble/agate/oil-on-water backdrop.
-- **as a chainable `effect`** — warp an input's UVs by the iterated field.
-  Since an effect can't re-sample its input as a function of UV, it buffers the
-  input first via `bufferPass` (the `displace`/`glitch` reference pattern) and
-  samples `texture(rt.texture, warpedUv)`.
+- **as a `source`** ✅ SHIPPED — outputs the grayscale fold value; the scene
+  ramps it through `pickPalette` (so the marble palette is a live choice). Kept
+  grayscale rather than self-colouring so it composes with `colorize`/`paletteMap`.
+- **as a chainable `effect`** (still open) — warp an input's UVs by the iterated
+  field. Since an effect can't re-sample its input as a function of UV, it
+  buffers the input first via `bufferPass` (the `displace`/`glitch` reference
+  pattern) and samples `texture(rt.texture, warpedUv)`. Would need a distinct
+  module name (e.g. `marbleWarp`) since module names are unique in the catalog.
 
 Knobs: warp `octaves`, `scale`, `lacunarity`, per-level `warpAmount`, and a
 frame-clocked `evolve` (a third noise dimension via `ctx.uniformOf(ctx.time.now)`
