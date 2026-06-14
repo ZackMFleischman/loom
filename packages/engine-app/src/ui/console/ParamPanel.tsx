@@ -12,16 +12,20 @@ import { groupParams, splitRig } from "./param-groups";
 import { ParamWidget } from "./ParamWidget";
 
 // Each contiguous run of param widgets is a CSS grid with a shared label
-// column: `min(max-content, --label-max)` makes column 1 exactly as wide as the
-// widest label in THAT run, capped at the max (labels past the cap wrap inside
-// the column); column 2 (`1fr`) holds the control cluster, so every slider/
-// toggle/value lines up down the run. minmax(0,…) lets the capped label wrap
-// instead of overflowing. Per-run grids = per-section columns (FR-5): each
-// accordion / transform sub-group / the flat top run sizes independently.
+// column: `fit-content(--label-max)` makes column 1 exactly as wide as the
+// widest label in THAT run BUT CAPPED at the max — i.e. "max-content up to the
+// cap, then wrap". This is the load-bearing difference from `min(max-content,
+// <length>)`, which resolves as an intrinsic size and does NOT actually clamp:
+// at a wide panel it lets the column grow unbounded and long names stop
+// wrapping. `fit-content(120px)` truly holds the cap at any panel width so long
+// labels wrap inside the column. Column 2 (`1fr`) holds the control cluster, so
+// every slider/toggle/value lines up down the run. Per-run grids = per-section
+// columns (FR-5): each accordion / transform sub-group / the flat top run sizes
+// independently.
 const LABEL_MAX = "120px";
 const sectionGrid = {
   display: "grid",
-  gridTemplateColumns: `minmax(0, min(max-content, var(--label-max))) 1fr`,
+  gridTemplateColumns: `fit-content(var(--label-max)) 1fr`,
   columnGap: 1,
   rowGap: 0.75,
   alignItems: "center",

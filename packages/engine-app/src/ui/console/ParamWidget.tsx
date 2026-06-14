@@ -77,7 +77,6 @@ export function ParamWidget({ instance, path, p, label, dense, fill, grid, color
   const max = typeof p.max === "number" ? p.max : 1;
   // A plain slider (float or unlabelled int) has an editable range; toggles,
   // bools and colors don't.
-  const rangeable = (p.type === "float" || p.type === "int") && p.labels == null;
   const isSlider = (p.type === "float" || p.type === "int") && p.labels == null;
   const rangeOverridden = p.defaultRange != null;
   const openRange = (e: MouseEvent) => {
@@ -246,7 +245,7 @@ export function ParamWidget({ instance, path, p, label, dense, fill, grid, color
           {learning ? "···" : bindingsFor.length > 1 ? `cc×${bindingsFor.length}` : binding ? `cc${binding.cc}` : "M"}
         </Button>
         )}
-        {rangeable && (
+        {isSlider && (
           <IconButton
             size="small"
             data-range={path}
@@ -399,7 +398,7 @@ export function ParamWidget({ instance, path, p, label, dense, fill, grid, color
           onClose={() => setModAnchor(null)}
         />
       )}
-      {rangeable && (
+      {isSlider && (
         <RangePopover
           instance={instance}
           path={path}
