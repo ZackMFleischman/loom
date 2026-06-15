@@ -28,6 +28,11 @@ export interface AudioBusLike {
 export class AudioBus implements AudioBusLike {
   mode: AudioMode = "off";
 
+  /** Input monitoring: route the mic source to the speakers (R: hear the input). */
+  monitorEnabled = false;
+  monitorLevel = 0.8;
+  private monitorGain: GainNode | null = null;
+
   readonly rms = new Signal(() => this._rms);
 
   private audioCtx: AudioContext | null = null;
@@ -88,6 +93,7 @@ export class AudioBus implements AudioBusLike {
     const ctx = this.ensureContext();
     const src = ctx.createMediaStreamSource(this.micStream);
     src.connect(this.analyser!);
+    if (this.monitorGain) src.connect(this.monitorGain);
     this.sourceNodes.push(src);
     this.mode = "mic";
   }
@@ -153,6 +159,29 @@ export class AudioBus implements AudioBusLike {
     void this.audioCtx?.resume();
   }
 
+  /** Current effective monitor gain (0 when disabled). For tests/diagnostics. */
+  get monitorGainValue(): number {
+    return this.monitorGain?.gain.value ?? 0;
+  }
+
+  /**
+   * Toggle/level the input monitor. Effective gain is `enabled ? level : 0`, so
+   * the toggle and the level are independent — you can pre-set the level while
+   * muted, and flipping the toggle re-applies the stored level. Human-only path
+   * (Console); never an MCP tool. Mic mode only — the synthetic "test" graph is
+   * deliberately muted and never feeds the monitor.
+   */
+  setMonitor(opts: { enabled?: boolean; level?: number }): void {
+    if (opts.level !== undefined) {
+      this.monitorLevel = Math.max(0, Math.min(1, opts.level));
+    }
+    if (opts.enabled !== undefined) this.monitorEnabled = opts.enabled;
+    this.ensureContext();
+    if (this.monitorGain) {
+      this.monitorGain.gain.value = this.monitorEnabled ? this.monitorLevel : 0;
+    }
+  }
+
   async listInputDevices(): Promise<MediaDeviceInfo[]> {
     if (!navigator.mediaDevices?.enumerateDevices) return [];
     const devices = await navigator.mediaDevices.enumerateDevices();
@@ -186,6 +215,11 @@ export class AudioBus implements AudioBusLike {
       this.analyser.fftSize = 2048;
       this.analyser.smoothingTimeConstant = 0.5;
       this.bins = new Uint8Array(this.analyser.frequencyBinCount);
+      // Persistent monitor tap: lives for the context's life so it survives
+      // source swaps. Starts at the current effective gain (0 when off).
+      this.monitorGain = this.audioCtx.createGain();
+      this.monitorGain.gain.value = this.monitorEnabled ? this.monitorLevel : 0;
+      this.monitorGain.connect(this.audioCtx.destination);
     }
     void this.audioCtx.resume();
     return this.audioCtx;
