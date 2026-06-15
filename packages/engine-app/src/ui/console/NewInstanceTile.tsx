@@ -222,9 +222,7 @@ export function NewInstanceTile({ scenes, onCreated, onPreviewSpawn, onPreviewAd
           <Box
             sx={{
               p: 1,
-              position: "sticky",
-              top: 0,
-              zIndex: 1,
+              flexShrink: 0,
               bgcolor: "background.paper",
               borderBottom: 1,
               borderColor: "divider",
@@ -257,8 +255,12 @@ export function NewInstanceTile({ scenes, onCreated, onPreviewSpawn, onPreviewAd
               sx={{
                 display: "grid",
                 gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+                alignItems: "start",
+                alignContent: "start",
                 gap: 1,
                 p: 1,
+                flex: 1,
+                minHeight: 0,
                 overflowY: "auto",
               }}
             >
@@ -281,20 +283,38 @@ export function NewInstanceTile({ scenes, onCreated, onPreviewSpawn, onPreviewAd
                       borderColor: active ? "primary.main" : "divider",
                     }}
                   >
-                    <Box sx={{ width: "100%", aspectRatio: "16/9", bgcolor: "#000" }}>
-                      {card != null && (
-                        <Box
-                          component="img"
-                          src={card}
-                          alt=""
-                          sx={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-                        />
-                      )}
-                    </Box>
+                    {card != null ? (
+                      <Box
+                        component="img"
+                        src={card}
+                        alt=""
+                        sx={{
+                          width: "100%",
+                          aspectRatio: "16/9",
+                          objectFit: "cover",
+                          display: "block",
+                          bgcolor: "#000",
+                        }}
+                      />
+                    ) : (
+                      <Box
+                        sx={{
+                          width: "100%",
+                          aspectRatio: "16/9",
+                          bgcolor: "#000",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          color: "text.disabled",
+                        }}
+                      >
+                        <Typography variant="caption">no preview yet</Typography>
+                      </Box>
+                    )}
                     <Typography
                       variant="caption"
                       noWrap
-                      sx={{ display: "block", px: 0.75, py: 0.25, color: active ? "primary.main" : "text.primary" }}
+                      sx={{ display: "block", px: 0.75, py: 0.5, color: active ? "primary.main" : "text.primary" }}
                     >
                       {scene}
                     </Typography>
