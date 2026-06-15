@@ -146,7 +146,10 @@ export const tornado = defineModule(
       const sw = swirl.get(f);
       const ri = rise.get(f);
       const sg = Math.max(0, surge.get(f));
-      const spin = sw * (1 + sg * 1.5);
+      // Steady rotation = the bare swirl (the hippos ride this exact law, so a
+      // kick must NOT speed the spin or they'd tear apart). Surge only flares
+      // the radial scatter + size below.
+      const spin = sw;
       const yBottom = -H * 0.5;
 
       for (let s = 0; s < species.length; s++) {

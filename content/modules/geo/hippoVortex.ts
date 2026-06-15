@@ -32,12 +32,12 @@ export interface HippoVortexOpts {
   radius?: SignalLike;
   /** Vertical span the herd spirals through. */
   height?: SignalLike;
-  /** Orbit angular speed (rad/s baseline; each slot scatters around it). */
-  speed?: SignalLike;
+  /** Shared vortex spin — feed the SAME signal as the tornado's swirl. Hippos
+   *  ride the same height-shear law as the debris, so they orbit locked to it
+   *  (and one knob drives the whole storm's rotation). */
+  swirl?: SignalLike;
   /** Vertical climb speed — hippos rise and recycle through the column. */
   rise?: SignalLike;
-  /** Self Y-spin for the 3D models (rad/s). */
-  spin?: SignalLike;
   /** Overall hippo size multiplier. */
   size?: SignalLike;
   /** Seed for the deterministic per-slot scatter (fixture-safe). */
@@ -76,11 +76,9 @@ function normalizeMaterials(object: Object3D): void {
 interface Slot {
   group: Group; // positioned on the orbit each frame; gated by visibility
   model: boolean; // 3D clone vs 2D billboard sprite
-  baseAngle: number;
+  baseAngle: number; // angular offset around the axis (spread only — no speed scatter)
   radFrac: number; // 0.6..1.1 radial band
   hPhase: number; // height phase 0..1
-  speedMul: number; // per-slot orbit-speed scatter
-  spinRate: number; // self-spin (models)
   scaleVar: number; // per-slot size scatter
 }
 
@@ -107,9 +105,8 @@ export const hippoVortex = defineModule(
     const count = asSignal(opts.count ?? 16);
     const radius = asSignal(opts.radius ?? 1.3);
     const height = asSignal(opts.height ?? 2.4);
-    const speed = asSignal(opts.speed ?? 0.5);
+    const swirl = asSignal(opts.swirl ?? 0.7);
     const rise = asSignal(opts.rise ?? 0.12);
-    const spin = asSignal(opts.spin ?? 0.6);
     const size = asSignal(opts.size ?? 0.6);
     const modelRatio = Math.max(0, Math.min(1, opts.modelRatio ?? 0.4));
     const rand = mulberry32(opts.seed ?? 0x4170a5);
@@ -126,8 +123,6 @@ export const hippoVortex = defineModule(
         baseAngle: rand() * Math.PI * 2,
         radFrac: 0.6 + rand() * 0.5,
         hPhase: rand(),
-        speedMul: 0.7 + rand() * 0.6,
-        spinRate: (0.5 + rand() * 0.8) * (rand() < 0.5 ? -1 : 1),
         scaleVar: 0.65 + rand() * 0.8,
       });
     }
@@ -183,9 +178,8 @@ export const hippoVortex = defineModule(
       const visible = Math.max(0, Math.min(max, Math.round(count.get(f))));
       const R = Math.max(0.05, radius.get(f));
       const H = Math.max(0.2, height.get(f));
-      const sp = speed.get(f);
+      const sw = swirl.get(f);
       const ri = rise.get(f);
-      const selfSpin = spin.get(f);
       const sz = Math.max(0.01, size.get(f));
       const yBottom = -H * 0.5;
 
@@ -196,15 +190,19 @@ export const hippoVortex = defineModule(
         if (!on) continue;
         let h = slot.hPhase + t * ri;
         h -= Math.floor(h); // climb + recycle
-        const ang = slot.baseAngle + t * sp * slot.speedMul;
+        // Same height-shear as the tornado's debris: the base whips faster than
+        // the mouth. A hippo and the debris at its height share one angular
+        // velocity → they orbit locked together, no per-slot speed scatter.
+        const shear = 0.5 + 1.0 / (0.25 + h);
+        const ang = slot.baseAngle + t * sw * shear;
         const r = R * slot.radFrac * (0.55 + 0.45 * h); // spiral outward as they rise
         const y = yBottom + h * H + Math.sin(t * 1.3 + i) * 0.05;
         slot.group.position.set(Math.cos(ang) * r, y, Math.sin(ang) * r);
         const scale = sz * slot.scaleVar;
         slot.group.scale.setScalar(scale);
         if (slot.model) {
-          // Face the direction of travel (tangent) plus a slow self-spin.
-          slot.group.rotation.y = -ang + Math.PI * 0.5 + t * selfSpin * slot.spinRate;
+          // Face the direction of travel (tangent).
+          slot.group.rotation.y = -ang + Math.PI * 0.5;
         }
       }
     });

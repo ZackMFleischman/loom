@@ -35,7 +35,7 @@ export default defineScene({
     const height = ctx.float("funnel.height", { default: 2.6, min: 0.5, max: 6, description: "funnel height (world units)" });
     const topR = ctx.float("funnel.topRadius", { default: 1.1, min: 0.1, max: 3, description: "radius at the wide mouth" });
     const baseR = ctx.float("funnel.baseRadius", { default: 0.12, min: 0, max: 1.5, description: "radius at the narrow base" });
-    const swirl = ctx.float("funnel.swirl", { default: 1.1, min: 0, max: 4, description: "vortex spin speed" });
+    const spinSpeed = ctx.float("spin.speed", { default: 0.7, min: -3, max: 3, description: "vortex spin speed — the debris AND the hippos rotate together" });
     const rise = ctx.float("funnel.rise", { default: 0.2, min: 0, max: 1, description: "how fast particles climb + recycle" });
     const surge = ctx.float("funnel.surge", { default: 1.4, min: 0, max: 4, description: "how hard the kick flares the storm" });
 
@@ -47,8 +47,6 @@ export default defineScene({
     // --- Hippos ---
     const hippoCount = ctx.float("hippos.count", { default: 18, min: 0, max: MAX_HIPPOS, step: 1, description: "how many hippos swirl in the storm" });
     const hippoSize = ctx.float("hippos.size", { default: 0.6, min: 0.1, max: 2, description: "hippo size" });
-    const hippoSpin = ctx.float("hippos.spin", { default: 0.6, min: -4, max: 4, description: "3D hippo self-spin (rad/s)" });
-    const orbitSpeed = ctx.float("orbit.speed", { default: 0.5, min: -3, max: 3, description: "how fast the herd orbits the funnel" });
     const orbitRadius = ctx.float("orbit.radius", { default: 1.4, min: 0.2, max: 4, description: "herd orbit radius" });
     const orbitRise = ctx.float("orbit.rise", { default: 0.13, min: 0, max: 1, description: "how fast hippos climb + recycle" });
 
@@ -68,14 +66,17 @@ export default defineScene({
     const bass = ctx.input("bass");
     const surgeS = surge.signal();
     const punchS = punch.signal();
-    const swirlS = swirl.signal();
+    // One spin law for the whole storm: the debris and the hippos read off this
+    // exact signal (bass swells it), so the herd stays locked to the funnel.
+    const spinS = spinSpeed.signal();
+    const vortexSpin = new Signal((f) => spinS.get(f) * (1 + bass.get(f) * 0.6));
 
     // The vortex of debris.
     const funnel = tornado(ctx, {
       height: height.signal(),
       topRadius: topR.signal(),
       baseRadius: baseR.signal(),
-      swirl: new Signal((f) => swirlS.get(f) * (1 + bass.get(f) * 0.8)),
+      swirl: vortexSpin,
       rise: rise.signal(),
       surge: new Signal((f) => kick.get(f) * surgeS.get(f)),
       dustSize: dustSize.signal(),
@@ -92,9 +93,8 @@ export default defineScene({
       modelRatio: 0.4,
       radius: orbitRadius.signal(),
       height: height.signal(),
-      speed: new Signal((f) => orbitSpeed.signal().get(f) * (1 + bass.get(f) * 0.5)),
+      swirl: vortexSpin,
       rise: orbitRise.signal(),
-      spin: hippoSpin.signal(),
       size: hippoSize.signal(),
     });
 
