@@ -4,7 +4,7 @@ import {
 import { modBindingPath } from "@loom/runtime";
 import { useEffect, useState, type ReactNode } from "react";
 import type { ParamDesc } from "../engine-link";
-import { useEngine, useEngineState } from "../hooks";
+import { useControls, useEngine } from "../hooks";
 import { MOD_TYPES } from "../mod-types";
 import { fail, primeMidiPermission } from "../util";
 
@@ -30,7 +30,9 @@ type Props = {
 /** Attach/update/pause/retrigger/detach a modulator on one param. */
 export function ModPopover({ instance, path, p, anchorEl, onClose }: Props) {
   const link = useEngine();
-  const { session } = useEngineState();
+  // FR-1: narrow controls slice, not the full 10 Hz snapshot — one ModPopover is
+  // mounted per modulatable param, so the snapshot subscription doubled the storm.
+  const controls = useControls();
   const isBool = p.type === "bool";
   const types = MOD_TYPES.filter((d) => !isBool || d.bool);
   const min = typeof p.min === "number" ? p.min : 0;
@@ -43,21 +45,18 @@ export function ModPopover({ instance, path, p, anchorEl, onClose }: Props) {
   // "mod:<path>" namespace (cycle = flip per press), keyed by scene like
   // any param binding.
   const modPath = modBindingPath(path);
-  const scene =
-    instance === "globals"
-      ? "globals"
-      : (session?.instances.find((i) => i.id === instance)?.scene ?? null);
+  const scene = instance === "globals" ? "globals" : (controls.scenes[instance] ?? null);
   const modBinding =
     scene != null
-      ? (session?.bindings.find((b) => b.scene === scene && b.path === modPath) ?? null)
+      ? (controls.bindings.find((b) => b.scene === scene && b.path === modPath) ?? null)
       : null;
   const modLearning =
     scene != null &&
-    session?.midi.learning != null &&
-    session.midi.learning.scene === scene &&
-    session.midi.learning.path === modPath;
+    controls.midi.learning != null &&
+    controls.midi.learning.scene === scene &&
+    controls.midi.learning.path === modPath;
   const onLearnToggle = () => {
-    if (session?.midi.status !== "ready") primeMidiPermission();
+    if (controls.midi.status !== "ready") primeMidiPermission();
     const action = modBinding != null && !modLearning ? "midi_unbind" : "midi_learn";
     void link.req(action, { instance, path: modPath, mode: "cycle" }).catch(fail);
   };

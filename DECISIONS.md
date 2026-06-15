@@ -1855,3 +1855,40 @@ of scope. (Spec: `feature-requests/content-sharing-marketplace.md`; one-pager:
   (WebGL2 fallback — headless has no WebGPU). `search_content` driven end-to-end
   over MCP returns ranked entries with install hints. Deferred to Phase 2: hosted
   index API, account ratings + active moderation, Console browse panel, payments.
+
+## 2026-06-15 — Console param-panel re-render storm (FR-1 leaf fix, SHIPPED)
+
+Reported: selecting/tweaking an instance's params dropped the Console to ~4 fps and
+left the UI sluggish. The 2026-06-14 FR-1 work narrowed `ConsoleApp`/`Tile`/
+`ParamPanel` off the full snapshot, but the **leaves still subscribed to the
+10 Hz `useEngineState()` snapshot** — defeating the whole effort once a param panel
+was open:
+
+- **`ParamWidget` (one per param) and `ModPopover` (one per *modulatable* param,
+  mounted inside every widget's popovers) both called `useEngineState()`** — the
+  monolithic snapshot whose identity changes every state tick. An open panel of N
+  params meant ~2N full-snapshot subscribers all re-rendering heavy MUI 10×/s, even
+  at idle. `FxChain` did the same.
+- **`ParamPanel` read the full instance slice (`useInstance`)**, which churns every
+  tick on quantized `frameMs`/`slowSignals` telemetry — re-rendering the panel and
+  cascading into every (un-memoized) child widget regardless of the leaf fix.
+
+Fix — two more narrow selector stores in `EngineLink`, same identity-preserving
+JSON-compare pattern as the rest (FR-1):
+
+- **`controls` slice** = the rarely-changing session fields the param/FX surfaces
+  read (`bindings`, `midi`, `availableEffects`, + an id→scene map for binding
+  lookup). `ParamWidget`/`ModPopover`/`FxChain` read `useControls()` instead of the
+  snapshot, so they wake only on a real binding/MIDI/effect change — never the frame
+  tick. Scene resolution moved from `session.instances.find(...)` to `controls.scenes`.
+- **`structure` slice** = one instance's `scene`/`nodes`/`chain` with telemetry
+  EXCLUDED. `ParamPanel` + `FxChain` read `useStructure(id)`, so the panel re-renders
+  on a chain/node edit, not the per-tick `frameMs` wiggle. `FxChain`'s other-instance
+  picker reads `useInstanceIds()` (it only needs ids).
+
+DOM contract and the `link.sendParam` write path are unchanged (`data-path`/
+`data-learn`/`data-value` intact). Gates: `pnpm typecheck` green; `pnpm test` green
+(159 engine-app incl. 2 new engine-link store tests asserting the structure/controls
+slices ignore frame churn and wake on chain/binding edits; 543 + 41 elsewhere).
+Playwright Console validators (m3/m5) couldn't run here — the browser CDN is blocked
+by the env's network policy (binary not installed), not a code issue.

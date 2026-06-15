@@ -370,6 +370,58 @@ describe("EngineLink", () => {
       expect(link.tile("a-1")?.frameMs).toBe(1.4);
     });
 
+    it("isolates the structure slice from telemetry churn, wakes on a chain/node edit", () => {
+      const withChain = (id: string, frameMs: number, chain: unknown[] = []) =>
+        ({
+          id,
+          scene: id.split("-")[0],
+          status: "ok",
+          error: null,
+          frameMs,
+          slowSignals: [],
+          nodes: [],
+          chain,
+          builds: 1,
+          pinned: null,
+        }) as never;
+      engine.postMessage({ kind: "state", session: sess({}, [withChain("a-1", 1)]), manifests: {} });
+      const struct0 = link.structure("a-1");
+      const onStruct = vi.fn();
+      link.subscribeStructure("a-1")(onStruct);
+      // Only frameMs moved — ParamPanel/FxChain read structure, not telemetry → no wake.
+      engine.postMessage({ kind: "state", session: sess({ frame: 2 }, [withChain("a-1", 99)]), manifests: {} });
+      expect(onStruct).not.toHaveBeenCalled();
+      expect(link.structure("a-1")).toBe(struct0);
+      // A real chain edit DOES wake it.
+      engine.postMessage({
+        kind: "state",
+        session: sess({ frame: 3 }, [withChain("a-1", 99, [{ id: "s1", effect: "glitch" }])]),
+        manifests: {},
+      });
+      expect(onStruct).toHaveBeenCalledTimes(1);
+      expect(link.structure("a-1")?.chain).toEqual([{ id: "s1", effect: "glitch" }]);
+    });
+
+    it("isolates the controls slice from frame churn, wakes on a binding/effect change", () => {
+      engine.postMessage({ kind: "state", session: sess(), manifests: {} });
+      const controls0 = link.controls();
+      expect(controls0.scenes).toEqual({ "a-1": "a", "b-1": "b" });
+      const onControls = vi.fn();
+      link.subscribeControls(onControls);
+      // A bare frame bump churns sessionMeta but not bindings/midi/effects → no wake.
+      engine.postMessage({ kind: "state", session: sess({ frame: 2 }), manifests: {} });
+      expect(onControls).not.toHaveBeenCalled();
+      expect(link.controls()).toBe(controls0);
+      // A new MIDI binding DOES wake the param widgets that read it.
+      engine.postMessage({
+        kind: "state",
+        session: sess({ frame: 3, bindings: [{ cc: 1, ch: null, scene: "a", path: "speed", mode: "absolute" }] }),
+        manifests: {},
+      });
+      expect(onControls).toHaveBeenCalledTimes(1);
+      expect(link.controls().bindings).toHaveLength(1);
+    });
+
     it("wakes only the instance whose slice changed, not the others", () => {
       engine.postMessage({ kind: "state", session: sess(), manifests: {} });
       const onA = vi.fn();

@@ -1,6 +1,6 @@
 import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Stack, Typography } from "@mui/material";
 import { memo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { useEngine, useInstance, useManifest, useStagePointers } from "../hooks";
+import { useEngine, useManifest, useStagePointers, useStructure } from "../hooks";
 import { countRender, fail } from "../util";
 import { toggleAdvanced as toggleAdvancedStore, useAdvanced } from "./advanced-store";
 import { gatherChannels } from "./ColorChannels";
@@ -59,7 +59,9 @@ function ParamPanelImpl({ instance }: Props) {
   countRender("ParamPanel");
   const link = useEngine();
   const manifest = useManifest(instance);
-  const inst = useInstance(instance ?? "");
+  // Structure slice (scene/nodes — no telemetry) so the panel doesn't re-render
+  // (and cascade into every ParamWidget) on the per-tick frameMs wiggle (FR-1).
+  const inst = useStructure(instance);
   const pointers = useStagePointers();
   const [open, setOpen] = useState<Record<string, boolean>>(loadOpen);
   // Shared with the `a` hotkey (keyboard-shortcuts FR-4) via the advanced-store.

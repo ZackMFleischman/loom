@@ -1,9 +1,11 @@
 import type { ReactElement, ReactNode } from "react";
 import type { PreviewFrame, SessionSnapshot } from "@loom/sidecar/protocol";
 import type {
+  ControlsSlice,
   EngineLink,
   EngineSnapshot,
   InstanceSlice,
+  InstanceStructure,
   Manifests,
   ParamDesc,
   SessionMeta,
@@ -36,6 +38,15 @@ export class FakeEngineLink {
   private readonly instanceListeners = new Map<string, Set<() => void>>();
   private readonly manifestSlices = new Map<string, Record<string, ParamDesc>>();
   private readonly manifestListeners = new Map<string, Set<() => void>>();
+  private readonly structureSlices = new Map<string, InstanceStructure>();
+  private readonly structureListeners = new Map<string, Set<() => void>>();
+  private controlsSlice: ControlsSlice = {
+    bindings: [],
+    midi: { status: "off", devices: [], learning: null, recent: [] },
+    availableEffects: [],
+    scenes: {},
+  };
+  private readonly controlsListeners = new Set<() => void>();
   private instanceIdsList: string[] = [];
   private readonly idsListeners = new Set<() => void>();
   private sessionMeta: SessionMeta | null = null;
@@ -120,6 +131,20 @@ export class FakeEngineLink {
       return () => void set.delete(fn);
     };
   manifest = (id: string): Record<string, ParamDesc> | undefined => this.manifestSlices.get(id);
+  subscribeStructure =
+    (id: string) =>
+    (fn: () => void): (() => void) => {
+      const set = this.structureListeners.get(id) ?? new Set();
+      this.structureListeners.set(id, set);
+      set.add(fn);
+      return () => void set.delete(fn);
+    };
+  structure = (id: string): InstanceStructure | undefined => this.structureSlices.get(id);
+  subscribeControls = (fn: () => void): (() => void) => {
+    this.controlsListeners.add(fn);
+    return () => void this.controlsListeners.delete(fn);
+  };
+  controls = (): ControlsSlice => this.controlsSlice;
   subscribeInstanceIds = (fn: () => void): (() => void) => {
     this.idsListeners.add(fn);
     return () => void this.idsListeners.delete(fn);
@@ -191,6 +216,16 @@ export class FakeEngineLink {
   pushTile(slice: TileSlice): void {
     this.tileSlices.set(slice.id, slice);
     for (const fn of this.tileListeners.get(slice.id) ?? []) fn();
+  }
+  /** Drive an instance's structure slice (scene/nodes/chain) and wake subscribers. */
+  pushStructure(slice: InstanceStructure): void {
+    this.structureSlices.set(slice.id, slice);
+    for (const fn of this.structureListeners.get(slice.id) ?? []) fn();
+  }
+  /** Drive the controls slice (bindings/midi/effects/scene-map) and wake subscribers. */
+  pushControls(slice: ControlsSlice): void {
+    this.controlsSlice = slice;
+    for (const fn of this.controlsListeners) fn();
   }
   pushPreview(frame: PreviewFrame | null): void {
     this.previewFrame = frame;
