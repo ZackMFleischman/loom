@@ -48,6 +48,148 @@ type Props = {
 };
 
 /**
+ * One sortable step card; hands its drag-handle props to the children so only the
+ * ⠿ grip starts a drag. MUST live at module scope (not inside FxChain): a
+ * component defined in the render body gets a new identity every render, so React
+ * would unmount/remount the whole card subtree on each FxChain re-render — losing
+ * the dnd-kit registration, thrashing perf, and eating in-flight clicks on the
+ * ✕/enable controls. Hoisted, the card reconciles in place and stays interactive.
+ */
+function SortableStep({
+  id,
+  dim,
+  children,
+}: {
+  id: string;
+  dim: boolean;
+  children: (handleProps: Record<string, unknown>) => ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  return (
+    <Box
+      data-fxstep={id}
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      sx={{
+        border: 1,
+        borderColor: isDragging ? "primary.main" : "divider",
+        borderRadius: 1,
+        p: 0.75,
+        mb: 0.25,
+        bgcolor: "background.default",
+        opacity: isDragging ? 0.8 : dim ? 0.55 : 1,
+        position: "relative",
+        zIndex: isDragging ? 2 : undefined,
+      }}
+    >
+      {children({ ...attributes, ...listeners })}
+    </Box>
+  );
+}
+
+/**
+ * One declared input slot's source-picker row (multi-input chain steps). The human
+ * picks where this slot reads its TexNode: another live instance, or an EARLIER
+ * step in this chain (forward/self refs are rejected by the engine). A bound source
+ * that no longer resolves is shown but the engine rejects the build, keeping prior
+ * pixels (NFR-5) — the error surfaces inline above. Module-scope for the same
+ * reason as {@link SortableStep}: a render-body component remounts every render.
+ */
+function InputSlotRow({
+  instance,
+  instanceIds,
+  chain,
+  setInput,
+  stepId,
+  stepIndex,
+  slot,
+  label,
+  ref,
+}: {
+  instance: string;
+  instanceIds: string[];
+  chain: ChainStepInfo[];
+  setInput: (id: string, slot: string, ref: SourceRefSchema | null) => void;
+  stepId: string;
+  stepIndex: number;
+  slot: string;
+  label: string;
+  ref: SourceRefSchema | undefined;
+}) {
+  // Selectable instances: every live tile except this one (self-tap = feedback,
+  // rejected by the engine; we omit it from the picker).
+  const instances = instanceIds.filter((id) => id !== instance).map((id) => ({ id }));
+  // Selectable earlier steps: those before this one in the chain (DAG ordering).
+  const earlier = chain.slice(0, stepIndex);
+  const value = ref == null ? "" : "instance" in ref ? `instance:${ref.instance}` : "step" in ref ? `step:${ref.step}` : "asset";
+  const onPick = (v: string) => {
+    if (v === "") return setInput(stepId, slot, null);
+    const [kind, ...rest] = v.split(":");
+    const id = rest.join(":");
+    if (kind === "instance") setInput(stepId, slot, { instance: id });
+    else if (kind === "step") setInput(stepId, slot, { step: id });
+  };
+  const unresolved =
+    ref != null &&
+    (("instance" in ref && !instances.some((i) => i.id === ref.instance)) ||
+      ("step" in ref && !earlier.some((s) => s.id === ref.step)) ||
+      "asset" in ref);
+  return (
+    <Stack
+      data-fxinput={`${stepId}.${slot}`}
+      direction="row"
+      alignItems="center"
+      spacing={0.5}
+      sx={{ mt: 0.25 }}
+    >
+      <Typography variant="caption" sx={{ color: "text.secondary", minWidth: 52 }} noWrap title={label}>
+        {slot}
+      </Typography>
+      <Box
+        component="select"
+        data-fxinput-select={`${stepId}.${slot}`}
+        value={value}
+        onChange={(e: { target: { value: string } }) => onPick(e.target.value)}
+        sx={{
+          flex: 1,
+          minWidth: 0,
+          fontSize: 11,
+          bgcolor: "background.default",
+          color: unresolved ? "error.main" : "text.primary",
+          border: 1,
+          borderColor: unresolved ? "error.main" : "divider",
+          borderRadius: 0.5,
+          py: 0.25,
+        }}
+      >
+        <option value="">— pick source —</option>
+        {instances.length > 0 && (
+          <optgroup label="instance">
+            {instances.map((i) => (
+              <option key={i.id} value={`instance:${i.id}`}>
+                {i.id}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {earlier.length > 0 && (
+          <optgroup label="earlier step">
+            {earlier.map((s) => (
+              <option key={s.id} value={`step:${s.id}`}>
+                {s.effect} ({s.id})
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {/* A persisted asset source (M10, not yet wired) renders as an inert,
+            clearly-broken option so it's visible but never silently dropped. */}
+        {ref != null && "asset" in ref && <option value="asset">asset (M10 — not wired)</option>}
+      </Box>
+    </Stack>
+  );
+}
+
+/**
  * The per-instance post-effect chain (M6): ordered step cards (source→output),
  * each with a wet/dry mix you can ride or MIDI-bind, drag-to-reorder, insertion
  * points between steps, a "+ effect" picker fed by the library (code primitives
@@ -162,133 +304,6 @@ export function FxChain({ instance, manifest, node }: Props) {
       })
       .catch((e: Error) => setErr(e.message));
   };
-
-  // One sortable step card; hands its drag-handle props to the children so
-  // only the ⠿ grip starts a drag.
-  function SortableStep({
-    id,
-    dim,
-    children,
-  }: {
-    id: string;
-    dim: boolean;
-    children: (handleProps: Record<string, unknown>) => ReactNode;
-  }) {
-    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-      id,
-    });
-    return (
-      <Box
-        data-fxstep={id}
-        ref={setNodeRef}
-        style={{ transform: CSS.Transform.toString(transform), transition }}
-        sx={{
-          border: 1,
-          borderColor: isDragging ? "primary.main" : "divider",
-          borderRadius: 1,
-          p: 0.75,
-          mb: 0.25,
-          bgcolor: "background.default",
-          opacity: isDragging ? 0.8 : dim ? 0.55 : 1,
-          position: "relative",
-          zIndex: isDragging ? 2 : undefined,
-        }}
-      >
-        {children({ ...attributes, ...listeners })}
-      </Box>
-    );
-  }
-
-  // One declared input slot's source-picker row (multi-input chain steps). The
-  // human picks where this slot reads its TexNode: another live instance, or an
-  // EARLIER step in this chain (forward/self refs are rejected by the engine).
-  // A bound source that no longer resolves is shown but the engine rejects the
-  // build, keeping prior pixels (NFR-5) — the error surfaces inline above.
-  function InputSlotRow({
-    stepId,
-    stepIndex,
-    slot,
-    label,
-    ref,
-  }: {
-    stepId: string;
-    stepIndex: number;
-    slot: string;
-    label: string;
-    ref: SourceRefSchema | undefined;
-  }) {
-    // Selectable instances: every live tile except this one (self-tap = feedback,
-    // rejected by the engine; we omit it from the picker).
-    const instances = instanceIds.filter((id) => id !== instance).map((id) => ({ id }));
-    // Selectable earlier steps: those before this one in the chain (DAG ordering).
-    const earlier = chain.slice(0, stepIndex);
-    const value = ref == null ? "" : "instance" in ref ? `instance:${ref.instance}` : "step" in ref ? `step:${ref.step}` : "asset";
-    const onPick = (v: string) => {
-      if (v === "") return setInput(stepId, slot, null);
-      const [kind, ...rest] = v.split(":");
-      const id = rest.join(":");
-      if (kind === "instance") setInput(stepId, slot, { instance: id });
-      else if (kind === "step") setInput(stepId, slot, { step: id });
-    };
-    const unresolved =
-      ref != null &&
-      (("instance" in ref && !instances.some((i) => i.id === ref.instance)) ||
-        ("step" in ref && !earlier.some((s) => s.id === ref.step)) ||
-        "asset" in ref);
-    return (
-      <Stack
-        data-fxinput={`${stepId}.${slot}`}
-        direction="row"
-        alignItems="center"
-        spacing={0.5}
-        sx={{ mt: 0.25 }}
-      >
-        <Typography variant="caption" sx={{ color: "text.secondary", minWidth: 52 }} noWrap title={label}>
-          {slot}
-        </Typography>
-        <Box
-          component="select"
-          data-fxinput-select={`${stepId}.${slot}`}
-          value={value}
-          onChange={(e: { target: { value: string } }) => onPick(e.target.value)}
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            fontSize: 11,
-            bgcolor: "background.default",
-            color: unresolved ? "error.main" : "text.primary",
-            border: 1,
-            borderColor: unresolved ? "error.main" : "divider",
-            borderRadius: 0.5,
-            py: 0.25,
-          }}
-        >
-          <option value="">— pick source —</option>
-          {instances.length > 0 && (
-            <optgroup label="instance">
-              {instances.map((i) => (
-                <option key={i.id} value={`instance:${i.id}`}>
-                  {i.id}
-                </option>
-              ))}
-            </optgroup>
-          )}
-          {earlier.length > 0 && (
-            <optgroup label="earlier step">
-              {earlier.map((s) => (
-                <option key={s.id} value={`step:${s.id}`}>
-                  {s.effect} ({s.id})
-                </option>
-              ))}
-            </optgroup>
-          )}
-          {/* A persisted asset source (M10, not yet wired) renders as an inert,
-              clearly-broken option so it's visible but never silently dropped. */}
-          {ref != null && "asset" in ref && <option value="asset">asset (M10 — not wired)</option>}
-        </Box>
-      </Stack>
-    );
-  }
 
   // A thin insertion affordance between/around cards.
   const inserter = (index: number) => (
@@ -431,6 +446,10 @@ export function FxChain({ instance, manifest, node }: Props) {
                   {(slotsByEffect.get(step.effect) ?? []).map((cs) => (
                     <InputSlotRow
                       key={cs.name}
+                      instance={instance}
+                      instanceIds={instanceIds}
+                      chain={chain}
+                      setInput={setInput}
                       stepId={step.id}
                       stepIndex={i}
                       slot={cs.name}

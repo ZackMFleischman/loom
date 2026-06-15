@@ -86,6 +86,8 @@ import { flowParticles } from "../modules/geo/flowParticles";
 import { model } from "../modules/geo/model";
 import { orbitCam } from "../modules/geo/orbitCam";
 import { particleEmitter } from "../modules/geo/particleEmitter";
+import { tornado } from "../modules/geo/tornado";
+import { hippoVortex } from "../modules/geo/hippoVortex";
 import { sphere } from "../modules/geo/sphere";
 import { strangeAttractor } from "../modules/geo/strangeAttractor";
 import { torus } from "../modules/geo/torus";
@@ -93,6 +95,7 @@ import { render3d } from "../modules/sources/render3d";
 import { lineRibbon } from "../modules/geo/lineRibbon";
 import { differentialGrowth } from "../modules/geo/differentialGrowth";
 import { lsystem } from "../modules/geo/lsystem";
+import { flowerField } from "../modules/geo/flowerField";
 import { Vector3 } from "three/webgpu";
 import { blackInput, makeCtx, markerInput, type DiscoveredModule, type Harness } from "./harness";
 
@@ -185,6 +188,9 @@ export const CASES: Record<string, ModuleCase> = {
   differentialGrowth: (ctx) =>
     differentialGrowth(ctx, { startNodes: 16, maxNodes: 200, repel: ctx.input("bass"), growth: ctx.input("kick") }),
   lsystem: (ctx) => lsystem(ctx, { preset: "plant", iterations: 3, angle: ctx.input("bass"), reveal: ctx.input("kick") }),
+  flowerField: (ctx) => flowerField(ctx, { cols: 3, rows: 2, rate: 0.2, wind: ctx.input("bass") }),
+  tornado: (ctx) => tornado(ctx, { dust: 120, spark: 40, debris: 24, surge: ctx.input("kick") }),
+  hippoVortex: (ctx) => hippoVortex(ctx, { url: CUBE, spriteUrls: [CUBE], maxCount: 8, count: 4 }),
   // effects
   colorize: (ctx, input) => colorize(ctx, { input }),
   feedback: (ctx, input) => feedback(ctx, { input }),

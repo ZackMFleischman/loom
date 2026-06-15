@@ -1,4 +1,4 @@
-import { defineScene, Signal } from "@loom/runtime";
+import { defineScene, Signal, lagSignal } from "@loom/runtime";
 import { mandelbulb } from "../modules/sources/mandelbulb";
 import { bloom } from "../modules/effects/bloom";
 import { vignette } from "../modules/effects/vignette";
@@ -32,6 +32,8 @@ export default defineScene({
     const light = ctx.float("look.light", { default: 1, min: 0.2, max: 2.5, description: "key-light intensity" });
     const fog = ctx.float("look.fog", { default: 1, min: 0.2, max: 3, description: "depth haze / falloff" });
     const punch = ctx.float("punch", { default: 1, min: 0, max: 3, description: "kick → light/glow/dive reactivity" });
+    const smooth = ctx.float("dive.smooth", { default: 0.2, min: 0, max: 0.6, description: "kick→dive smoothing (s) — higher = less twitchy dolly" });
+    const breatheAmt = ctx.float("form.breathe", { default: 0.5, min: 0, max: 2, description: "bass→power breathe depth — how much the low end winds the form (0 = none)" });
     const bloomAmt = ctx.float("look.bloom", { default: 0.45, min: 0, max: 2, description: "highlight bloom intensity" });
     const vig = ctx.float("look.vignette", { default: 0.6, min: 0, max: 1, description: "corner darkening" });
 
@@ -45,11 +47,23 @@ export default defineScene({
     const bass = ctx.input("bass");
     const punchS = punch.signal();
 
+    // `power` scales the fractal's angular winding (theta/phi ·power in the DE),
+    // so any fast change to it reads as the whole form rotating back and forth.
+    // The bass therefore drives power through a HEAVY smoother (≥0.5s, plus the
+    // dive.smooth knob) at a gentle depth — a slow swell with the low end, never a
+    // per-beat twist. The dive lurch is smoothed by dive.smooth alone. The
+    // light/glow flash stays on the raw kick so the beat still hits visibly.
+    const smoothS = smooth.signal();
+    const kickMotion = lagSignal(kick, smoothS);
+    const breatheTau = new Signal((f) => 0.5 + smoothS.get(f) * 2);
+    const bassBreath = lagSignal(bass, breatheTau);
+    const breatheS = breatheAmt.signal();
+
     // Combine param bases with the live channels into the module's Signals.
-    const powerSig = new Signal((f) => power.signal().get(f) + bass.get(f) * 1.6);
+    const powerSig = new Signal((f) => power.signal().get(f) + bassBreath.get(f) * breatheS.get(f));
     const lightSig = new Signal((f) => light.signal().get(f) + kick.get(f) * punchS.get(f));
     const glowSig = new Signal((f) => glow.signal().get(f) + kick.get(f) * punchS.get(f) * 0.7);
-    const zoomSig = new Signal((f) => zoom.signal().get(f) + kick.get(f) * punchS.get(f) * 0.12);
+    const zoomSig = new Signal((f) => zoom.signal().get(f) + kickMotion.get(f) * punchS.get(f) * 0.07);
 
     const bulb = mandelbulb(ctx, {
       power: powerSig,
