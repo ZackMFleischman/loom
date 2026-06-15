@@ -263,7 +263,12 @@ export class EngineLink {
   private engineFps = 0;
   private readonly fpsListeners = new Set<() => void>();
   private readonly manifestSlices = new Map<string, Record<string, ParamDesc>>();
-  private readonly manifestJson = new Map<string, string>();
+  // Per-param serialized cache (per instance): lets a fresh manifest REUSE the
+  // prior ParamDesc object for every param whose value is unchanged, so only the
+  // params that actually moved get a new identity. memo(ParamWidget) then bails
+  // for the unchanged widgets — so a single animating/modulated param wakes only
+  // its OWN widget, not the whole panel (the value-churn half of the FR-1 storm).
+  private readonly manifestParamJson = new Map<string, Map<string, string>>();
   private readonly manifestListeners = new Map<string, Set<() => void>>();
   // The controls slice (bindings/midi/effects/scene-map) — the rarely-changing
   // session fields ParamWidget/ModPopover/FxChain read. Its own store so a param
@@ -601,20 +606,45 @@ export class EngineLink {
     }
 
     // 3. Per-instance manifest slices (ParamPanel reads manifests[selected]).
+    // Rebuild each manifest PRESERVING per-param identity: a param whose serialized
+    // descriptor is unchanged keeps its previous object, so a value change to one
+    // param (a drag, or a running modulator animating its value every frame) gives
+    // a new identity to THAT param only. The memoized ParamWidget then bails for
+    // every other param — the panel no longer re-renders all N widgets per tick.
     const haveManifests = new Set<string>();
     for (const [id, m] of Object.entries(manifests)) {
       haveManifests.add(id);
-      const json = JSON.stringify(m);
-      if (this.manifestJson.get(id) !== json) {
-        this.manifestJson.set(id, json);
-        this.manifestSlices.set(id, m);
+      const prev = this.manifestSlices.get(id);
+      let prevParamJson = this.manifestParamJson.get(id);
+      if (prevParamJson == null) {
+        prevParamJson = new Map();
+        this.manifestParamJson.set(id, prevParamJson);
+      }
+      const nextParamJson = new Map<string, string>();
+      const merged: Record<string, ParamDesc> = {};
+      let changed = prev == null;
+      for (const [path, desc] of Object.entries(m)) {
+        const pj = JSON.stringify(desc);
+        nextParamJson.set(path, pj);
+        if (prev != null && prevParamJson.get(path) === pj) {
+          merged[path] = prev[path]!; // unchanged → keep identity (memo bails)
+        } else {
+          merged[path] = desc;
+          changed = true;
+        }
+      }
+      // A removed param also changes the manifest shape (regroup / drop a widget).
+      if (prev != null) for (const path of Object.keys(prev)) if (!(path in m)) changed = true;
+      this.manifestParamJson.set(id, nextParamJson);
+      if (changed) {
+        this.manifestSlices.set(id, merged);
         for (const fn of this.manifestListeners.get(id) ?? []) fn();
       }
     }
     for (const id of [...this.manifestSlices.keys()]) {
       if (!haveManifests.has(id)) {
         this.manifestSlices.delete(id);
-        this.manifestJson.delete(id);
+        this.manifestParamJson.delete(id);
         for (const fn of this.manifestListeners.get(id) ?? []) fn();
       }
     }

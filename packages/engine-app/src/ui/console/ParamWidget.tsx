@@ -10,6 +10,7 @@ import {
   Typography,
 } from "@mui/material";
 import {
+  memo,
   useState,
   type ChangeEvent,
   type InputHTMLAttributes,
@@ -18,7 +19,7 @@ import {
 } from "react";
 import type { ParamDesc } from "../engine-link";
 import { useControls, useEngine } from "../hooks";
-import { fail, primeMidiPermission } from "../util";
+import { countRender, fail, primeMidiPermission } from "../util";
 import { BindPopover } from "./BindPopover";
 import { ColorChannels } from "./ColorChannels";
 import { ModPopover } from "./ModPopover";
@@ -57,7 +58,8 @@ type Props = {
  * ToggleButton; data-learn on the learn button with exact text "M" / "···" /
  * "cc<N>"; data-value on the numeric readout.
  */
-export function ParamWidget({ instance, path, p, label, dense, fill, grid, colorChannels }: Props) {
+function ParamWidgetImpl({ instance, path, p, label, dense, fill, grid, colorChannels }: Props) {
+  countRender("ParamWidget");
   const link = useEngine();
   // FR-1: read the narrow controls slice (bindings/midi/scene-map), NOT the full
   // 10 Hz snapshot — a param panel mounts one of these per param, so subscribing
@@ -467,3 +469,36 @@ export function ParamWidget({ instance, path, p, label, dense, fill, grid, color
     </Box>
   );
 }
+
+/** Two color-channel lists are equal when they hold the same [path, desc] pairs by
+ *  reference — the descriptors keep identity across ticks while unchanged (R7.4). */
+function sameChannels(a?: Array<[string, ParamDesc]>, b?: Array<[string, ParamDesc]>): boolean {
+  const la = a?.length ?? 0;
+  const lb = b?.length ?? 0;
+  if (la !== lb) return false;
+  for (let i = 0; i < la; i++) {
+    if (a![i]![0] !== b![i]![0] || a![i]![1] !== b![i]![1]) return false;
+  }
+  return true;
+}
+
+/**
+ * Memoized so an UNCHANGED param's widget bails out when the panel re-renders on
+ * another param's value change (FR-1). `EngineLink` keeps a stable `p` identity for
+ * any param whose value didn't move, so the `a.p === b.p` compare is exact; an
+ * animating/modulated param thus re-renders ONLY its own widget, not all N. Local
+ * state (drag/edit/popovers) and the `useControls()` subscription still re-render
+ * normally — `memo` gates props only, never hooks.
+ */
+export const ParamWidget = memo(
+  ParamWidgetImpl,
+  (a, b) =>
+    a.instance === b.instance &&
+    a.path === b.path &&
+    a.p === b.p &&
+    a.label === b.label &&
+    a.dense === b.dense &&
+    a.fill === b.fill &&
+    a.grid === b.grid &&
+    sameChannels(a.colorChannels, b.colorChannels),
+);

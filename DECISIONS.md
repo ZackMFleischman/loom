@@ -1886,9 +1886,24 @@ JSON-compare pattern as the rest (FR-1):
   on a chain/node edit, not the per-tick `frameMs` wiggle. `FxChain`'s other-instance
   picker reads `useInstanceIds()` (it only needs ids).
 
+That killed the IDLE storm. The other half is **value churn**: a drag — and worse, a
+running modulator whose value the engine animates every frame — rewrites that
+instance's whole manifest each tick, which re-rendered `ParamPanel` and every widget
+it passes `p` to. Fixed by **per-param identity preservation + `memo(ParamWidget)`**:
+`EngineLink` now rebuilds each manifest reusing the prior `ParamDesc` object for every
+param whose serialized value is unchanged, so only the param that actually moved gets
+a new identity. `ParamWidget` is `memo`'d with a comparator that reference-compares `p`
+(+ primitive props, + color-channel entries by reference), so an animating/modulated
+param re-renders ONLY its own widget — not all N. `ParamPanel` still re-renders (light:
+regroup + element creation; the heavy MUI widget subtrees bail). Added a `ParamWidget`
+render counter (`util.countRender`) and extended `scripts/perf-console.mjs` to open a
+panel, attach a sine modulator, and report `paramWidgetRenders`.
+
 DOM contract and the `link.sendParam` write path are unchanged (`data-path`/
-`data-learn`/`data-value` intact). Gates: `pnpm typecheck` green; `pnpm test` green
-(159 engine-app incl. 2 new engine-link store tests asserting the structure/controls
-slices ignore frame churn and wake on chain/binding edits; 543 + 41 elsewhere).
-Playwright Console validators (m3/m5) couldn't run here — the browser CDN is blocked
-by the env's network policy (binary not installed), not a code issue.
+`data-learn`/`data-value` intact); `memo`'s comparator covers every `Props` field so it
+can't go stale (identity-stable ⟺ value unchanged). Gates: `pnpm typecheck` green;
+`pnpm test` green (160 engine-app incl. 3 new engine-link store tests — structure/
+controls slices ignore frame churn + wake on chain/binding edits, and per-param
+identity holds across a value-only tick; 543 + 41 elsewhere). Playwright Console
+validators (m3/m5) + the perf harness couldn't run here — the browser CDN is blocked by
+the env's network egress policy (binary not installed), not a code issue.

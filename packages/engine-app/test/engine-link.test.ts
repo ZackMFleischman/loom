@@ -422,6 +422,30 @@ describe("EngineLink", () => {
       expect(link.controls().bindings).toHaveLength(1);
     });
 
+    it("preserves per-param identity so an animating param re-renders only its own widget", () => {
+      const m = (speed: number, color: string) => ({
+        speed: { type: "float", value: speed, default: 0.5, min: 0, max: 1 },
+        color: { type: "color", value: color, default: "#000000" },
+      });
+      engine.postMessage({ kind: "state", session: sess(), manifests: { "a-1": m(0.5, "#ff0000") } });
+      const first = link.manifest("a-1")!;
+      const onManifest = vi.fn();
+      link.subscribeManifest("a-1")(onManifest);
+      // Only `speed` moved (a modulator animating it) — `color` must keep identity
+      // so memo(ParamWidget) bails for it; `speed` gets a fresh object.
+      engine.postMessage({ kind: "state", session: sess({ frame: 2 }), manifests: { "a-1": m(0.6, "#ff0000") } });
+      const second = link.manifest("a-1")!;
+      expect(onManifest).toHaveBeenCalledTimes(1); // the panel re-renders once
+      expect(second).not.toBe(first); // map identity changes (delivers the new value)
+      expect(second.color).toBe(first.color); // unchanged param → SAME object → memo bails
+      expect(second.speed).not.toBe(first.speed); // moved param → new object → re-renders
+      expect(second.speed!.value).toBe(0.6);
+      // A byte-identical tick churns nothing: no wake, full identity held.
+      engine.postMessage({ kind: "state", session: sess({ frame: 3 }), manifests: { "a-1": m(0.6, "#ff0000") } });
+      expect(onManifest).toHaveBeenCalledTimes(1);
+      expect(link.manifest("a-1")).toBe(second);
+    });
+
     it("wakes only the instance whose slice changed, not the others", () => {
       engine.postMessage({ kind: "state", session: sess(), manifests: {} });
       const onA = vi.fn();
