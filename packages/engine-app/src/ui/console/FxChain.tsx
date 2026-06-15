@@ -25,7 +25,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ChainStepInfo, EffectInfo, SourceRefSchema } from "@loom/sidecar/protocol";
 import type { ParamDesc } from "../engine-link";
-import { useEngine, useEngineState } from "../hooks";
+import { useControls, useEngine, useInstanceIds, useStructure } from "../hooks";
 import {
   chainSteps,
   insertStep,
@@ -56,7 +56,11 @@ type Props = {
  */
 export function FxChain({ instance, manifest, node }: Props) {
   const link = useEngine();
-  const { session } = useEngineState();
+  // FR-1: structure slice (chain/nodes, no telemetry) + controls (effect library)
+  // + the id list — never the full 10 Hz snapshot, which churns on the frame tick.
+  const structure = useStructure(instance);
+  const controls = useControls();
+  const instanceIds = useInstanceIds();
   const [pick, setPick] = useState<{ anchor: HTMLElement; index: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [saveOpen, setSaveOpen] = useState(false);
@@ -76,11 +80,10 @@ export function FxChain({ instance, manifest, node }: Props) {
   // A node's chain params live at <node>.fx.*; the root chain keeps fx.* (M6).
   const prefix = node != null ? `${node}.fx.` : "fx.";
   const chain: ChainStepInfo[] = useMemo(() => {
-    const info = session?.instances.find((i) => i.id === instance);
-    if (node != null) return info?.nodes.find((n) => n.id === node)?.chain ?? [];
-    return info?.chain ?? [];
-  }, [session, instance, node]);
-  const effects = session?.availableEffects ?? [];
+    if (node != null) return structure?.nodes.find((n) => n.id === node)?.chain ?? [];
+    return structure?.chain ?? [];
+  }, [structure, node]);
+  const effects = controls.availableEffects;
   const primitives = effects.filter((e) => e.kind === "primitive");
   const composites = effects.filter((e) => e.kind === "composite");
   // effect name → its declared extra input slots (multi-input chain steps).
@@ -216,7 +219,7 @@ export function FxChain({ instance, manifest, node }: Props) {
   }) {
     // Selectable instances: every live tile except this one (self-tap = feedback,
     // rejected by the engine; we omit it from the picker).
-    const instances = (session?.instances ?? []).filter((i) => i.id !== instance);
+    const instances = instanceIds.filter((id) => id !== instance).map((id) => ({ id }));
     // Selectable earlier steps: those before this one in the chain (DAG ordering).
     const earlier = chain.slice(0, stepIndex);
     const value = ref == null ? "" : "instance" in ref ? `instance:${ref.instance}` : "step" in ref ? `step:${ref.step}` : "asset";

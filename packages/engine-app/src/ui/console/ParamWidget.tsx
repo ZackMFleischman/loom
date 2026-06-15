@@ -10,6 +10,7 @@ import {
   Typography,
 } from "@mui/material";
 import {
+  memo,
   useState,
   type ChangeEvent,
   type InputHTMLAttributes,
@@ -17,8 +18,8 @@ import {
   type MouseEvent,
 } from "react";
 import type { ParamDesc } from "../engine-link";
-import { useEngine, useEngineState } from "../hooks";
-import { fail, primeMidiPermission } from "../util";
+import { useControls, useEngine } from "../hooks";
+import { countRender, fail, primeMidiPermission } from "../util";
 import { BindPopover } from "./BindPopover";
 import { ColorChannels } from "./ColorChannels";
 import { ModPopover } from "./ModPopover";
@@ -57,9 +58,13 @@ type Props = {
  * ToggleButton; data-learn on the learn button with exact text "M" / "···" /
  * "cc<N>"; data-value on the numeric readout.
  */
-export function ParamWidget({ instance, path, p, label, dense, fill, grid, colorChannels }: Props) {
+function ParamWidgetImpl({ instance, path, p, label, dense, fill, grid, colorChannels }: Props) {
+  countRender("ParamWidget");
   const link = useEngine();
-  const { session } = useEngineState();
+  // FR-1: read the narrow controls slice (bindings/midi/scene-map), NOT the full
+  // 10 Hz snapshot — a param panel mounts one of these per param, so subscribing
+  // to the frame-churning snapshot here re-rendered the whole list 10×/s.
+  const controls = useControls();
   const [drag, setDrag] = useState<number | null>(null);
   const [edit, setEdit] = useState<string | null>(null);
   const [modAnchor, setModAnchor] = useState<HTMLElement | null>(null);
@@ -85,23 +90,18 @@ export function ParamWidget({ instance, path, p, label, dense, fill, grid, color
   };
 
   // Bindings are keyed by scene engine-side; resolve this instance to its scene.
-  const scene =
-    instance === "globals"
-      ? "globals"
-      : (session?.instances.find((i) => i.id === instance)?.scene ?? null);
+  const scene = instance === "globals" ? "globals" : (controls.scenes[instance] ?? null);
   const bindingsFor =
-    scene != null
-      ? (session?.bindings.filter((b) => b.scene === scene && b.path === path) ?? [])
-      : [];
+    scene != null ? controls.bindings.filter((b) => b.scene === scene && b.path === path) : [];
   const binding = bindingsFor[0] ?? null;
   // Bools and ints have button semantics (toggle/cycle/radio) — M opens the
   // mode popover. Floats keep the one-click absolute learn.
   const hasModes = p.type === "bool" || p.type === "int";
   const learning =
     scene != null &&
-    session?.midi.learning != null &&
-    session.midi.learning.scene === scene &&
-    session.midi.learning.path === path;
+    controls.midi.learning != null &&
+    controls.midi.learning.scene === scene &&
+    controls.midi.learning.path === path;
 
   const valueText =
     p.type === "bool" || p.type === "color"
@@ -128,7 +128,7 @@ export function ParamWidget({ instance, path, p, label, dense, fill, grid, color
   const onLearn = (e: MouseEvent) => {
     e.stopPropagation();
     // No MIDI access yet? This click IS the user gesture — pop the prompt here.
-    if (session?.midi.status !== "ready") primeMidiPermission();
+    if (controls.midi.status !== "ready") primeMidiPermission();
     if (hasModes) {
       setBindAnchor((a) => (a ? null : (e.currentTarget as HTMLElement)));
       return;
@@ -414,7 +414,7 @@ export function ParamWidget({ instance, path, p, label, dense, fill, grid, color
           path={path}
           p={p}
           bindings={bindingsFor}
-          learning={session?.midi.learning ?? null}
+          learning={controls.midi.learning}
           anchorEl={bindAnchor}
           onClose={() => setBindAnchor(null)}
         />
@@ -469,3 +469,36 @@ export function ParamWidget({ instance, path, p, label, dense, fill, grid, color
     </Box>
   );
 }
+
+/** Two color-channel lists are equal when they hold the same [path, desc] pairs by
+ *  reference — the descriptors keep identity across ticks while unchanged (R7.4). */
+function sameChannels(a?: Array<[string, ParamDesc]>, b?: Array<[string, ParamDesc]>): boolean {
+  const la = a?.length ?? 0;
+  const lb = b?.length ?? 0;
+  if (la !== lb) return false;
+  for (let i = 0; i < la; i++) {
+    if (a![i]![0] !== b![i]![0] || a![i]![1] !== b![i]![1]) return false;
+  }
+  return true;
+}
+
+/**
+ * Memoized so an UNCHANGED param's widget bails out when the panel re-renders on
+ * another param's value change (FR-1). `EngineLink` keeps a stable `p` identity for
+ * any param whose value didn't move, so the `a.p === b.p` compare is exact; an
+ * animating/modulated param thus re-renders ONLY its own widget, not all N. Local
+ * state (drag/edit/popovers) and the `useControls()` subscription still re-render
+ * normally — `memo` gates props only, never hooks.
+ */
+export const ParamWidget = memo(
+  ParamWidgetImpl,
+  (a, b) =>
+    a.instance === b.instance &&
+    a.path === b.path &&
+    a.p === b.p &&
+    a.label === b.label &&
+    a.dense === b.dense &&
+    a.fill === b.fill &&
+    a.grid === b.grid &&
+    sameChannels(a.colorChannels, b.colorChannels),
+);

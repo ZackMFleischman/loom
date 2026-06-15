@@ -1,9 +1,11 @@
 import { createContext, useCallback, useContext, useSyncExternalStore } from "react";
 import type { PreviewFrame } from "@loom/sidecar/protocol";
 import type {
+  ControlsSlice,
   EngineLink,
   EngineSnapshot,
   InstanceSlice,
+  InstanceStructure,
   ParamDesc,
   SessionMeta,
   StagePointers,
@@ -48,6 +50,34 @@ export function useTile(id: string): TileSlice | undefined {
   const subscribe = useCallback((fn: () => void) => link.subscribeTile(id)(fn), [link, id]);
   const getSnapshot = useCallback(() => link.tile(id), [link, id]);
   return useSyncExternalStore(subscribe, getSnapshot);
+}
+
+/**
+ * One instance's STRUCTURE slice (scene/nodes/chain — no telemetry). ParamPanel +
+ * FxChain read this so they re-render on a real chain/node edit, NOT on the per-tick
+ * frameMs wiggle that churns the full instance slice (which would re-render the whole
+ * param panel every tick). (FR-1)
+ */
+export function useStructure(id: string | null): InstanceStructure | undefined {
+  const link = useEngine();
+  const subscribe = useCallback(
+    (fn: () => void) => (id == null ? () => {} : link.subscribeStructure(id)(fn)),
+    [link, id],
+  );
+  const getSnapshot = useCallback(() => (id == null ? undefined : link.structure(id)), [link, id]);
+  return useSyncExternalStore(subscribe, getSnapshot);
+}
+
+/**
+ * The controls slice (FR-1): MIDI bindings, MIDI status, the effect library, and the
+ * id→scene map the param/FX widgets read. Its own store so ParamWidget/ModPopover/
+ * FxChain — mounted once per param in an open panel — re-render only on a real
+ * binding/MIDI/effect change, never on the 10 Hz frame tick. This is the leaf-level
+ * fix that stops an open param panel from re-rendering its whole widget list 10×/s.
+ */
+export function useControls(): ControlsSlice {
+  const link = useEngine();
+  return useSyncExternalStore(link.subscribeControls, link.controls);
 }
 
 /** The instance-id list / order (grid membership) — wakes only on add/remove/reorder. */

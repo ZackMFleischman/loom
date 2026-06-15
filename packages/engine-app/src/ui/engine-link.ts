@@ -84,6 +84,58 @@ function toTileSlice(inst: InstanceInfo): TileSlice {
 }
 
 /**
+ * One instance's STRUCTURAL fields (scene + layer nodes + post-FX chain), with the
+ * per-frame telemetry (frameMs/slowSignals) deliberately EXCLUDED. ParamPanel and
+ * FxChain read structure only, so this slice wakes them on a real chain/node edit —
+ * never on the telemetry wiggle that churns the full instance slice every tick.
+ * That's load-bearing for FR-1: ParamPanel re-renders cascade into every (un-memoized)
+ * ParamWidget, so waking it 10 Hz on frameMs alone re-renders the whole param panel.
+ */
+export type InstanceStructure = {
+  id: string;
+  scene: string;
+  status: InstanceInfo["status"];
+  error: string | null;
+  nodes: InstanceInfo["nodes"];
+  chain: InstanceInfo["chain"];
+};
+
+function toStructure(inst: InstanceInfo): InstanceStructure {
+  return {
+    id: inst.id,
+    scene: inst.scene,
+    status: inst.status,
+    error: inst.error ?? null,
+    nodes: inst.nodes ?? [],
+    chain: inst.chain ?? [],
+  };
+}
+
+/**
+ * The rarely-changing session-level fields the param/FX surfaces read: MIDI
+ * bindings, MIDI status, the chainable-effect library, and the id→scene map a
+ * param uses to resolve its bindings (bindings are keyed by scene). Its own slice
+ * (FR-1) so ParamWidget / ModPopover / FxChain — each mounted ONCE PER PARAM in an
+ * open panel — re-render only when a binding / MIDI / effect actually changes, not
+ * on every 10 Hz state broadcast (the frame counter that churns sessionMeta). This
+ * is what stops an open param panel from re-rendering its whole widget list 10×/s.
+ */
+export type ControlsSlice = {
+  bindings: SessionSnapshot["bindings"];
+  midi: SessionSnapshot["midi"];
+  availableEffects: SessionSnapshot["availableEffects"];
+  /** instance id → scene name — resolves a param's bindings (keyed by scene). */
+  scenes: Record<string, string>;
+};
+
+const EMPTY_CONTROLS: ControlsSlice = {
+  bindings: [],
+  midi: { status: "off", devices: [], learning: null, recent: [] },
+  availableEffects: [],
+  scenes: {},
+};
+
+/**
  * Quantize an instance's live telemetry to the precision the UI shows, so a
  * sub-display-threshold wiggle doesn't change the slice's identity and wake the
  * tile (FR-1). `frameMs` → 0.1 ms (the `.framems` / `tilefps` granularity);
@@ -183,6 +235,12 @@ export class EngineLink {
   private instanceSlices = new Map<string, InstanceSlice>();
   private readonly instanceSliceJson = new Map<string, string>();
   private readonly instanceListeners = new Map<string, Set<() => void>>();
+  // The per-instance STRUCTURE slice (scene/nodes/chain — no telemetry). ParamPanel
+  // + FxChain read this so they wake on a chain/node edit, not the frameMs wiggle
+  // every tick (which would re-render the whole param panel via ParamPanel). (FR-1)
+  private readonly structureSlices = new Map<string, InstanceStructure>();
+  private readonly structureJson = new Map<string, string>();
+  private readonly structureListeners = new Map<string, Set<() => void>>();
   // The narrow tile projection (display fields only) — separate from the full
   // instance slice so a tile never wakes on slowSignals/nodes churn (FR-1).
   private readonly tileSlices = new Map<string, TileSlice>();
@@ -205,8 +263,19 @@ export class EngineLink {
   private engineFps = 0;
   private readonly fpsListeners = new Set<() => void>();
   private readonly manifestSlices = new Map<string, Record<string, ParamDesc>>();
-  private readonly manifestJson = new Map<string, string>();
+  // Per-param serialized cache (per instance): lets a fresh manifest REUSE the
+  // prior ParamDesc object for every param whose value is unchanged, so only the
+  // params that actually moved get a new identity. memo(ParamWidget) then bails
+  // for the unchanged widgets — so a single animating/modulated param wakes only
+  // its OWN widget, not the whole panel (the value-churn half of the FR-1 storm).
+  private readonly manifestParamJson = new Map<string, Map<string, string>>();
   private readonly manifestListeners = new Map<string, Set<() => void>>();
+  // The controls slice (bindings/midi/effects/scene-map) — the rarely-changing
+  // session fields ParamWidget/ModPopover/FxChain read. Its own store so a param
+  // widget never wakes on the frame-counter tick that churns sessionMeta (FR-1).
+  private controlsSlice: ControlsSlice = EMPTY_CONTROLS;
+  private controlsJson = "";
+  private readonly controlsListeners = new Set<() => void>();
   private previewFrame: PreviewFrame | null = null;
   private readonly previewListeners = new Set<() => void>();
 
@@ -403,6 +472,33 @@ export class EngineLink {
     };
   manifest = (id: string): Record<string, ParamDesc> | undefined => this.manifestSlices.get(id);
 
+  /** Subscribe to one instance's STRUCTURE slice (scene/nodes/chain — no telemetry). */
+  subscribeStructure =
+    (id: string) =>
+    (fn: () => void): (() => void) => {
+      let set = this.structureListeners.get(id);
+      if (set == null) {
+        set = new Set();
+        this.structureListeners.set(id, set);
+      }
+      set.add(fn);
+      return () => {
+        const s = this.structureListeners.get(id);
+        s?.delete(fn);
+        if (s != null && s.size === 0) this.structureListeners.delete(id);
+      };
+    };
+  structure = (id: string): InstanceStructure | undefined => this.structureSlices.get(id);
+
+  /** Subscribe to the controls slice (bindings/midi/effects/scene-map) — no frame churn. */
+  subscribeControls = (fn: () => void): (() => void) => {
+    this.controlsListeners.add(fn);
+    return () => {
+      this.controlsListeners.delete(fn);
+    };
+  };
+  controls = (): ControlsSlice => this.controlsSlice;
+
   /**
    * Recompute the narrow slices from a fresh state message, KEEPING identity for
    * any slice whose serialized content is unchanged so subscribers don't wake.
@@ -437,6 +533,15 @@ export class EngineLink {
         this.tileSlices.set(inst.id, tile);
         for (const fn of this.tileListeners.get(inst.id) ?? []) fn();
       }
+      // The STRUCTURE projection (scene/nodes/chain, no telemetry) — wakes
+      // ParamPanel/FxChain only on a real chain/node edit, not the frameMs wiggle.
+      const structure = toStructure(inst);
+      const structureJson = JSON.stringify(structure);
+      if (this.structureJson.get(inst.id) !== structureJson) {
+        this.structureJson.set(inst.id, structureJson);
+        this.structureSlices.set(inst.id, structure);
+        for (const fn of this.structureListeners.get(inst.id) ?? []) fn();
+      }
     }
     for (const id of [...this.instanceSlices.keys()]) {
       if (!seen.has(id)) {
@@ -444,8 +549,11 @@ export class EngineLink {
         this.instanceSliceJson.delete(id);
         this.tileSlices.delete(id);
         this.tileSliceJson.delete(id);
+        this.structureSlices.delete(id);
+        this.structureJson.delete(id);
         for (const fn of this.instanceListeners.get(id) ?? []) fn();
         for (const fn of this.tileListeners.get(id) ?? []) fn();
+        for (const fn of this.structureListeners.get(id) ?? []) fn();
       }
     }
     const idsJson = JSON.stringify(ids);
@@ -498,22 +606,66 @@ export class EngineLink {
     }
 
     // 3. Per-instance manifest slices (ParamPanel reads manifests[selected]).
+    // Rebuild each manifest PRESERVING per-param identity: a param whose serialized
+    // descriptor is unchanged keeps its previous object, so a value change to one
+    // param (a drag, or a running modulator animating its value every frame) gives
+    // a new identity to THAT param only. The memoized ParamWidget then bails for
+    // every other param — the panel no longer re-renders all N widgets per tick.
     const haveManifests = new Set<string>();
     for (const [id, m] of Object.entries(manifests)) {
       haveManifests.add(id);
-      const json = JSON.stringify(m);
-      if (this.manifestJson.get(id) !== json) {
-        this.manifestJson.set(id, json);
-        this.manifestSlices.set(id, m);
+      const prev = this.manifestSlices.get(id);
+      let prevParamJson = this.manifestParamJson.get(id);
+      if (prevParamJson == null) {
+        prevParamJson = new Map();
+        this.manifestParamJson.set(id, prevParamJson);
+      }
+      const nextParamJson = new Map<string, string>();
+      const merged: Record<string, ParamDesc> = {};
+      let changed = prev == null;
+      for (const [path, desc] of Object.entries(m)) {
+        const pj = JSON.stringify(desc);
+        nextParamJson.set(path, pj);
+        if (prev != null && prevParamJson.get(path) === pj) {
+          merged[path] = prev[path]!; // unchanged → keep identity (memo bails)
+        } else {
+          merged[path] = desc;
+          changed = true;
+        }
+      }
+      // A removed param also changes the manifest shape (regroup / drop a widget).
+      if (prev != null) for (const path of Object.keys(prev)) if (!(path in m)) changed = true;
+      this.manifestParamJson.set(id, nextParamJson);
+      if (changed) {
+        this.manifestSlices.set(id, merged);
         for (const fn of this.manifestListeners.get(id) ?? []) fn();
       }
     }
     for (const id of [...this.manifestSlices.keys()]) {
       if (!haveManifests.has(id)) {
         this.manifestSlices.delete(id);
-        this.manifestJson.delete(id);
+        this.manifestParamJson.delete(id);
         for (const fn of this.manifestListeners.get(id) ?? []) fn();
       }
+    }
+
+    // 4. Controls slice — bindings/midi/effects + the id→scene map the param/FX
+    // widgets read. Rarely changes (a binding edit, MIDI learn, module reload),
+    // so JSON-compared like the others: an open param panel's ~N widgets wake on a
+    // real control change, never on the 10 Hz frame tick that churns sessionMeta.
+    const scenes: Record<string, string> = {};
+    for (const i of session.instances ?? []) scenes[i.id] = i.scene;
+    const controls: ControlsSlice = {
+      bindings: session.bindings ?? [],
+      midi: session.midi ?? EMPTY_CONTROLS.midi,
+      availableEffects: session.availableEffects ?? [],
+      scenes,
+    };
+    const controlsJson = JSON.stringify(controls);
+    if (controlsJson !== this.controlsJson) {
+      this.controlsJson = controlsJson;
+      this.controlsSlice = controls;
+      for (const fn of this.controlsListeners) fn();
     }
   }
 

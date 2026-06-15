@@ -164,6 +164,27 @@ try {
 
   const tileCount = await consolePage.$$eval(".tile", (els) => els.length);
 
+  // Open a param panel and animate ONE of its params, so the manifest churns every
+  // frame — the value-driven half of the re-render storm. With the fix, only the
+  // animating param's widget re-renders; without it, the whole panel does.
+  await consolePage.locator(".tile").first().click().catch(() => {});
+  await consolePage.waitForSelector("#widgets [data-path]", { timeout: 10_000 }).catch(() => {});
+  const widgetCount = await consolePage.$$eval("#widgets [data-path]", (els) => els.length).catch(() => 0);
+  if (spawned[0]) {
+    const man = toolJson(await client.callTool({ name: "get_manifest", arguments: { instance: spawned[0] } }));
+    const params = man.params ?? man.manifest ?? man;
+    const animPath = Object.entries(params).find(
+      ([, d]) => (d?.type === "float" || d?.type === "int") && !d?.hidden,
+    )?.[0];
+    if (animPath) {
+      await client.callTool({
+        name: "modulate_param",
+        arguments: { instance: spawned[0], path: animPath, modulator: { type: "sine", periodSeconds: 2 } },
+      });
+    }
+  }
+  await sleep(1500);
+
   // --- MEASURE ---
   // 0. Re-render storm, measured DIRECTLY (FR-1): reset the per-component render
   // counters, let the 10 Hz state + 6.6 Hz thumbs stream run untouched for a
@@ -182,6 +203,10 @@ try {
     tileRendersPerSec: Math.round(((renders.Tile ?? 0) / RENDER_WINDOW_S) * 10) / 10,
     headerRenders: renders.Header ?? 0,
     paramPanelRenders: renders.ParamPanel ?? 0,
+    // With the fix: the animating param wakes only its own widget, so this tracks
+    // ~1 widget × ticks, not widgetCount × ticks (the value-churn storm).
+    paramWidgetRenders: renders.ParamWidget ?? 0,
+    openParamWidgets: widgetCount,
     tileGridRenders: renders.TileGrid ?? 0,
     consoleAppRenders: renders.ConsoleApp ?? 0,
   };
