@@ -28,10 +28,18 @@ export interface AudioBusLike {
 export class AudioBus implements AudioBusLike {
   mode: AudioMode = "off";
 
-  /** Input monitoring: route the mic source to the speakers (R: hear the input). */
+  /**
+   * Input monitoring: play the mic input through the speakers so the operator
+   * can hear it. Routed through a SEPARATE detached <audio> element fed the same
+   * MediaStream — deliberately NOT through the Web Audio graph. Connecting a
+   * getUserMedia source toward the AudioContext destination makes Chrome
+   * re-process (and zero) the captured stream, killing the analyser; an <audio>
+   * element is an independent consumer of the stream, so the analyser path stays
+   * pristine and you get reactivity AND sound at once.
+   */
   monitorEnabled = false;
   monitorLevel = 0.8;
-  private monitorGain: GainNode | null = null;
+  private monitorEl: HTMLAudioElement | null = null;
 
   readonly rms = new Signal(() => this._rms);
 
@@ -93,9 +101,13 @@ export class AudioBus implements AudioBusLike {
     const ctx = this.ensureContext();
     const src = ctx.createMediaStreamSource(this.micStream);
     src.connect(this.analyser!);
-    if (this.monitorGain) src.connect(this.monitorGain);
     this.sourceNodes.push(src);
     this.mode = "mic";
+    // Monitor the SAME stream through the detached <audio> element — never wire
+    // the source toward the AudioContext destination (it corrupts capture).
+    const el = this.ensureMonitorEl();
+    el.srcObject = this.micStream;
+    this.applyMonitor();
   }
 
   /** Synthetic kick (every beat) + hats (offbeats) at the given BPM. */
@@ -159,27 +171,34 @@ export class AudioBus implements AudioBusLike {
     void this.audioCtx?.resume();
   }
 
-  /** Current effective monitor gain (0 when disabled). For tests/diagnostics. */
-  get monitorGainValue(): number {
-    return this.monitorGain?.gain.value ?? 0;
-  }
-
   /**
-   * Toggle/level the input monitor. Effective gain is `enabled ? level : 0`, so
-   * the toggle and the level are independent — you can pre-set the level while
-   * muted, and flipping the toggle re-applies the stored level. Human-only path
-   * (Console); never an MCP tool. Mic mode only — the synthetic "test" graph is
-   * deliberately muted and never feeds the monitor.
+   * Toggle/level the input monitor. Toggle and level are independent — pre-set
+   * the level while muted and flipping the toggle re-applies it. Human-only path
+   * (Console); never an MCP tool. Mic mode only — the synthetic "test" graph has
+   * no stream attached to the element, so it stays silent.
    */
   setMonitor(opts: { enabled?: boolean | undefined; level?: number | undefined }): void {
     if (opts.level !== undefined) {
       this.monitorLevel = Math.max(0, Math.min(1, opts.level));
     }
     if (opts.enabled !== undefined) this.monitorEnabled = opts.enabled;
-    this.ensureContext();
-    if (this.monitorGain) {
-      this.monitorGain.gain.value = this.monitorEnabled ? this.monitorLevel : 0;
-    }
+    this.applyMonitor();
+  }
+
+  /** The detached playback element used for monitoring (created lazily). */
+  private ensureMonitorEl(): HTMLAudioElement {
+    if (!this.monitorEl) this.monitorEl = new Audio();
+    return this.monitorEl;
+  }
+
+  /** Push the current enabled/level state onto the monitor element. */
+  private applyMonitor(): void {
+    const el = this.ensureMonitorEl();
+    el.volume = this.monitorLevel;
+    el.muted = !this.monitorEnabled;
+    // MediaStream playback is exempt from autoplay gating in Chrome; play() is a
+    // no-op once it's already running and only matters with a stream attached.
+    if (el.srcObject && this.monitorEnabled) void el.play().catch(() => {});
   }
 
   async listInputDevices(): Promise<MediaDeviceInfo[]> {
@@ -203,6 +222,12 @@ export class AudioBus implements AudioBusLike {
       for (const t of this.micStream.getTracks()) t.stop();
       this.micStream = null;
     }
+    // Detach the monitor stream (the element instance is reused on next start);
+    // monitorEnabled/monitorLevel persist so the next mic restores the setting.
+    if (this.monitorEl) {
+      this.monitorEl.pause();
+      this.monitorEl.srcObject = null;
+    }
     this.mode = "off";
     this._rms = 0;
     this.energies = { bass: 0, mid: 0, treble: 0 };
@@ -215,11 +240,6 @@ export class AudioBus implements AudioBusLike {
       this.analyser.fftSize = 2048;
       this.analyser.smoothingTimeConstant = 0.5;
       this.bins = new Uint8Array(this.analyser.frequencyBinCount);
-      // Persistent monitor tap: lives for the context's life so it survives
-      // source swaps. Starts at the current effective gain (0 when off).
-      this.monitorGain = this.audioCtx.createGain();
-      this.monitorGain.gain.value = this.monitorEnabled ? this.monitorLevel : 0;
-      this.monitorGain.connect(this.audioCtx.destination);
     }
     void this.audioCtx.resume();
     return this.audioCtx;
