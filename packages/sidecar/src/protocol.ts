@@ -70,6 +70,7 @@ export const RequestType = z.enum([
   "set_panic_instance",
   "set_transport",
   "set_audio",
+  "set_monitor",
   "set_preview",
   "arm_agent_commit",
   "midi_learn",
@@ -452,6 +453,12 @@ export const SetAudioArgs = z.object({
 });
 export type SetAudioArgs = z.infer<typeof SetAudioArgs>;
 
+export const SetMonitorArgs = z.object({
+  enabled: z.boolean().optional(),
+  level: z.number().min(0).max(1).optional(),
+});
+export type SetMonitorArgs = z.infer<typeof SetMonitorArgs>;
+
 /**
  * Human-only: drive the Console's full-resolution preview stream (the
  * full-screen preview overlay). `instance` null stops it. `maxHeight` is the
@@ -723,6 +730,9 @@ export const SessionSnapshot = z.object({
   // World
   audioMode: z.string(),
   audioDevices: z.array(AudioDevice),
+  /** Input monitor (Console-only): play the mic input through the speakers. */
+  monitorEnabled: z.boolean().default(false),
+  monitorLevel: z.number().default(0.8),
   /** Input-rack channel values (live meters), tuned via instance "globals". */
   inputs: z.record(z.string(), z.number()),
   midi: MidiStatus,
