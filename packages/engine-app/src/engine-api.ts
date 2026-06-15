@@ -34,6 +34,7 @@ import {
   ScreenshotArgs,
   ScreenshotConsoleArgs,
   SetAudioArgs,
+  SetMonitorArgs,
   SetChainArgs,
   SetColorSpaceArgs,
   SetModulationEnabledArgs,
@@ -75,6 +76,7 @@ const HUMAN_ONLY: ReadonlySet<string> = new Set([
   "arm_panic_mode",
   "set_panic_instance",
   "set_audio",
+  "set_monitor",
   "arm_agent_commit",
   "rename_instance",
   "midi_learn",
@@ -135,8 +137,11 @@ export interface EngineDeps {
   stage: Stage;
   audio: AudioBusLike & {
     mode: string;
+    monitorEnabled: boolean;
+    monitorLevel: number;
     startMic(deviceId?: string): Promise<void>;
     startTest(bpm?: number): void;
+    setMonitor(opts: { enabled?: boolean | undefined; level?: number | undefined }): void;
   };
   time: TimeBus;
   /** The input rack: globals manifest + live channel values (R6). */
@@ -733,6 +738,13 @@ export class EngineApi {
         this.deps.refreshAudioDevices(); // labels appear once mic permission is granted
         return { audioMode: this.deps.audio.mode };
       }
+      case "set_monitor": {
+        this.deps.audio.setMonitor(SetMonitorArgs.parse(req.args));
+        return {
+          monitorEnabled: this.deps.audio.monitorEnabled,
+          monitorLevel: this.deps.audio.monitorLevel,
+        };
+      }
       case "arm_agent_commit": {
         const { armed } = ArmAgentCommitArgs.parse(req.args);
         this.agentCommitArmed = armed;
@@ -982,6 +994,8 @@ export class EngineApi {
       projects: this.deps.projects.cached(),
       audioMode: this.deps.audio.mode,
       audioDevices: this.deps.audioDevices(),
+      monitorEnabled: this.deps.audio.monitorEnabled,
+      monitorLevel: this.deps.audio.monitorLevel,
       inputs: this.deps.inputs.values(),
       midi: {
         status: this.deps.midiStatus(),

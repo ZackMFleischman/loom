@@ -171,7 +171,7 @@ export class AudioBus implements AudioBusLike {
    * (Console); never an MCP tool. Mic mode only — the synthetic "test" graph is
    * deliberately muted and never feeds the monitor.
    */
-  setMonitor(opts: { enabled?: boolean; level?: number }): void {
+  setMonitor(opts: { enabled?: boolean | undefined; level?: number | undefined }): void {
     if (opts.level !== undefined) {
       this.monitorLevel = Math.max(0, Math.min(1, opts.level));
     }

@@ -26,13 +26,23 @@ import { SessionStore } from "../src/session";
  * highest-value logic that previously had NO unit coverage (validators only
  * exercise the happy paths). */
 
-const silentAudio: AudioBusLike & { mode: string; startMic(): Promise<void>; startTest(): void } = {
+const silentAudio: AudioBusLike & {
+  mode: string;
+  monitorEnabled: boolean;
+  monitorLevel: number;
+  startMic(): Promise<void>;
+  startTest(): void;
+  setMonitor(opts: { enabled?: boolean | undefined; level?: number | undefined }): void;
+} = {
   rms: new Signal(() => 0),
   band: () => new Signal(() => 0),
   onset: () => new Events(() => []),
   mode: "test",
+  monitorEnabled: false,
+  monitorLevel: 0.8,
   startMic: () => Promise.resolve(),
   startTest: () => {},
+  setMonitor: () => {},
 };
 
 const passInput = defineModule(

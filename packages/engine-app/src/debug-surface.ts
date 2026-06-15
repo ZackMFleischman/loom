@@ -7,6 +7,9 @@ import { entryStatus, type SessionStore } from "./session";
 export interface LoomDebug {
   sceneName: string | null;
   audioMode: string;
+  /** Input monitor (Console-only): play the mic input through the speakers. */
+  monitorEnabled: boolean;
+  monitorLevel: number;
   bpm: number;
   rms: number;
   onsetCount: number;
@@ -56,7 +59,13 @@ declare global {
 }
 
 export interface DebugSurfaceDeps {
-  audio: { readonly mode: string; rms: { get(f: FrameCtx): number }; resume(): void };
+  audio: {
+    readonly mode: string;
+    readonly monitorEnabled: boolean;
+    readonly monitorLevel: number;
+    rms: { get(f: FrameCtx): number };
+    resume(): void;
+  };
   timeBus: { readonly bpm: number };
   fps: { readonly current: number };
   stage: Stage;
@@ -92,6 +101,8 @@ export class DebugSurface {
     this.dbg = {
       sceneName: null,
       audioMode: d.audio.mode,
+      monitorEnabled: d.audio.monitorEnabled,
+      monitorLevel: d.audio.monitorLevel,
       bpm: d.timeBus.bpm,
       rms: 0,
       onsetCount: 0,
@@ -122,6 +133,8 @@ export class DebugSurface {
     const dbg = this.dbg;
     dbg.sceneName = liveEntry?.sceneName ?? null;
     dbg.audioMode = audio.mode;
+    dbg.monitorEnabled = audio.monitorEnabled;
+    dbg.monitorLevel = audio.monitorLevel;
     dbg.bpm = this.d.timeBus.bpm;
     dbg.rms = audio.rms.get(f);
     dbg.onsetCount = state.onsetCount;
