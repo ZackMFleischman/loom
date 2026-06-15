@@ -1,5 +1,5 @@
-import { Box, ButtonBase, Card, Fade, Popover, Typography } from "@mui/material";
-import { useEffect, useRef, useState } from "react";
+import { Box, ButtonBase, Card, Fade, Popover, TextField, Typography } from "@mui/material";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useEngine, useThumb } from "../hooks";
 import { sceneThumb, snapshotScene } from "../scene-thumbs";
 import { fail } from "../util";
@@ -27,6 +27,7 @@ export function NewInstanceTile({ scenes, onCreated, onPreviewSpawn, onPreviewAd
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [hoveredScene, setHoveredScene] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const preview = useRef<{ scene: string; id: string } | null>(null);
   const hovered = useRef<string | null>(null); // mirrors hoveredScene for async guards
   const openRef = useRef(false);
@@ -55,10 +56,18 @@ export function NewInstanceTile({ scenes, onCreated, onPreviewSpawn, onPreviewAd
     openRef.current = false;
     hovered.current = null;
     setHoveredScene(null);
+    setQuery("");
     window.clearTimeout(timer.current);
     setAnchor(null);
     destroyPreview();
   };
+
+  // Case-insensitive substring filter over scene names.
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q === "") return scenes;
+    return scenes.filter((s) => s.toLowerCase().includes(q));
+  }, [scenes, query]);
 
   const hover = (scene: string) => {
     hovered.current = scene;
@@ -131,7 +140,14 @@ export function NewInstanceTile({ scenes, onCreated, onPreviewSpawn, onPreviewAd
             a build's first (possibly dark) frame never pops. While nothing is
             previewing, the face/footer are just an invisible height skeleton
             and the +/hint overlays the WHOLE card, dead-centered. */}
-        <Box sx={{ aspectRatio: "16/9", position: "relative", bgcolor: open && showing != null ? "#000" : "transparent", overflow: "hidden" }}>
+        <Box
+          sx={{
+            aspectRatio: "16/9",
+            position: "relative",
+            bgcolor: open && showing != null ? "#000" : "transparent",
+            overflow: "hidden",
+          }}
+        >
           {open && showing != null && (
             <>
               {snap != null && (
@@ -155,7 +171,11 @@ export function NewInstanceTile({ scenes, onCreated, onPreviewSpawn, onPreviewAd
             </>
           )}
         </Box>
-        <Typography variant="body2" noWrap sx={{ px: 1, py: 0.5, visibility: open && showing != null ? "visible" : "hidden" }}>
+        <Typography
+          variant="body2"
+          noWrap
+          sx={{ px: 1, py: 0.5, visibility: open && showing != null ? "visible" : "hidden" }}
+        >
           {open && showing != null && hoveredScene != null
             ? `${live != null ? "live preview" : "last run"} · ${hoveredScene}`
             : " "}
@@ -189,56 +209,127 @@ export function NewInstanceTile({ scenes, onCreated, onPreviewSpawn, onPreviewAd
         anchorOrigin={{ vertical: "top", horizontal: "right" }}
         transformOrigin={{ vertical: "top", horizontal: "left" }}
         sx={{ ml: 0.5 }}
+        slotProps={{ paper: { sx: { maxWidth: "none" } } }}
       >
         <Box
           sx={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 132px)",
-            gap: 0.5,
-            p: 0.75,
-            maxHeight: 360,
-            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column",
+            width: "min(90vw, 1100px)",
+            maxHeight: "85vh",
           }}
         >
-          {scenes.map((scene) => {
-            const card = sceneThumb(scene);
-            const active = scene === hoveredScene;
-            return (
-              <ButtonBase
-                key={scene}
-                className="scenerow"
-                data-scene={scene}
-                onMouseEnter={() => hover(scene)}
-                onClick={() => pick(scene)}
-                sx={{
-                  display: "block",
-                  textAlign: "left",
-                  borderRadius: 1,
-                  overflow: "hidden",
-                  border: 1,
-                  borderColor: active ? "primary.main" : "divider",
-                }}
-              >
-                <Box sx={{ width: "100%", aspectRatio: "16/9", bgcolor: "#000" }}>
-                  {card != null && (
+          <Box
+            sx={{
+              p: 1,
+              flexShrink: 0,
+              bgcolor: "background.paper",
+              borderBottom: 1,
+              borderColor: "divider",
+            }}
+          >
+            <TextField
+              autoFocus
+              fullWidth
+              size="small"
+              placeholder={`Search ${scenes.length} scenes…`}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                const first = filtered[0];
+                if (e.key === "Enter" && first != null) {
+                  e.preventDefault();
+                  pick(first);
+                } else if (e.key === "Escape") {
+                  close();
+                }
+              }}
+            />
+          </Box>
+          {filtered.length === 0 ? (
+            <Typography variant="body2" sx={{ p: 2, color: "text.secondary" }}>
+              No scenes match “{query}”.
+            </Typography>
+          ) : (
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+                gridAutoRows: "max-content",
+                alignContent: "start",
+                gap: 1,
+                p: 1,
+                flex: 1,
+                minHeight: 0,
+                overflowY: "auto",
+              }}
+            >
+              {filtered.map((scene) => {
+                const card = sceneThumb(scene);
+                const active = scene === hoveredScene;
+                return (
+                  <ButtonBase
+                    key={scene}
+                    className="scenerow"
+                    data-scene={scene}
+                    onMouseEnter={() => hover(scene)}
+                    onClick={() => pick(scene)}
+                    sx={{
+                      display: "block",
+                      width: "100%",
+                      alignSelf: "start",
+                      textAlign: "left",
+                      borderRadius: 1,
+                      overflow: "hidden",
+                      border: 1,
+                      borderColor: active ? "primary.main" : "divider",
+                    }}
+                  >
+                    {/* A relative 16/9 box dictates the height; the image fills it
+                        absolutely so a large snapshot can never stretch the card. */}
                     <Box
-                      component="img"
-                      src={card}
-                      alt=""
-                      sx={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-                    />
-                  )}
-                </Box>
-                <Typography
-                  variant="caption"
-                  noWrap
-                  sx={{ display: "block", px: 0.75, py: 0.25, color: active ? "primary.main" : "text.primary" }}
-                >
-                  {scene}
-                </Typography>
-              </ButtonBase>
-            );
-          })}
+                      sx={{
+                        position: "relative",
+                        width: "100%",
+                        aspectRatio: "16/9",
+                        bgcolor: "#000",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      {card != null ? (
+                        <Box
+                          component="img"
+                          src={card}
+                          alt=""
+                          sx={{
+                            position: "absolute",
+                            inset: 0,
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "cover",
+                            display: "block",
+                          }}
+                        />
+                      ) : (
+                        <Typography variant="caption" sx={{ color: "text.disabled" }}>
+                          no preview yet
+                        </Typography>
+                      )}
+                    </Box>
+                    <Typography
+                      variant="caption"
+                      noWrap
+                      sx={{ display: "block", px: 0.75, py: 0.5, color: active ? "primary.main" : "text.primary" }}
+                    >
+                      {scene}
+                    </Typography>
+                  </ButtonBase>
+                );
+              })}
+            </Box>
+          )}
         </Box>
       </Popover>
     </>
