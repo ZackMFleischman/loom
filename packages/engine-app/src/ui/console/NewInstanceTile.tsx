@@ -255,7 +255,7 @@ export function NewInstanceTile({ scenes, onCreated, onPreviewSpawn, onPreviewAd
               sx={{
                 display: "grid",
                 gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-                alignItems: "start",
+                gridAutoRows: "max-content",
                 alignContent: "start",
                 gap: 1,
                 p: 1,
@@ -276,6 +276,8 @@ export function NewInstanceTile({ scenes, onCreated, onPreviewSpawn, onPreviewAd
                     onClick={() => pick(scene)}
                     sx={{
                       display: "block",
+                      width: "100%",
+                      alignSelf: "start",
                       textAlign: "left",
                       borderRadius: 1,
                       overflow: "hidden",
@@ -283,34 +285,39 @@ export function NewInstanceTile({ scenes, onCreated, onPreviewSpawn, onPreviewAd
                       borderColor: active ? "primary.main" : "divider",
                     }}
                   >
-                    {card != null ? (
-                      <Box
-                        component="img"
-                        src={card}
-                        alt=""
-                        sx={{
-                          width: "100%",
-                          aspectRatio: "16/9",
-                          objectFit: "cover",
-                          display: "block",
-                          bgcolor: "#000",
-                        }}
-                      />
-                    ) : (
-                      <Box
-                        sx={{
-                          width: "100%",
-                          aspectRatio: "16/9",
-                          bgcolor: "#000",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          color: "text.disabled",
-                        }}
-                      >
-                        <Typography variant="caption">no preview yet</Typography>
-                      </Box>
-                    )}
+                    {/* A relative 16/9 box dictates the height; the image fills it
+                        absolutely so a large snapshot can never stretch the card. */}
+                    <Box
+                      sx={{
+                        position: "relative",
+                        width: "100%",
+                        aspectRatio: "16/9",
+                        bgcolor: "#000",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      {card != null ? (
+                        <Box
+                          component="img"
+                          src={card}
+                          alt=""
+                          sx={{
+                            position: "absolute",
+                            inset: 0,
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "cover",
+                            display: "block",
+                          }}
+                        />
+                      ) : (
+                        <Typography variant="caption" sx={{ color: "text.disabled" }}>
+                          no preview yet
+                        </Typography>
+                      )}
+                    </Box>
                     <Typography
                       variant="caption"
                       noWrap
