@@ -36,6 +36,7 @@ import { webcam } from "../modules/sources/webcam";
 import { displaceGeo } from "../modules/geo/displaceGeo";
 import { plane } from "../modules/geo/plane";
 import { pointCloud } from "../modules/geo/pointCloud";
+import { pointCloudWave } from "../modules/geo/pointCloudWave";
 import { tube } from "../modules/geo/tube";
 import { colorize } from "../modules/effects/colorize";
 import { feedback } from "../modules/effects/feedback";
@@ -170,6 +171,7 @@ export const CASES: Record<string, ModuleCase> = {
   plane: (ctx) => plane(ctx, { segments: 16 }),
   tube: (ctx) => tube(ctx, { glow: ctx.input("kick") }),
   pointCloud: (ctx) => pointCloud(ctx, { source: plane(ctx, { segments: 12 }) }),
+  pointCloudWave: (ctx) => pointCloudWave(ctx, { source: plane(ctx, { segments: 12 }), waveAmplitude: 0.15, waveSpeed: 1, waveFreq: 3 }),
   strangeAttractor: (ctx) => strangeAttractor(ctx, { kind: "lorenz", points: 2000 }),
   flock: (ctx) => flock(ctx, { count: 40 }),
   flowParticles: (ctx) => flowParticles(ctx, { count: 200 }),
