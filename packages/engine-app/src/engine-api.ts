@@ -82,6 +82,30 @@ const HUMAN_ONLY: ReadonlySet<string> = new Set([
   "set_preview",
 ]);
 
+// Commands that change the working set the session snapshot captures: the
+// instance roster, per-instance values/chains/modulators, and the slot
+// pointers. Everything else (reads, transport, audio, MIDI learn, panic — which
+// is deliberately not persisted) leaves the snapshot untouched. `batch` is
+// absent: its sub-calls re-enter handleRequest and mark themselves.
+const SNAPSHOT_AFFECTING: ReadonlySet<string> = new Set([
+  "create_instance",
+  "destroy_instance",
+  "rename_instance",
+  "stage",
+  "unstage",
+  "commit",
+  "live_step",
+  "set_chain",
+  "modulate_param",
+  "clear_modulation",
+  "set_modulation_enabled",
+  "set_param",
+  "set_params",
+  "set_param_range",
+  "set_color_space",
+  "load_project",
+]);
+
 // Full-res preview stream (Console preview overlay): the ladder of streamed
 // heights (16:9), the fps thresholds that drive auto-reduction, and how long a
 // trend must hold before stepping. Reacts down fast, climbs back slowly.
@@ -188,6 +212,12 @@ export interface EngineDeps {
   setPanicInstance(id: string): void;
   /** Id bookkeeping outside the session (main.ts tracks the boot instance). */
   onInstanceRenamed?(from: string, to: string): void;
+  /**
+   * Fired after any command that changes the working set (instances, chains,
+   * modulators, values, slot pointers). main.ts debounce-writes the session
+   * snapshot so a refresh/restart restores it (never on read-only queries).
+   */
+  onMutation?(): void;
   /** Fixtures — deterministic input traces (main.ts owns recording + replay shots). */
   fixtures: {
     /** Capture the live rack for N frames; resolves when the trace is written. */
@@ -341,6 +371,15 @@ export class EngineApi {
     if (source === "agent" && HUMAN_ONLY.has(req.type)) {
       throw new Error(`${req.type} is a human-only control (Console)`);
     }
+    const result = await this.dispatch(req, source);
+    // Persist the working set after any successful structural edit (a throw
+    // never reaches here). batch's sub-calls re-enter handleRequest, so each
+    // mutating step marks individually — the snapshot write is debounced anyway.
+    if (SNAPSHOT_AFFECTING.has(req.type)) this.deps.onMutation?.();
+    return result;
+  }
+
+  private async dispatch(req: RequestMsg, source: Source): Promise<unknown> {
     const { session, stage } = this.deps;
     switch (req.type) {
       case "get_session":

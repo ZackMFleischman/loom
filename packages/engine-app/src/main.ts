@@ -38,6 +38,7 @@ import { PanicController } from "./panic-controller";
 import { RenderService } from "./render-service";
 import { getScenes } from "./scenes";
 import { SessionStore } from "./session";
+import { SessionSnapshot, type SessionData } from "./session-snapshot";
 import { StateClient, StateKey } from "./state";
 import { workerInterval } from "./worker-clock";
 
@@ -273,6 +274,16 @@ const compositor = new Compositor(RENDER_W, RENDER_H);
 // work regardless of ?state=off (which only disables AMBIENT persistence).
 const projectsController = new ProjectsController({ session, stage, scenes: () => currentScenes() });
 
+// ---- Session restore: the working set survives a refresh/restart ----
+// Every structural edit debounce-writes the serialized instance set (same shape
+// as a saved project, plus the slot pointers) to content/state/session.json;
+// boot rebuilds it and routes the live output back where it was. Disabled by
+// `?state=off` like all ambient persistence (validators boot clean).
+const sessionSnapshot = new SessionSnapshot({ session, stage, scenes: () => currentScenes(), state });
+// Loaded in Boot 2 (loadPersistedState), applied in Boot 3 (after the boot
+// instance exists). Null when there is nothing to restore / `?state=off`.
+let restoreData: SessionData | null = null;
+
 // ---- Fixtures: deterministic input traces (content/state/fixtures/) ----
 // FixtureService owns recording the live rack (record + the per-frame
 // recordFrame hook) and the deterministic offline pass (shots).
@@ -430,6 +441,10 @@ async function loadPersistedState(): Promise<void> {
       tunedColorSpaces.set(scene, spaces as Record<string, "hsv" | "rgb">);
     }
   }
+  // The working set itself — read here, rebuilt in Boot 3 once the boot
+  // instance exists (its per-scene values, loaded just above, are already in
+  // place so restored instances come up tuned).
+  restoreData = await sessionSnapshot.load();
 }
 
 // ============================ BOOT SEQUENCE ============================
@@ -480,6 +495,33 @@ const debug = new DebugSurface({
 trySwapLive(liveScene);
 // No boot-default safe scene (panic-safe-scene-redesign FR-1): PANIC boots armed
 // hold; scene-panic becomes available once the human designates a SAFE target.
+
+// Boot 3b — restore last session's working set over the freshly built boot
+// instance: rebuild the sandbox tiles (each under its old id) and route the
+// live output back where it was. Wrapped so a corrupt snapshot can never block
+// boot; a scene that no longer builds is skipped inside restore (never black).
+if (restoreData) {
+  try {
+    const out = sessionSnapshot.restore(restoreData, bootId);
+    if (out.created.length > 0 || out.skipped.length > 0) {
+      logDiag({
+        level: out.skipped.length > 0 ? "warn" : "info",
+        kind: "session.restored",
+        msg:
+          `restored ${out.created.length} instance(s)` +
+          (out.skipped.length > 0 ? `, skipped ${out.skipped.length}` : ""),
+        data: { created: out.created, skipped: out.skipped, live: out.live, staged: out.staged },
+      });
+    }
+  } catch (err) {
+    logDiag({
+      level: "warn",
+      kind: "session.restored",
+      msg: "session restore failed; booting clean",
+      data: { error: err instanceof Error ? err.message : String(err) },
+    });
+  }
+}
 
 // Boot 4 — the render loop, the EngineApi, and the transports (bridge + console).
 // The render loop owns the frame tick + loop-local state (latest frame, mix,
@@ -565,6 +607,8 @@ const api: EngineApi = new EngineApi(
     onInstanceRenamed: (from, to) => {
       if (bootId === from) bootId = to;
     },
+    // Autosave the working set after every structural edit (debounced).
+    onMutation: () => sessionSnapshot.mark(),
   },
   // Agent commit defaults ARMED (the stage→commit ceremony was getting in the
   // way); ?agentCommit=0 restores the human gate, and the Console checkbox

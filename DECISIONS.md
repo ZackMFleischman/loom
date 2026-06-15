@@ -1907,3 +1907,28 @@ controls slices ignore frame churn + wake on chain/binding edits, and per-param
 identity holds across a value-only tick; 543 + 41 elsewhere). Playwright Console
 validators (m3/m5) + the perf harness couldn't run here — the browser CDN is blocked by
 the env's network egress policy (binary not installed), not a code issue.
+
+## 2026-06-15 — session restore (working set survives a restart)
+
+- **The working set auto-persists and restores on boot.** LOOM restarts often (an
+  engine code change forces a full reload), which wiped every in-session instance,
+  per-instance modulator/chain, and the live pointer — only the boot scene came back.
+  Now a `SessionSnapshot` debounce-writes the serialized instance set to
+  `content/state/session.json` after every structural edit, and boot rebuilds it.
+  `save_project` is still the explicit, named set-list; the snapshot is the implicit
+  "where I left off" — it reuses `ProjectStore.serialize`/`buildProjectInstance` verbatim
+  (same fidelity, one code path), adding only the staged pointer.
+- **Restore moves the LIVE pointer — the one boot-time exception to audience-safety.**
+  `load_project` is audience-safe (sandboxes only, Stage untouched) because it runs mid-
+  show. Boot restore runs before any audience, so it hard-routes live to wherever it was
+  via a new `Stage.restoreLive` (documented boot/recovery-only, no fade). A restored scene
+  that no longer builds is skipped and the boot scene keeps the output — never go black.
+- **The snapshot is fade-aware.** A commit crossfade flips `live` a frame later, so while
+  one is in flight `serialize()` records the commit's TARGET as live — a refresh mid-commit
+  lands on the committed scene, not the old one.
+- **PANIC state is deliberately NOT restored** (same call as panic-safe-scene-redesign): a
+  fresh boot comes up calm, armed hold.
+- **`?state=off` disables it** like all ambient persistence (validators boot clean). Gates:
+  `pnpm typecheck` green; `pnpm test` green (166 engine-app incl. 6 new SessionSnapshot
+  tests; 548 + others elsewhere). Playwright acceptance validators couldn't run here — the
+  browser CDN is blocked by the env's network egress policy, not a code issue.

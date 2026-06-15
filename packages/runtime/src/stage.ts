@@ -86,6 +86,20 @@ export class Stage {
   }
 
   /**
+   * Boot/session-restore ONLY: hard-set the live pointer with no fade. Unlike
+   * adoptLive (which refuses while something is already live), this replaces the
+   * just-adopted boot instance with whatever was live last session — there is no
+   * audience at boot, so the audience-safety invariant doesn't apply yet. Never
+   * call this during a live performance; every other LIVE change goes through
+   * commit().
+   */
+  restoreLive(id: string): void {
+    this.liveId = id;
+    if (this.stagedId === id) this.stagedId = null;
+    this.fade = null;
+  }
+
+  /**
    * Begin the crossfade to the staged candidate at the next frame boundary.
    * The audience-facing transition: only this (and panic) may change LIVE.
    */
