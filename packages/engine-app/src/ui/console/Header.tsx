@@ -11,7 +11,10 @@ import {
   Menu,
   MenuItem,
   NativeSelect,
+  Paper,
+  Popper,
   Radio,
+  Slider,
   TextField,
   Typography,
 } from "@mui/material";
@@ -92,6 +95,7 @@ export function Header({ session: s, onToggleRack, previewing, onTogglePreview, 
         />
       </Box>
       <AudioPicker session={s} />
+      <MonitorControl session={s} />
       <MidiStatus midi={s.midi} />
 
       <GroupSep />
@@ -472,6 +476,107 @@ function AudioPicker({ session: s }: { session: SessionSnapshot }) {
         </option>
       ))}
     </NativeSelect>
+  );
+}
+
+const MONITOR_KEY = "loom.monitor";
+
+/**
+ * Input monitor: play the mic/loopback input through the speakers. A 🔊 MON
+ * toggle; hovering it reveals a volume slider in a popover. Disabled in test
+ * mode (the synthetic signal is intentionally muted). Human-only — not an MCP
+ * tool. Persists enabled/level in localStorage and re-applies on first connect.
+ */
+function MonitorControl({ session: s }: { session: SessionSnapshot }) {
+  const link = useEngine();
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const [hover, setHover] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [level, setLevel] = useState(s.monitorLevel);
+  const synced = useRef(false);
+  const isTest = s.audioMode === "test";
+
+  // First connect: re-apply the persisted choice (engine boots monitor off).
+  useEffect(() => {
+    if (synced.current) return;
+    synced.current = true;
+    try {
+      const saved = JSON.parse(localStorage.getItem(MONITOR_KEY) ?? "null") as {
+        enabled: boolean;
+        level: number;
+      } | null;
+      if (saved) {
+        setLevel(saved.level);
+        void link.req("set_monitor", { enabled: saved.enabled, level: saved.level }).catch(fail);
+      }
+    } catch {
+      // ignore malformed persisted state
+    }
+  }, [link]);
+
+  // Reflect the snapshot unless mid-drag.
+  useEffect(() => {
+    if (!dragging) setLevel(s.monitorLevel);
+  }, [s.monitorLevel, dragging]);
+
+  const persist = (enabled: boolean, lvl: number) =>
+    localStorage.setItem(MONITOR_KEY, JSON.stringify({ enabled, level: lvl }));
+
+  const toggle = () => {
+    const next = !s.monitorEnabled;
+    persist(next, level);
+    void link.req("set_monitor", { enabled: next }).catch(fail);
+  };
+
+  const onSlide = (v: number) => {
+    setLevel(v);
+    persist(s.monitorEnabled, v);
+    void link.req("set_monitor", { level: v }).catch(fail);
+  };
+
+  return (
+    <Box
+      ref={anchorRef}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      sx={{ display: "inline-flex" }}
+    >
+      <Button
+        id="monitorbtn"
+        variant={s.monitorEnabled ? "contained" : "outlined"}
+        color={s.monitorEnabled ? "primary" : "inherit"}
+        disabled={isTest}
+        onClick={toggle}
+        title={
+          isTest
+            ? "monitoring applies to a mic/loopback input — switch off the test signal"
+            : "play the audio input through your speakers"
+        }
+        sx={{ fontWeight: 700, minWidth: "unset", px: 1 }}
+      >
+        🔊 MON
+      </Button>
+      <Popper open={hover && !isTest} anchorEl={anchorRef.current} placement="bottom" sx={{ zIndex: 1300 }}>
+        <Paper sx={{ px: 2, py: 1.5, mt: 0.5, width: 160 }}>
+          <Typography variant="caption" color="text.secondary">
+            monitor level
+          </Typography>
+          <Slider
+            id="monitorlevel"
+            size="small"
+            min={0}
+            max={1}
+            step={0.01}
+            value={level}
+            onChange={(_, v) => {
+              setDragging(true);
+              onSlide(v as number);
+            }}
+            onChangeCommitted={() => setDragging(false)}
+          />
+        </Paper>
+      </Popper>
+    </Box>
   );
 }
 
