@@ -22,6 +22,8 @@ export const StateKey = {
   paletteMods: "palette-mods",
   /** MIDI-learn bindings keyed by scene. */
   bindings: "bindings",
+  /** Auto-saved working set (instances + slot pointers) — restored on boot. */
+  session: "session",
   /** Per-scene tuned param values. */
   sceneValues: (scene: string): string => `values/${scene}`,
   /** Per-scene slider range overrides — load BEFORE the matching `sceneValues`. */

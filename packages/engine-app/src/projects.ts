@@ -82,6 +82,34 @@ function serializeEntry(e: Entry): ProjectInstance {
   };
 }
 
+/**
+ * Build one serialized instance into the session under `id` and re-attach its
+ * saved modulators (a modulator that no longer fits its param is skipped — a
+ * restore is never fatal). Shared by project load and session restore. A failed
+ * build throws out to the caller, which records it as a skip.
+ */
+export function buildProjectInstance(
+  session: SessionStore,
+  def: SceneDef,
+  inst: ProjectInstance,
+  id: string,
+): Entry {
+  const entry = session.create(def, id, {
+    chain: inst.chain as ChainStepInput[],
+    nodeChains: inst.nodeChains as Record<string, ChainStepInput[]>,
+    values: inst.values,
+  });
+  for (const m of inst.modulators ?? []) {
+    try {
+      entry.modulators.attach(entry.instance.manifest, m.path, m.spec);
+      if (m.enabled === false) entry.modulators.setEnabled(m.path, false);
+    } catch {
+      // a modulator that no longer fits its param — skip it, keep loading
+    }
+  }
+  return entry;
+}
+
 export class ProjectStore {
   constructor(
     private readonly session: SessionStore,
@@ -125,19 +153,7 @@ export class ProjectStore {
       let id = inst.id;
       for (let n = 2; this.session.entries.has(id); n++) id = `${inst.id}~${n}`;
       try {
-        const entry = this.session.create(def, id, {
-          chain: inst.chain as ChainStepInput[],
-          nodeChains: inst.nodeChains as Record<string, ChainStepInput[]>,
-          values: inst.values,
-        });
-        for (const m of inst.modulators ?? []) {
-          try {
-            entry.modulators.attach(entry.instance.manifest, m.path, m.spec);
-            if (m.enabled === false) entry.modulators.setEnabled(m.path, false);
-          } catch {
-            // a modulator that no longer fits its param — skip it, keep loading
-          }
-        }
+        buildProjectInstance(this.session, def, inst, id);
         created.push(id);
       } catch (err) {
         skipped.push({ id: inst.id, scene: inst.scene, reason: err instanceof Error ? err.message : String(err) });
