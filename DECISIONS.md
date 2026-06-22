@@ -1932,3 +1932,31 @@ the env's network egress policy (binary not installed), not a code issue.
   `pnpm typecheck` green; `pnpm test` green (166 engine-app incl. 6 new SessionSnapshot
   tests; 548 + others elsewhere). Playwright acceptance validators couldn't run here — the
   browser CDN is blocked by the env's network egress policy, not a code issue.
+
+## 2026-06-22 — glow-poi: a poi-spinner instrument (flows, transitions, light-trails) (SHIPPED)
+
+- **One motion model spans 44 maneuvers.** Each poi head is a point on a string
+  (`poiR`) whose hand orbits a shoulder point (`armR`); a maneuver is just numeric
+  *targets* (radii, arm/poi frequencies, directions, mirror, timing, tilt, spin)
+  plus a `style`. Flowers/weaves/windmills/butterflies/CATs/comets all fall out of
+  the arm:poi frequency ratio (spirograph math). Catalog + transition graph live in
+  `content/modules/poi/maneuvers.ts` (+ generated `MANEUVERS.md`); the engine in
+  `content/modules/poi/motion.ts`; the orb/light source is `poiHeads` (source).
+- **Transitions are smooth by construction, not by crossfade.** Arm/poi ANGLES are
+  integrated from rates (never set absolutely), so changing the move can't jump a
+  position (C0); every target is EASED (C1). A direction reversal eased through zero
+  IS a stall — that's how `stall`/`pendulum` styles are made, no special-casing.
+  Verified numerically: max single-frame head jump at a transition stays at normal
+  in-move travel (no spike); stalls cross zero angular velocity; isolations pin the
+  head to a still point.
+- **Two fixes the first pass needed:** (1) style automation must apply AFTER the
+  transition ease or fast stall/pendulum swings get smoothed to a twitch; (2)
+  isolations need an arm↔poi phase-lock (`isoLock`, with armR==poiR) so the head
+  hangs still and the string sweeps a halo — a rate alone draws a flat line.
+- **Light-trails are feedback** (long-exposure look), persistence biased per maneuver;
+  `look.mode` morphs glow → fire (warm flicker) → sparkler (crackle). Kick flares
+  glow/bloom, bass swells size.
+- Gates: `pnpm typecheck` green (98 modules, 50 scenes); `pnpm test:content` green
+  (568, incl. the `poiHeads` completeness case). Stills via `shoot.mjs` (WebGL2);
+  motion validated with an offline tsx harness. Browser CDN blocked by env egress —
+  reused the pre-installed Chromium by symlinking it into the expected path.
