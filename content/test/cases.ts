@@ -75,6 +75,7 @@ import { vectorShip } from "../modules/sources/vectorShip";
 import { enemySwarm } from "../modules/sources/enemySwarm";
 import { particleBurst } from "../modules/sources/particleBurst";
 import { bullets } from "../modules/sources/bullets";
+import { poiHeads } from "../modules/sources/poiHeads";
 import { warpField } from "../modules/sources/warpField";
 import { waffleCone } from "../modules/sources/waffleCone";
 import { video } from "../modules/sources/video";
@@ -152,6 +153,12 @@ export const CASES: Record<string, ModuleCase> = {
   enemySwarm: (ctx) => enemySwarm(ctx, { count: 8, surge: ctx.input("kick") }),
   particleBurst: (ctx) => particleBurst(ctx, { burst: ctx.input("kick") }),
   bullets: (ctx) => bullets(ctx, { shots: [{ x: 0.5, y: 0.5, angle: 0, life: 1 }] }),
+  poiHeads: (ctx) =>
+    poiHeads(ctx, {
+      heads: [{ x: -0.2, y: 0 }, { x: 0.2, y: 0 }],
+      hands: [{ x: -0.1, y: 0 }, { x: 0.1, y: 0 }],
+      pivot: { x: 0, y: 0 },
+    }),
   warpField: (ctx) => warpField(ctx, { emitters: [{ x: 0.5, y: 0.5, mass: 1, vx: 0.1 }] }),
   video: (ctx) => video(ctx, { url: CLIP }),
   render3d: (ctx) => render3d(ctx, { world: box(ctx, { spin: 0.5 }), cam: orbitCam(ctx, {}) }),
