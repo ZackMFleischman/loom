@@ -24,6 +24,12 @@ export interface PoiHeadsOpts {
   spinner?: SignalLike;
   /** Palette stops cycled across the heads (default [2, 4] — the two cores/accent). */
   colorStops?: number[];
+  /**
+   * Which parts to draw: "all" (default), "heads" (just the glowing orbs +
+   * sparkle), or "rig" (just the strings + pivot). Split a scene into a
+   * heads-only pass it can trail and a fresh rig pass so only the orbs smear.
+   */
+  parts?: "all" | "heads" | "rig";
 }
 
 /** Premultiplied capsule glow between two points (the string). */
@@ -72,6 +78,9 @@ export const poiHeads = defineModule(
     const sparkAmt = ctx.uniformOf(opts.spark ?? 1);
     const spinnerAmt = ctx.uniformOf(opts.spinner ?? 0);
     const tNow = ctx.uniformOf(ctx.time.now);
+    const parts = opts.parts ?? "all";
+    const drawHeads = parts !== "rig";
+    const drawRig = parts !== "heads";
 
     const asp = surfaceAspect();
     const p = uv().sub(0.5).mul(vec2(asp, 1));
@@ -97,31 +106,33 @@ export const poiHeads = defineModule(
       const fl = sin(tNow.mul(21).add(float(i * 2.1))).mul(sin(tNow.mul(6.3).add(float(i))));
       const flicker = mix(float(1), float(0.7).add(fl.mul(0.3)), warm);
 
-      // The string.
-      if (hands[i]) {
+      // The string (rig).
+      if (drawRig && hands[i]) {
         const hand = vec2(ctx.uniformOf(hands[i]!.x), ctx.uniformOf(hands[i]!.y));
         const tg = tetherGlow(p, hand, pos, tetherW, col);
         acc = acc.add(tg.rgb.mul(glow).mul(0.6));
         alpha = max(alpha, tg.a.mul(0.6));
       }
 
-      // The orb.
-      const d = length(p.sub(pos));
-      const orb = glowDot(d, size, col).mul(flicker).mul(glow);
-      acc = acc.add(orb.rgb);
-      alpha = max(alpha, orb.a);
+      if (drawHeads) {
+        // The orb.
+        const d = length(p.sub(pos));
+        const orb = glowDot(d, size, col).mul(flicker).mul(glow);
+        acc = acc.add(orb.rgb);
+        alpha = max(alpha, orb.a);
 
-      // Sparkler crackle near the head.
-      const noise = valueNoise2(p.mul(40).add(vec2(tNow.mul(3.1), tNow.mul(-2.3))));
-      const crackle = pow(noise, float(6)).mul(9);
-      const gate = size.mul(2.4).div(d.add(size.mul(2.4)));
-      const sparkle = crackle.mul(gate).mul(gate).mul(sparkW).mul(sparkAmt).mul(glow);
-      acc = acc.add(vec3(sparkle));
-      alpha = max(alpha, sparkle.clamp(0, 1));
+        // Sparkler crackle near the head.
+        const noise = valueNoise2(p.mul(40).add(vec2(tNow.mul(3.1), tNow.mul(-2.3))));
+        const crackle = pow(noise, float(6)).mul(9);
+        const gate = size.mul(2.4).div(d.add(size.mul(2.4)));
+        const sparkle = crackle.mul(gate).mul(gate).mul(sparkW).mul(sparkAmt).mul(glow);
+        acc = acc.add(vec3(sparkle));
+        alpha = max(alpha, sparkle.clamp(0, 1));
+      }
     }
 
-    // Faint spinner body at the pivot.
-    if (opts.pivot) {
+    // Faint spinner body at the pivot (rig).
+    if (drawRig && opts.pivot) {
       const pv = vec2(ctx.uniformOf(opts.pivot.x), ctx.uniformOf(opts.pivot.y));
       const dp = length(p.sub(pv));
       const body = glowDot(dp, size.mul(0.7), ctx.palette.color(1)).mul(spinnerAmt).mul(glow);

@@ -1,6 +1,7 @@
 import { Signal, defineScene, integrateSignal } from "@loom/runtime";
 import { feedback } from "../modules/effects/feedback";
 import { bloom } from "../modules/effects/bloom";
+import { over } from "../modules/effects/over";
 import { transform } from "../modules/effects/transform";
 import { vignette } from "../modules/effects/vignette";
 import { poiHeads } from "../modules/sources/poiHeads";
@@ -85,17 +86,15 @@ export default defineScene({
     const punchSig = punch.signal();
     const headGlow = new Signal((f) => glowSig.get(f) * (1 + kick.get(f) * punchSig.get(f)));
 
-    const heads = poiHeads(ctx, {
+    // Only the ORBS leave light-trails — drawn alone and run through feedback.
+    const orbs = poiHeads(ctx, {
       heads: motion.heads,
-      hands: motion.hands,
-      pivot: motion.pivot,
       size: headSize.signal(),
-      tether: tether.signal(),
       glow: headGlow,
       mode: mode.signal(),
       spark: spark.signal(),
-      spinner: spinner.signal(),
       colorStops: [2, 3],
+      parts: "heads",
     });
 
     // Light trails: maneuver trail-bias nudges the persistence, kick lengthens it a touch.
@@ -103,12 +102,27 @@ export default defineScene({
     const trailAmt = new Signal((f) =>
       Math.min(0.985, Math.max(0, trailSig.get(f) + (motion.trailBias.get(f) - 0.5) * 0.12 + kick.get(f) * 0.02)),
     );
-    const trails = ctx.layer("flow", feedback(ctx, { input: heads, amount: trailAmt, zoom: drift.signal() }));
+    const trails = ctx.layer("flow", feedback(ctx, { input: orbs, amount: trailAmt, zoom: drift.signal() }));
+
+    // The strings + pivot are drawn FRESH each frame (no trail) over the trailed orbs.
+    const rig = poiHeads(ctx, {
+      heads: motion.heads,
+      hands: motion.hands,
+      pivot: motion.pivot,
+      size: headSize.signal(),
+      tether: tether.signal(),
+      glow: headGlow,
+      mode: mode.signal(),
+      spinner: spinner.signal(),
+      colorStops: [2, 3],
+      parts: "rig",
+    });
+    const composed = over(ctx, { input: trails, overlay: rig });
 
     // Camera + finish.
     const camSpinSig = camSpin.signal();
     const camAngle = integrateSignal(new Signal((f) => camSpinSig.get(f) * Math.PI * 2));
-    const framed = transform(ctx, { input: trails, scale: camZoom.signal(), rotate: camAngle });
+    const framed = transform(ctx, { input: composed, scale: camZoom.signal(), rotate: camAngle });
     const bloomIntSig = bloomInt.signal();
     const bloomSig = new Signal((f) => bloomIntSig.get(f) * (1 + kick.get(f) * punchSig.get(f) * 0.5));
     const lit = bloom(ctx, { input: framed, level: bloomLevel.signal(), intensity: bloomSig, radius: 1.1 });
