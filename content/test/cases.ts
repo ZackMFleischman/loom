@@ -74,6 +74,7 @@ import { warpGrid } from "../modules/sources/warpGrid";
 import { vectorShip } from "../modules/sources/vectorShip";
 import { enemySwarm } from "../modules/sources/enemySwarm";
 import { particleBurst } from "../modules/sources/particleBurst";
+import { glowSticks } from "../modules/sources/glowSticks";
 import { bullets } from "../modules/sources/bullets";
 import { warpField } from "../modules/sources/warpField";
 import { waffleCone } from "../modules/sources/waffleCone";
@@ -151,6 +152,7 @@ export const CASES: Record<string, ModuleCase> = {
   vectorShip: (ctx) => vectorShip(ctx, { thrust: ctx.input("energy") }),
   enemySwarm: (ctx) => enemySwarm(ctx, { count: 8, surge: ctx.input("kick") }),
   particleBurst: (ctx) => particleBurst(ctx, { burst: ctx.input("kick") }),
+  glowSticks: (ctx) => glowSticks(ctx, { count: 12, burst: ctx.input("kick") }),
   bullets: (ctx) => bullets(ctx, { shots: [{ x: 0.5, y: 0.5, angle: 0, life: 1 }] }),
   warpField: (ctx) => warpField(ctx, { emitters: [{ x: 0.5, y: 0.5, mass: 1, vx: 0.1 }] }),
   video: (ctx) => video(ctx, { url: CLIP }),
